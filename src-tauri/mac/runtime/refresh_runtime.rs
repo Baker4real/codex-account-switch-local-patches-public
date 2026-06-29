@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::errors::{AppError, AppResult};
-use crate::models::QuotaSummary;
+use crate::models::{QuotaProvenance, QuotaSummary};
 use crate::platform;
 use crate::shared::fs_ops::{copy_entry, remove_path};
 use crate::shared::metadata::{
-    load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota,
+    load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota_with_provenance,
 };
 use crate::shared::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use crate::shared::profiles_index::load_profiles_index;
@@ -166,10 +166,11 @@ fn try_refresh_via_chatgpt_api(
     // alongside the now-correct Free plan label. `unwrap_or_default()`
     // turns the `None` case into an empty `QuotaSummary`, which is
     // semantically correct (no quota = no allotment).
-    sync_profile_quota(
+    sync_profile_quota_with_provenance(
         profile_name,
         snapshot.quota.unwrap_or_default(),
         now_ms,
+        Some(QuotaProvenance::chatgpt_api(now_ms)),
         Some(codex_home),
     )?;
     crate::shared::metadata::sync_profile_metadata_from_auth(
@@ -252,10 +253,11 @@ fn refresh_via_app_server(
     // accounts whose payload had no rate-limit data (free tier
     // downgrade): keeps stale paid-window numbers from sticking next to
     // a freshly-updated plan label.
-    sync_profile_quota(
+    sync_profile_quota_with_provenance(
         profile_name,
         snapshot.quota.unwrap_or_else(QuotaSummary::default),
         now_ms,
+        Some(QuotaProvenance::codex_app_server(now_ms)),
         Some(codex_home),
     )?;
     sync_profile_metadata_from_auth(profile_name, snapshot.plan_type, Some(codex_home))?;

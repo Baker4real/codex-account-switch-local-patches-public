@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::{Local, TimeZone};
 use serde::Deserialize;
 
-use crate::models::{QuotaSummary, QuotaWindow};
+use crate::models::{QuotaProvenance, QuotaSummary, QuotaWindow};
 
 use super::paths::get_codex_home;
 use super::quota_cache::{file_signature, CachedEntry, CachedSnapshot, QuotaCache};
@@ -102,6 +102,7 @@ pub fn normalize_quota_summary(
     QuotaSummary {
         five_hour: normalize_quota_window(quota.five_hour),
         weekly: normalize_quota_window(quota.weekly),
+        provenance: quota.provenance,
     }
 }
 
@@ -274,6 +275,7 @@ pub fn load_latest_local_quota_snapshot_since(
         };
 
         if let Some(quota) = quota_for_path {
+            let quota = quota.with_provenance(QuotaProvenance::session_jsonl(source_mtime_ms));
             next_last_snapshot = Some(CachedSnapshot {
                 path: path.clone(),
                 mtime_ms: signature.0,
@@ -320,7 +322,10 @@ fn try_fast_path(
         return None;
     }
     Some(LocalQuotaSnapshot {
-        quota: last.quota.clone(),
+        quota: last
+            .quota
+            .clone()
+            .with_provenance(QuotaProvenance::session_jsonl(last.source_mtime_ms)),
         source_mtime_ms: last.source_mtime_ms,
     })
 }
@@ -328,6 +333,7 @@ fn try_fast_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::QuotaSource;
 
     fn token_count_line(
         limit_id: Option<&str>,
@@ -355,6 +361,7 @@ mod tests {
 
         assert_eq!(quota.five_hour.remaining_percent, Some(89));
         assert_eq!(quota.weekly.remaining_percent, Some(88));
+        assert_eq!(quota.provenance.source, QuotaSource::Unknown);
     }
 
     #[test]
@@ -379,6 +386,7 @@ mod tests {
     /// need their own coverage.
     mod cache_integration {
         use super::super::*;
+        use crate::models::{QuotaConfidence, QuotaSource};
         use std::fs;
         use std::path::PathBuf;
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -433,6 +441,7 @@ mod tests {
                         ..QuotaWindow::default()
                     },
                     weekly: QuotaWindow::default(),
+                    ..QuotaSummary::default()
                 },
                 source_mtime_ms: Some(signature.0),
             });
@@ -445,6 +454,12 @@ mod tests {
                 Some(99),
                 "fast path should return cached snapshot rather than re-parsing"
             );
+            assert_eq!(result.quota.provenance.source, QuotaSource::SessionJsonl);
+            assert_eq!(
+                result.quota.provenance.confidence,
+                QuotaConfidence::LocalObservation
+            );
+            assert_eq!(result.quota.provenance.source_mtime_ms, Some(signature.0));
 
             let _ = fs::remove_dir_all(&codex_home);
         }
@@ -457,6 +472,12 @@ mod tests {
             let first = load_latest_local_quota_snapshot(Some(&codex_home))
                 .expect("first call returns quota");
             assert_eq!(first.quota.five_hour.remaining_percent, Some(89));
+            assert_eq!(first.quota.provenance.source, QuotaSource::SessionJsonl);
+            assert_eq!(
+                first.quota.provenance.confidence,
+                QuotaConfidence::LocalObservation
+            );
+            assert_eq!(first.quota.provenance.source_mtime_ms, first.source_mtime_ms);
 
             // Add a lex-larger file with a different quota — the fast
             // path's `newest != last.path` guard must reject the

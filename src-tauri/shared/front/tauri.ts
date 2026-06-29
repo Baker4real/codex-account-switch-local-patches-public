@@ -9,6 +9,8 @@ import type {
   CurrentQuotaResponse,
   ProfileCard,
   ProfilesSnapshotResponse,
+  QuotaConfidence,
+  QuotaSource,
   QuotaSummary,
   SwitchResponse,
   UpdateCheckResponse,
@@ -36,7 +38,11 @@ function quota(
   fiveHourRefresh: string | null,
   weeklyPercent: number | null,
   weeklyRefresh: string | null,
+  source: QuotaSource = "chat_gpt_api",
+  confidence: QuotaConfidence = "official",
+  ageMs: number | null = 8 * 60 * 1000,
 ): QuotaSummary {
+  const observedAtMs = ageMs == null ? null : Date.now() - ageMs;
   return {
     five_hour: {
       remaining_percent: fiveHourPercent,
@@ -47,6 +53,13 @@ function quota(
       remaining_percent: weeklyPercent,
       refresh_at: weeklyRefresh,
       reset_at_timestamp: null,
+    },
+    provenance: {
+      source,
+      confidence,
+      observed_at_ms: observedAtMs,
+      source_mtime_ms: source === "session_jsonl" ? observedAtMs : null,
+      note: null,
     },
   };
 }
@@ -62,7 +75,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Pro plan",
     subscription_days_left: 18,
     openai_base_url: null,
-    quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新"),
+    quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 30 * 60 * 1000),
     last_plan_check_ms: Date.now() - 30 * 60 * 1000,
   },
   {
@@ -75,7 +88,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Plus plan",
     subscription_days_left: 12,
     openai_base_url: null,
-    quota: quota(58, "1小时后刷新", 42, "4天6小时后刷新"),
+    quota: quota(18, "1小时后刷新", 42, "4天6小时后刷新", "codex_app_server", "fallback", 3 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 4 * 60 * 60 * 1000,
   },
   {
@@ -88,7 +101,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: null,
     subscription_days_left: null,
     openai_base_url: null,
-    quota: quota(null, "6小时后刷新", null, "7天2小时后刷新"),
+    quota: quota(null, "6小时后刷新", null, "7天2小时后刷新", "unknown", "unknown", null),
     last_plan_check_ms: null,
   },
   {
@@ -101,7 +114,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Custom endpoint",
     subscription_days_left: 31,
     openai_base_url: "https://example.com/v1",
-    quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新"),
+    quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新", "session_jsonl", "local_observation", 26 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 8 * 24 * 60 * 60 * 1000,
   },
   {
@@ -114,7 +127,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Pro plan",
     subscription_days_left: 18,
     openai_base_url: null,
-    quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新"),
+    quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 2 * 24 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 2 * 24 * 60 * 60 * 1000,
   },
   {
@@ -127,7 +140,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Custom endpoint",
     subscription_days_left: 31,
     openai_base_url: "https://example.com/v1",
-    quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新"),
+    quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新", "codex_app_server", "fallback", 8 * 24 * 60 * 60 * 1000),
     last_plan_check_ms: null,
   },
 ];
@@ -143,7 +156,15 @@ let previewCurrentCard: CurrentCard = {
   last_plan_check_ms: Date.now() - 30 * 60 * 1000,
 };
 
-let previewCurrentQuota: QuotaSummary = quota(84, "3小时后刷新", 61, "2天4小时后刷新");
+let previewCurrentQuota: QuotaSummary = quota(
+  84,
+  "3小时后刷新",
+  61,
+  "2天4小时后刷新",
+  "chat_gpt_api",
+  "official",
+  30 * 60 * 1000,
+);
 
 let previewSnapshot: ProfilesSnapshotResponse = {
   page_size: 8,

@@ -8,11 +8,91 @@ pub struct QuotaWindow {
     pub reset_at_timestamp: Option<i64>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaSource {
+    Unknown,
+    ChatGptApi,
+    CodexAppServer,
+    SessionJsonl,
+}
+
+impl Default for QuotaSource {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaConfidence {
+    Unknown,
+    Official,
+    Fallback,
+    LocalObservation,
+}
+
+impl Default for QuotaConfidence {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QuotaProvenance {
+    pub source: QuotaSource,
+    pub confidence: QuotaConfidence,
+    pub observed_at_ms: Option<u64>,
+    pub source_mtime_ms: Option<u64>,
+    pub note: Option<String>,
+}
+
+impl QuotaProvenance {
+    pub fn chatgpt_api(observed_at_ms: Option<u64>) -> Self {
+        Self {
+            source: QuotaSource::ChatGptApi,
+            confidence: QuotaConfidence::Official,
+            observed_at_ms,
+            source_mtime_ms: None,
+            note: None,
+        }
+    }
+
+    pub fn codex_app_server(observed_at_ms: Option<u64>) -> Self {
+        Self {
+            source: QuotaSource::CodexAppServer,
+            confidence: QuotaConfidence::Fallback,
+            observed_at_ms,
+            source_mtime_ms: None,
+            note: Some("codex app-server fallback".to_string()),
+        }
+    }
+
+    pub fn session_jsonl(source_mtime_ms: Option<u64>) -> Self {
+        Self {
+            source: QuotaSource::SessionJsonl,
+            confidence: QuotaConfidence::LocalObservation,
+            observed_at_ms: None,
+            source_mtime_ms,
+            note: Some("local Codex session token_count event".to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct QuotaSummary {
     pub five_hour: QuotaWindow,
     pub weekly: QuotaWindow,
+    pub provenance: QuotaProvenance,
+}
+
+impl QuotaSummary {
+    pub fn with_provenance(mut self, provenance: QuotaProvenance) -> Self {
+        self.provenance = provenance;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -245,4 +325,37 @@ pub struct CodexCliRedetectResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetCodexCliPathPayload {
     pub path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_quota_summary_without_provenance_defaults_to_unknown() {
+        let raw = r#"{
+            "five_hour": { "remaining_percent": 42, "refresh_at": "later", "reset_at_timestamp": null },
+            "weekly": { "remaining_percent": 84, "refresh_at": null, "reset_at_timestamp": null }
+        }"#;
+
+        let quota: QuotaSummary = serde_json::from_str(raw).expect("legacy quota summary");
+
+        assert_eq!(quota.five_hour.remaining_percent, Some(42));
+        assert_eq!(quota.provenance.source, QuotaSource::Unknown);
+        assert_eq!(quota.provenance.confidence, QuotaConfidence::Unknown);
+        assert_eq!(quota.provenance.observed_at_ms, None);
+        assert_eq!(quota.provenance.source_mtime_ms, None);
+    }
+
+    #[test]
+    fn quota_provenance_serializes_as_frontend_snake_case_contract() {
+        let quota = QuotaSummary::default()
+            .with_provenance(QuotaProvenance::chatgpt_api(Some(1_800_000_000_000)));
+
+        let serialized = serde_json::to_value(&quota).expect("quota summary json");
+
+        assert_eq!(serialized["provenance"]["source"], "chat_gpt_api");
+        assert_eq!(serialized["provenance"]["confidence"], "official");
+        assert_eq!(serialized["provenance"]["observed_at_ms"], 1_800_000_000_000_u64);
+    }
 }

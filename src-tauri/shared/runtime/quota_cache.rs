@@ -266,6 +266,7 @@ mod tests {
                 refresh_at: None,
                 ..QuotaWindow::default()
             },
+            ..QuotaSummary::default()
         }
     }
 

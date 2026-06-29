@@ -7,7 +7,7 @@ use crate::platform::hooks::PlatformHooks;
 
 use crate::{platform, shared::switch_core};
 
-use super::metadata::{load_profile_metadata, sync_profile_quota};
+use super::metadata::{load_profile_metadata, sync_profile_quota_with_provenance};
 use super::paths::{
     get_backup_root, get_codex_home, validate_profile_name, PROFILE_METADATA_FILENAME,
 };
@@ -59,10 +59,11 @@ fn sync_current_profile_quota_before_switch(codex_home: &Path) -> AppResult<()> 
         let live_is_newer =
             snapshot.source_mtime_ms.unwrap_or(0) > metadata.quota_updated_at_ms.unwrap_or(0);
         if live_is_newer || !quota_summary_has_data(&metadata.quota) {
-            metadata = sync_profile_quota(
+            metadata = sync_profile_quota_with_provenance(
                 &current_profile,
                 snapshot.quota,
                 snapshot.source_mtime_ms,
+                None,
                 Some(codex_home),
             )?;
         }
@@ -76,10 +77,11 @@ fn prime_target_profile_quota_before_switch(
     codex_home: &Path,
 ) -> AppResult<()> {
     let metadata = load_profile_metadata(profile_name, Some(codex_home));
-    sync_profile_quota(
+    sync_profile_quota_with_provenance(
         profile_name,
-        metadata.quota,
+        metadata.quota.clone(),
         current_time_ms().or(metadata.quota_updated_at_ms),
+        Some(metadata.quota.provenance),
         Some(codex_home),
     )?;
     Ok(())

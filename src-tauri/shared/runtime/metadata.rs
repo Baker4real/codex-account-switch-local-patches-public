@@ -3,7 +3,7 @@ use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-use crate::models::{ProfileMetadata, QuotaSummary};
+use crate::models::{ProfileMetadata, QuotaProvenance, QuotaSummary};
 
 use super::paths::{
     get_backup_root, get_codex_home, get_profile_metadata_path, validate_profile_name,
@@ -366,7 +366,26 @@ pub fn sync_profile_quota(
     quota_updated_at_ms: Option<u64>,
     codex_home: Option<&Path>,
 ) -> Result<ProfileMetadata, crate::errors::AppError> {
+    sync_profile_quota_with_provenance(
+        profile_name,
+        quota,
+        quota_updated_at_ms,
+        None,
+        codex_home,
+    )
+}
+
+pub fn sync_profile_quota_with_provenance(
+    profile_name: &str,
+    mut quota: QuotaSummary,
+    quota_updated_at_ms: Option<u64>,
+    provenance: Option<QuotaProvenance>,
+    codex_home: Option<&Path>,
+) -> Result<ProfileMetadata, crate::errors::AppError> {
     update_profile_metadata(profile_name, codex_home, move |metadata| {
+        if let Some(provenance) = provenance {
+            quota.provenance = provenance;
+        }
         metadata.quota = quota;
         metadata.quota_updated_at_ms = quota_updated_at_ms;
     })
@@ -442,7 +461,7 @@ pub fn sync_root_metadata_if_current_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::QuotaWindow;
+    use crate::models::{QuotaConfidence, QuotaSource, QuotaWindow};
 
     fn auth_plan(plan_name: &str) -> AuthDerivedMetadata {
         AuthDerivedMetadata {
@@ -461,6 +480,36 @@ mod tests {
             },
             ..QuotaSummary::default()
         }
+    }
+
+    #[test]
+    fn sync_profile_quota_with_provenance_persists_explicit_source() {
+        let codex_home = temp_dir("quota-provenance");
+        std::fs::create_dir_all(
+            get_profile_metadata_path("alpha", Some(&codex_home))
+                .parent()
+                .expect("profile metadata has parent"),
+        )
+        .unwrap();
+
+        let metadata = sync_profile_quota_with_provenance(
+            "alpha",
+            quota_with_five_hour(),
+            Some(1_800_000_000_000),
+            Some(QuotaProvenance::chatgpt_api(Some(1_800_000_000_000))),
+            Some(&codex_home),
+        )
+        .expect("quota sync succeeds");
+
+        assert_eq!(metadata.quota.provenance.source, QuotaSource::ChatGptApi);
+        assert_eq!(metadata.quota.provenance.confidence, QuotaConfidence::Official);
+        assert_eq!(metadata.quota.provenance.observed_at_ms, Some(1_800_000_000_000));
+
+        let reloaded = load_profile_metadata("alpha", Some(&codex_home));
+        assert_eq!(reloaded.quota.provenance.source, QuotaSource::ChatGptApi);
+        assert_eq!(reloaded.quota.provenance.confidence, QuotaConfidence::Official);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     #[test]
@@ -605,6 +654,7 @@ mod tests {
                     refresh_at: Some("2026-05-15 12:00".to_string()),
                     ..QuotaWindow::default()
                 },
+                ..QuotaSummary::default()
             },
             ..ProfileMetadata::default()
         };

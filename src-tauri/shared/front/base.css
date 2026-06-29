@@ -1435,6 +1435,22 @@ html[data-theme] .current-quota-metric {
   box-shadow: var(--highlight-inset);
 }
 
+html[data-theme] .quota-source-badge {
+  border-color: var(--metric-border);
+  background: var(--control-surface-soft);
+}
+
+html[data-theme] .quota-source-badge.is-official {
+  border-color: var(--border-accent);
+  background: var(--surface-muted);
+}
+
+html[data-theme] .quota-source-badge.is-fallback,
+html[data-theme] .quota-source-badge.is-local-observation {
+  border-color: var(--danger-border);
+  background: var(--danger-hover-background);
+}
+
 html[data-theme] .quota-track {
   border-color: var(--metric-border);
   box-shadow: var(--metric-inset);
@@ -2052,6 +2068,15 @@ button.pager-pill:hover:not(:disabled) {
 .profile-quota-stack {
   display: flex;
   flex-direction: row;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.profile-quota-metrics {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: row;
   gap: 24px;
   align-items: center;
   min-width: 0;
@@ -2060,7 +2085,86 @@ button.pager-pill:hover:not(:disabled) {
 .current-quota-stack {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+}
+
+.quota-meta-stack {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.quota-meta-stack--profile {
+  flex: 0 1 180px;
+}
+
+.quota-evidence-row {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-body);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.quota-evidence-row--current {
+  justify-content: flex-start;
+}
+
+.quota-source-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  max-width: 100%;
+  padding: 0 8px;
+  border: 1px solid rgba(229, 224, 217, 0.96);
+  border-radius: var(--radius-pill);
+  background: rgba(250, 248, 244, 0.86);
+  color: var(--text-strong);
+  overflow-wrap: anywhere;
+}
+
+.quota-source-badge.is-fallback,
+.quota-source-badge.is-local-observation {
+  color: var(--danger-text);
+}
+
+.quota-source-badge.is-unknown {
+  color: var(--text-muted);
+}
+
+.quota-observed-age {
+  min-width: 0;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.quota-low-warning {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--danger-text);
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.quota-low-warning--current {
+  align-self: flex-start;
+}
+
+.quota-low-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
 }
 
 .profile-quota-metric {
@@ -2149,6 +2253,11 @@ button.pager-pill:hover:not(:disabled) {
 .current-quota-metric.is-unavailable .current-quota-refresh,
 .current-quota-metric.is-unavailable .current-quota-value {
   color: var(--text-muted);
+}
+
+.profile-quota-metric.is-quota-low .profile-quota-value,
+.current-quota-metric.is-quota-low .current-quota-value {
+  color: var(--danger-text);
 }
 
 .quota-track {
@@ -2659,6 +2768,24 @@ button.pager-pill:disabled {
     flex-direction: column;
     align-items: stretch;
     gap: 8px;
+  }
+
+  .profile-quota-metrics {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .quota-meta-stack {
+    align-items: flex-start;
+  }
+
+  .quota-evidence-row {
+    flex-wrap: wrap;
+  }
+
+  .quota-observed-age {
+    text-align: left;
   }
 
   .profile-card-actions {

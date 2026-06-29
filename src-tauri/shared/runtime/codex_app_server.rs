@@ -638,6 +638,7 @@ mod tests {
         assert_eq!(quota.weekly.remaining_percent, Some(93));
         assert!(quota.five_hour.refresh_at.is_some());
         assert!(quota.weekly.refresh_at.is_some());
+        assert_eq!(quota.provenance.source, crate::models::QuotaSource::Unknown);
     }
 
     #[test]

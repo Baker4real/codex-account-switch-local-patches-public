@@ -4,9 +4,22 @@ export interface QuotaWindow {
   reset_at_timestamp: number | null;
 }
 
+export type QuotaSource = "unknown" | "chat_gpt_api" | "codex_app_server" | "session_jsonl";
+
+export type QuotaConfidence = "unknown" | "official" | "fallback" | "local_observation";
+
+export interface QuotaProvenance {
+  source: QuotaSource;
+  confidence: QuotaConfidence;
+  observed_at_ms: number | null;
+  source_mtime_ms: number | null;
+  note: string | null;
+}
+
 export interface QuotaSummary {
   five_hour: QuotaWindow;
   weekly: QuotaWindow;
+  provenance?: QuotaProvenance;
 }
 
 export interface ProfileCard {

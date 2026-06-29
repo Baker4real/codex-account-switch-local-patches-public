@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::errors::CommandError;
-use crate::models::{CurrentQuotaResponse, ProfilesSnapshotResponse};
+use crate::models::{CurrentQuotaResponse, ProfilesSnapshotResponse, QuotaProvenance};
 
 #[cfg(target_os = "macos")]
 use crate::macos as platform_runtime;
@@ -94,10 +94,11 @@ fn refresh_active_profile_quota_silent_inner() -> Result<CurrentQuotaResponse, C
         // don't render previous-tier numbers next to a freshly
         // updated plan label. Plan update runs unconditionally so the
         // dashboard catches downgrades the same way.
-        let _ = crate::shared::metadata::sync_profile_quota(
+        let _ = crate::shared::metadata::sync_profile_quota_with_provenance(
             &profile_name,
             snapshot.quota.unwrap_or_default(),
             Some(now_ms),
+            Some(QuotaProvenance::chatgpt_api(Some(now_ms))),
             Some(&codex_home),
         );
         let _ = crate::shared::metadata::sync_profile_metadata_from_auth(
@@ -198,10 +199,11 @@ fn refresh_all_oauth_profile_plans_silent_inner() -> Result<u32, CommandError> {
         // data for downgraded-to-free profiles (the API returns no
         // rate_limit for them); without this clear we'd show old
         // 5h/weekly numbers next to a freshly-updated Free label.
-        if let Err(error) = crate::shared::metadata::sync_profile_quota(
+        if let Err(error) = crate::shared::metadata::sync_profile_quota_with_provenance(
             &entry.folder_name,
             snapshot.quota.unwrap_or_default(),
             Some(now_ms),
+            Some(QuotaProvenance::chatgpt_api(Some(now_ms))),
             Some(&codex_home),
         ) {
             eprintln!(

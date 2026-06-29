@@ -3,6 +3,9 @@ import type {
   DashboardViewModel,
   PagingInfo,
   ProfileCard,
+  QuotaConfidence,
+  QuotaProvenance,
+  QuotaSource,
   QuotaSummary,
   QuotaWindow,
   ShellRoute,
@@ -14,6 +17,7 @@ import { getThemeOption, isThemeId } from "@front-shared/theme";
 
 const isWindowsUiTarget = __CODEX_UI_TARGET__ === "windows";
 const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "settings", "guide"];
+const LOW_QUOTA_THRESHOLD_PERCENT = 20;
 
 function isShellRoute(value: string): value is ShellRoute {
   return shellRoutes.includes(value as ShellRoute);
@@ -182,6 +186,147 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+function defaultQuotaProvenance(): QuotaProvenance {
+  return {
+    source: "unknown",
+    confidence: "unknown",
+    observed_at_ms: null,
+    source_mtime_ms: null,
+    note: null,
+  };
+}
+
+function quotaSourceLabel(source: QuotaSource): string {
+  switch (source) {
+    case "chat_gpt_api":
+      return t(state.locale, "quotaSourceChatGptApi");
+    case "codex_app_server":
+      return t(state.locale, "quotaSourceCodexAppServer");
+    case "session_jsonl":
+      return t(state.locale, "quotaSourceSessionJsonl");
+    case "unknown":
+    default:
+      return t(state.locale, "quotaSourceUnknown");
+  }
+}
+
+function quotaConfidenceLabel(confidence: QuotaConfidence): string {
+  switch (confidence) {
+    case "official":
+      return t(state.locale, "quotaConfidenceOfficial");
+    case "fallback":
+      return t(state.locale, "quotaConfidenceFallback");
+    case "local_observation":
+      return t(state.locale, "quotaConfidenceLocalObservation");
+    case "unknown":
+    default:
+      return t(state.locale, "quotaConfidenceUnknown");
+  }
+}
+
+function quotaConfidenceClass(confidence: QuotaConfidence): string {
+  switch (confidence) {
+    case "official":
+      return "is-official";
+    case "fallback":
+      return "is-fallback";
+    case "local_observation":
+      return "is-local-observation";
+    case "unknown":
+    default:
+      return "is-unknown";
+  }
+}
+
+function formatQuotaObservedAge(provenance: QuotaProvenance): string {
+  const timestamp = provenance.observed_at_ms ?? provenance.source_mtime_ms;
+  if (timestamp == null) {
+    return t(state.locale, "quotaObservedUnknown");
+  }
+
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 1) {
+    return t(state.locale, "quotaObservedJustNow");
+  }
+  if (minutes < 60) {
+    return t(state.locale, "quotaObservedMinutesAgo", { value: minutes });
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return t(state.locale, "quotaObservedHoursAgo", { value: hours });
+  }
+
+  return t(state.locale, "quotaObservedDaysAgo", { value: Math.floor(hours / 24) });
+}
+
+function buildQuotaEvidenceMarkup(
+  quota: QuotaSummary | null | undefined,
+  layout: "profile" | "current",
+): string {
+  const provenance = quota?.provenance ?? defaultQuotaProvenance();
+  const source = quotaSourceLabel(provenance.source);
+  const confidence = quotaConfidenceLabel(provenance.confidence);
+  const observed = formatQuotaObservedAge(provenance);
+  const title = t(state.locale, "quotaEvidenceTitle", { source, confidence, observed });
+  const note = provenance.note ? ` ${provenance.note}` : "";
+
+  return `
+    <div
+      class="quota-evidence-row quota-evidence-row--${layout}"
+      title="${escapeHtml(title + note)}"
+      aria-label="${escapeHtml(title)}"
+    >
+      <span class="quota-source-badge ${quotaConfidenceClass(provenance.confidence)}">
+        ${escapeHtml(source)}
+      </span>
+      <span class="quota-observed-age">${escapeHtml(observed)}</span>
+    </div>
+  `;
+}
+
+function lowestQuotaWindow(quota: QuotaSummary | null | undefined): { label: string; value: number } | null {
+  const windows = [
+    { label: t(state.locale, "fiveHourAllowance"), value: quota?.five_hour?.remaining_percent ?? null },
+    { label: t(state.locale, "weeklyAllowance"), value: quota?.weekly?.remaining_percent ?? null },
+  ].filter((entry): entry is { label: string; value: number } => entry.value != null);
+
+  if (!windows.length) {
+    return null;
+  }
+
+  return windows.reduce((lowest, entry) => (entry.value < lowest.value ? entry : lowest));
+}
+
+function buildQuotaLowWarningMarkup(
+  quota: QuotaSummary | null | undefined,
+  unavailable: boolean,
+  layout: "profile" | "current",
+): string {
+  if (unavailable) {
+    return "";
+  }
+
+  const lowest = lowestQuotaWindow(quota);
+  if (!lowest || lowest.value > LOW_QUOTA_THRESHOLD_PERCENT) {
+    return "";
+  }
+
+  const text = t(state.locale, "quotaLowWarning", {
+    window: lowest.label,
+    value: lowest.value,
+  });
+  const title = t(state.locale, "quotaLowWarningTitle");
+
+  return `
+    <div class="quota-low-warning quota-low-warning--${layout}" title="${escapeHtml(title)}">
+      <span class="quota-low-dot" aria-hidden="true"></span>
+      <span>${escapeHtml(text)}</span>
+    </div>
+  `;
+}
+
 function bindProfileButtons(attribute: string, handler: (profile: string) => void): void {
   for (const button of elements.profilesGrid.querySelectorAll<HTMLButtonElement>(`[${attribute}]`)) {
     button.addEventListener("click", () => {
@@ -342,20 +487,29 @@ function buildMetricLineMarkup(
   unavailable: boolean,
   layout: "profile" | "current",
 ): string {
-  const percent = unavailable ? 0 : (entry?.remaining_percent ?? 0);
+  const remainingPercent = unavailable ? null : (entry?.remaining_percent ?? null);
+  const percent = remainingPercent ?? 0;
+  const isLow = remainingPercent != null && remainingPercent <= LOW_QUOTA_THRESHOLD_PERCENT;
   const metricClass = layout === "current" ? "current-quota-metric" : "profile-quota-metric";
   const lineClass = layout === "current" ? "current-quota-line" : "profile-quota-line";
   const titleClass = layout === "current" ? "current-quota-title" : "profile-quota-title";
   const refreshClass = layout === "current" ? "current-quota-refresh" : "profile-quota-refresh";
   const valueClass = layout === "current" ? "current-quota-value" : "profile-quota-value";
   const fillClass = unavailable ? "gray" : fillVariant;
+  const refresh = formatRefresh(entry);
+  const value = formatPercent(remainingPercent);
+  const title = t(state.locale, "quotaWindowTitle", { label, value, refresh });
 
   return `
-    <section class="${metricClass}${unavailable ? " is-unavailable" : ""}">
+    <section
+      class="${metricClass}${unavailable ? " is-unavailable" : ""}${isLow ? " is-quota-low" : ""}"
+      title="${escapeHtml(title)}"
+      aria-label="${escapeHtml(title)}"
+    >
       <div class="${lineClass}">
         <span class="${titleClass}">${escapeHtml(label)}</span>
-        <span class="${refreshClass}">${escapeHtml(formatRefresh(entry))}</span>
-        <span class="${valueClass}">${escapeHtml(formatPercent(unavailable ? null : entry?.remaining_percent ?? null))}</span>
+        <span class="${refreshClass}">${escapeHtml(refresh)}</span>
+        <span class="${valueClass}">${escapeHtml(value)}</span>
       </div>
       <div class="quota-track">
         <div class="quota-fill quota-fill--${fillClass}" style="width: ${percent}%;"></div>
@@ -370,8 +524,14 @@ function buildProfileQuotaMarkup(profile: ProfileCard): string {
 
   return `
     <div class="profile-quota-stack">
-      ${buildMetricLineMarkup(t(state.locale, "fiveHourAllowance"), quota?.five_hour, "blue", unavailable, "profile")}
-      ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "profile")}
+      <div class="profile-quota-metrics">
+        ${buildMetricLineMarkup(t(state.locale, "fiveHourAllowance"), quota?.five_hour, "blue", unavailable, "profile")}
+        ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "profile")}
+      </div>
+      <div class="quota-meta-stack quota-meta-stack--profile">
+        ${buildQuotaEvidenceMarkup(quota, "profile")}
+        ${buildQuotaLowWarningMarkup(quota, unavailable, "profile")}
+      </div>
     </div>
   `;
 }
@@ -384,8 +544,10 @@ function buildCurrentQuotaMarkup(
 
   return `
     <div class="current-quota-stack">
+      ${buildQuotaEvidenceMarkup(quota, "current")}
       ${buildMetricLineMarkup(t(state.locale, "fiveHourAllowance"), quota?.five_hour, "blue", unavailable, "current")}
       ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "current")}
+      ${buildQuotaLowWarningMarkup(quota, unavailable, "current")}
     </div>
   `;
 }

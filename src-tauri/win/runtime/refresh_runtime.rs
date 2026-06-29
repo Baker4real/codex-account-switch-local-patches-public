@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::errors::{AppError, AppResult};
-use crate::models::QuotaSummary;
+use crate::models::{QuotaProvenance, QuotaSummary};
 use crate::platform;
 
 use super::fs_ops::{copy_entry, remove_path};
 use super::metadata::{
-    load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota,
+    load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota_with_provenance,
     sync_root_metadata_if_current_profile,
 };
 use super::paths::{
@@ -170,10 +170,11 @@ fn try_refresh_via_chatgpt_api(
     // Pro window cached on disk). Always clear stale quota in that
     // case so the dashboard doesn't show old paid-window numbers
     // alongside the now-correct Free plan label.
-    sync_profile_quota(
+    sync_profile_quota_with_provenance(
         profile_name,
         snapshot.quota.unwrap_or_default(),
         now_ms,
+        Some(QuotaProvenance::chatgpt_api(now_ms)),
         Some(codex_home),
     )?;
     let metadata =
@@ -247,10 +248,11 @@ fn refresh_via_app_server(
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|value| u64::try_from(value.as_millis()).ok());
-    sync_profile_quota(
+    sync_profile_quota_with_provenance(
         profile_name,
         snapshot.quota.unwrap_or_else(QuotaSummary::default),
         now_ms,
+        Some(QuotaProvenance::codex_app_server(now_ms)),
         Some(codex_home),
     )?;
     let metadata =
