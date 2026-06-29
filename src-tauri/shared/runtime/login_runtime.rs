@@ -21,7 +21,10 @@ use std::path::Path;
 use crate::errors::{AppError, AppResult};
 use crate::platform::hooks::PlatformHooks;
 
-use super::metadata::{sync_profile_metadata_from_auth, sync_root_metadata_if_current_profile};
+use super::metadata::{
+    load_auth_metadata_from_path, sync_profile_metadata_from_auth,
+    sync_root_metadata_if_current_profile,
+};
 use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
@@ -131,6 +134,41 @@ fn atomic_publish_file(src: &Path, dst: &Path) -> AppResult<()> {
     result
 }
 
+fn comparable_account_label(auth_path: &Path) -> Option<String> {
+    load_auth_metadata_from_path(auth_path).and_then(|metadata| {
+        metadata.account_label.and_then(|label| {
+            let trimmed = label.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
+        })
+    })
+}
+
+fn verify_login_identity_matches_existing_profile(
+    profile_auth: &Path,
+    runtime_auth: &Path,
+) -> AppResult<()> {
+    let Some(existing_label) = comparable_account_label(profile_auth) else {
+        return Ok(());
+    };
+    let Some(next_label) = comparable_account_label(runtime_auth) else {
+        return Err(AppError::new(
+            "LOGIN_ACCOUNT_IDENTITY_UNKNOWN",
+            "This profile already has a known ChatGPT account, but the new login did not expose a comparable account identity. Confirm the browser is using the expected ChatGPT account and try again.",
+        ));
+    };
+
+    if existing_label == next_label {
+        return Ok(());
+    }
+
+    Err(AppError::new(
+        "LOGIN_ACCOUNT_MISMATCH",
+        format!(
+            "The browser completed login for `{next_label}`, but this profile already belongs to `{existing_label}`. Switch the browser to the expected ChatGPT account and try again."
+        ),
+    ))
+}
+
 /// Drive the per-card login workflow. `runtime_home` must be a path the
 /// caller controls (typically `account_backup/<platform>/login_runtime/`).
 /// Returns the absolute path of the profile folder whose `auth.json` was
@@ -194,6 +232,7 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
     }
 
     let profile_auth = profile_dir.join(RUNTIME_AUTH_FILENAME);
+    verify_login_identity_matches_existing_profile(&profile_auth, &runtime_auth)?;
     atomic_publish_file(&runtime_auth, &profile_auth)?;
 
     // If the profile being logged into is currently active, the live
@@ -306,6 +345,13 @@ mod tests {
     /// to succeed end-to-end.
     const FAKE_AUTH_JSON: &str = r#"{"OPENAI_API_KEY":null,"auth_mode":"chatgpt","tokens":{"id_token":"","access_token":"","refresh_token":"replace-me","account_id":"acct_login_test"},"last_refresh":"2026-05-08T00:00:00Z"}"#;
 
+    fn fake_auth_json_for_account(account_id: &str) -> String {
+        format!(
+            r#"{{"OPENAI_API_KEY":null,"auth_mode":"chatgpt","tokens":{{"id_token":"","access_token":"","refresh_token":"replace-me","account_id":{}}},"last_refresh":"2026-05-08T00:00:00Z"}}"#,
+            serde_json::Value::String(account_id.to_string())
+        )
+    }
+
     fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
         let codex_home = temp_root(name);
         let backup_root = codex_home.join("account_backup");
@@ -332,6 +378,37 @@ mod tests {
             fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
             FAKE_AUTH_JSON,
             "profile auth.json should contain the freshly written payload"
+        );
+    }
+
+    #[test]
+    fn login_profile_rejects_account_mismatch_without_overwriting_auth() {
+        let (codex_home, profile_dir, runtime_home) = setup("rejects-account-mismatch");
+        let existing_auth = fake_auth_json_for_account("expected-account");
+        let next_auth = fake_auth_json_for_account("wrong-browser-account");
+        fs::write(profile_dir.join("auth.json"), &existing_auth).unwrap();
+        fs::write(
+            codex_home.join("account_backup").join(".current_profile"),
+            "a\n",
+        )
+        .unwrap();
+        fs::write(codex_home.join("auth.json"), "LIVE_STALE\n").unwrap();
+        let hooks = FakeLoginHooks::new(&next_auth);
+
+        let error =
+            login_profile_with_home(&hooks, "a", Some(&codex_home), &runtime_home).unwrap_err();
+
+        assert_eq!(error.error_code, "LOGIN_ACCOUNT_MISMATCH");
+        assert_eq!(hooks.calls(), 1);
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            existing_auth,
+            "mismatched login must not overwrite the target profile auth"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "LIVE_STALE\n",
+            "mismatched active-profile login must not overwrite live auth"
         );
     }
 

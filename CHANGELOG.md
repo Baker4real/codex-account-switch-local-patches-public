@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Windows 本地补丁登录现在仍让 profile `b` 走 Chrome、profile `c` 走 Edge，但打开 OAuth URL 时只调用目标浏览器本身，不再传 `--user-data-dir` / `--new-window`，因此会复用用户当前常用的浏览器状态。
+- Windows 本地补丁登录现在仍让 profile `b` 走 Chrome、profile `c` 走 Edge，但打开 OAuth URL 时只调用目标浏览器本身，不再传 `--user-data-dir` / `--new-window`，因此会复用用户当前常用的浏览器状态。若目标 profile 已有可识别账号，新登录身份不一致时会在写入前拒绝覆盖旧 `auth.json`。
 
 ## 1.5.12 - 2026-05-29
 

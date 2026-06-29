@@ -487,6 +487,20 @@ fn resolve_login_browser_launch(
     }))
 }
 
+fn resolve_login_browser_app_server_launch(
+    real_codex_path: &Path,
+    runtime_codex_home: &Path,
+    profile_name: Option<&str>,
+) -> AppResult<Option<(Command, LoginBrowserLaunch)>> {
+    let Some(launch) = resolve_login_browser_launch(profile_name)? else {
+        return Ok(None);
+    };
+    Ok(Some((
+        build_app_server_command(real_codex_path, runtime_codex_home),
+        launch,
+    )))
+}
+
 fn resolve_login_browser_executable(browser: LoginBrowser) -> Option<PathBuf> {
     env::var_os(browser.override_env_var())
         .map(PathBuf::from)
@@ -571,8 +585,9 @@ pub fn run_codex_login(
             "Real Codex CLI path not found. Set the codex CLI location in the dashboard before logging in.",
         ));
     };
-    if let Some(launch) = resolve_login_browser_launch(profile_name)? {
-        let command = build_app_server_command(&real_codex_path, runtime_codex_home);
+    if let Some((command, launch)) =
+        resolve_login_browser_app_server_launch(&real_codex_path, runtime_codex_home, profile_name)?
+    {
         return run_chatgpt_browser_login(command, |auth_url| {
             open_login_url_in_browser(&launch, auth_url).map_err(|error| {
                 AppError::new(
@@ -956,9 +971,9 @@ mod tests {
     use super::{
         build_app_server_command, build_login_browser_command, discover_real_codex_cli_path,
         is_acceptable_real_codex_cli_path, load_install_state, login_browser_for_profile,
-        looks_like_codex_version, resolve_real_codex_cli, resolve_windows_app_target,
-        windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
-        LoginBrowserLaunch, WINDOWS_STORE_APP_ID,
+        looks_like_codex_version, resolve_login_browser_app_server_launch, resolve_real_codex_cli,
+        resolve_windows_app_target, windows_store_shell_target, AppLaunchTarget, InstallState,
+        LoginBrowser, LoginBrowserLaunch, WINDOWS_STORE_APP_ID,
     };
     use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
@@ -1059,6 +1074,96 @@ mod tests {
         assert_eq!(args, vec!["https://auth.example/login".to_string()]);
         assert!(!args.iter().any(|arg| arg.starts_with("--user-data-dir")));
         assert!(!args.iter().any(|arg| arg == "--new-window"));
+    }
+
+    #[test]
+    fn login_browser_app_server_launch_routes_b_and_c_without_legacy_profile_dir() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("browser-app-server-launch");
+        let browser_env_vars: &[&'static str] = &[
+            "CODEX_SWITCH_CHROME_PATH",
+            "CODEX_SWITCH_EDGE_PATH",
+            "LOCALAPPDATA",
+        ];
+        let _env = EnvVarGuard::capture(browser_env_vars);
+        let browser_dir = codex_home.join("browsers");
+        fs::create_dir_all(&browser_dir).unwrap();
+        let chrome_path = browser_dir.join("chrome.exe");
+        let edge_path = browser_dir.join("msedge.exe");
+        fs::write(&chrome_path, "").unwrap();
+        fs::write(&edge_path, "").unwrap();
+        std::env::set_var("CODEX_SWITCH_CHROME_PATH", &chrome_path);
+        std::env::set_var("CODEX_SWITCH_EDGE_PATH", &edge_path);
+        std::env::remove_var("LOCALAPPDATA");
+
+        let real_codex_path = codex_home.join("codex.exe");
+        let runtime_codex_home = codex_home
+            .join("account_backup")
+            .join("windows")
+            .join("login_runtime");
+        let legacy_browser_profile_dir = codex_home
+            .join("account_backup")
+            .join("windows")
+            .join("login_browser_profiles");
+
+        let (b_command, b_launch) = resolve_login_browser_app_server_launch(
+            &real_codex_path,
+            &runtime_codex_home,
+            Some("b"),
+        )
+        .unwrap()
+        .expect("profile b should use app-server browser login");
+        let b_args = b_command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let b_envs = b_command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(b_launch.browser, LoginBrowser::Chrome);
+        assert_eq!(b_launch.executable, chrome_path);
+        assert_eq!(b_command.get_program(), real_codex_path.as_os_str());
+        assert_eq!(b_args, vec!["app-server".to_string()]);
+        assert_eq!(
+            b_command.get_current_dir(),
+            Some(runtime_codex_home.as_path())
+        );
+        assert!(b_envs.iter().any(|(key, value)| {
+            key == "CODEX_HOME"
+                && value.as_deref() == Some(runtime_codex_home.to_string_lossy().as_ref())
+        }));
+
+        let (_c_command, c_launch) = resolve_login_browser_app_server_launch(
+            &real_codex_path,
+            &runtime_codex_home,
+            Some(" C "),
+        )
+        .unwrap()
+        .expect("profile c should use app-server browser login");
+        assert_eq!(c_launch.browser, LoginBrowser::Edge);
+        assert_eq!(c_launch.executable, edge_path);
+        assert!(
+            resolve_login_browser_app_server_launch(
+                &real_codex_path,
+                &runtime_codex_home,
+                Some("a")
+            )
+            .unwrap()
+            .is_none(),
+            "other profiles should keep the plain codex login path"
+        );
+        assert!(
+            !legacy_browser_profile_dir.exists(),
+            "browser login routing must not create the old login_browser_profiles directory"
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]

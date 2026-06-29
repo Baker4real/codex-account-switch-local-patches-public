@@ -158,6 +158,8 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版的 `b` / `c` 槽改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl` 后，由应用用指定浏览器的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
 
+因为 `b` / `c` 复用的是 Chrome / Edge 当前正常登录状态，点击登录前请确认该浏览器里的 ChatGPT 账号就是目标槽位要保存的账号。若目标槽位已有可识别账号，应用会在写入前校验新旧账号标识，不一致时拒绝覆盖旧 `auth.json`。
+
 ### Custom Base URL 配置后能继续用 ChatGPT OAuth 吗
 
 不能。Custom Base URL（指向第三方 OpenAI 兼容反代）和 ChatGPT 官方 OAuth 是互斥的 — OAuth `id_token` 校验只对官方 endpoint 生效。配置 Base 之后该卡片的「Base」按钮会变红警示。

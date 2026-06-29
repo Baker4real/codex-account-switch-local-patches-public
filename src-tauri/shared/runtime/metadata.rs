@@ -80,7 +80,7 @@ fn decode_token_claims(token: &str) -> Option<IdTokenClaims> {
     serde_json::from_slice::<IdTokenClaims>(&decoded).ok()
 }
 
-fn load_auth_metadata_from_path(auth_path: &Path) -> Option<AuthDerivedMetadata> {
+pub(super) fn load_auth_metadata_from_path(auth_path: &Path) -> Option<AuthDerivedMetadata> {
     let raw = fs::read_to_string(auth_path).ok()?;
     let auth = serde_json::from_str::<AuthFile>(&raw).ok()?;
     let mut metadata = AuthDerivedMetadata::default();

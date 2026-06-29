@@ -13,6 +13,10 @@ then rebuild and replace the installed executable:
 - Profile `c` 登录继续使用 `codex app-server`，并用用户正常 Edge
   状态打开返回的 auth URL；不要再传 `--user-data-dir` 或创建独立浏览器
   profile。
+- Because these flows reuse normal browser state, preserve the pre-write
+  account identity check: if an existing profile has a known ChatGPT identity,
+  a login completed by a different browser account must fail before replacing
+  `auth.json`.
 - Do not replace those two paths with plain `codex login`; the upstream CLI
   opens the default browser and does not expose a supported browser-selection
   flag for this flow.
