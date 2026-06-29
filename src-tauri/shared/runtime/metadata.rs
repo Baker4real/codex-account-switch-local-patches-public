@@ -7,7 +7,9 @@ use crate::models::{ProfileMetadata, QuotaSummary};
 
 use super::paths::{
     get_backup_root, get_codex_home, get_profile_metadata_path, validate_profile_name,
+    PROFILE_METADATA_FILENAME,
 };
+use super::profiles::resolve_current_profile;
 
 /// Plan name written when the id_token says `free` but quota data
 /// implies an active paid window — i.e. the cached id_token is stale
@@ -398,6 +400,41 @@ pub fn save_profile_metadata(
         crate::errors::AppError::new(
             "PROFILE_METADATA_WRITE_FAILED",
             format!("Failed to write metadata: {error}"),
+        )
+    })
+}
+
+pub fn sync_root_metadata_if_current_profile(
+    profile_name: &str,
+    metadata: &ProfileMetadata,
+    codex_home: Option<&Path>,
+) -> Result<(), crate::errors::AppError> {
+    let profile_name = validate_profile_name(profile_name)?;
+    let codex_home = codex_home
+        .map(Path::to_path_buf)
+        .unwrap_or_else(get_codex_home);
+    let backup_root = get_backup_root(Some(&codex_home));
+    if resolve_current_profile(&backup_root).as_deref() != Some(profile_name.as_str()) {
+        return Ok(());
+    }
+
+    let mut root_metadata = metadata.clone();
+    root_metadata.folder_name = Some(profile_name);
+    let serialized = serde_json::to_string_pretty(&root_metadata).map_err(|error| {
+        crate::errors::AppError::new(
+            "PROFILE_METADATA_INVALID",
+            format!("Failed to serialize current profile metadata: {error}"),
+        )
+    })?;
+
+    fs::write(
+        codex_home.join(PROFILE_METADATA_FILENAME),
+        format!("{serialized}\n"),
+    )
+    .map_err(|error| {
+        crate::errors::AppError::new(
+            "PROFILE_METADATA_WRITE_FAILED",
+            format!("Failed to write current profile metadata: {error}"),
         )
     })
 }

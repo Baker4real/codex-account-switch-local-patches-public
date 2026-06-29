@@ -93,6 +93,8 @@ let pendingUpdateReleaseUrl: string | null = null;
 let deleteSourceProfile: string | null = null;
 let pendingLoginRetry: (() => Promise<void>) | null = null;
 let cancelledLoginProfile: string | null = null;
+const LOGIN_CANCEL_RETRY_DELAY_MS = 250;
+const LOGIN_CANCEL_RETRY_LIMIT = 6;
 
 function isRefreshPending(profile: string): boolean {
   return state.refreshActiveProfiles.includes(profile);
@@ -192,10 +194,21 @@ async function refreshActiveQuotaSilently(): Promise<void> {
   }
 
   try {
-    applyCurrentQuota(await refreshActiveProfileQuotaSilent());
+    const currentQuota = await refreshActiveProfileQuotaSilent();
+    if (currentQuota.profile) {
+      applySnapshot(await getProfilesSnapshot());
+    }
+    applyCurrentQuota(currentQuota);
     rerenderDashboard();
   } catch {
     // Intentional: silent ticker, never surface errors to the user.
+  }
+}
+
+async function refreshAllOauthProfilePlansThenSnapshot(): Promise<void> {
+  const refreshed = await refreshAllOauthProfilePlansSilent();
+  if (refreshed > 0) {
+    await refreshAllData(false);
   }
 }
 
@@ -364,7 +377,7 @@ async function handleLoginProfile(profile: string): Promise<void> {
   }
 }
 
-async function handleCancelLogin(profile: string): Promise<void> {
+async function handleCancelLogin(profile: string, attempt = 0): Promise<void> {
   // Set the flag eagerly so the in-flight loginProfile rejection — which
   // can settle on the same task tick — sees it and shows "已取消登录"
   // instead of LOGIN_FAILED. If the backend reports nothing was actually
@@ -374,7 +387,16 @@ async function handleCancelLogin(profile: string): Promise<void> {
   try {
     const cancelled = await cancelCodexLogin();
     if (!cancelled) {
+      if (state.loginActiveProfile === profile && attempt < LOGIN_CANCEL_RETRY_LIMIT) {
+        window.setTimeout(() => {
+          void handleCancelLogin(profile, attempt + 1);
+        }, LOGIN_CANCEL_RETRY_DELAY_MS);
+        return;
+      }
       cancelledLoginProfile = null;
+      if (state.loginActiveProfile === profile) {
+        showToast(t(state.locale, "loginCancelFailed"), true);
+      }
     }
   } catch (error) {
     cancelledLoginProfile = null;
@@ -1080,7 +1102,7 @@ export function bootstrap(): void {
     // Kick the bulk plan refresh after the dashboard's first render so
     // the user sees their cards immediately without waiting on N
     // serial OAuth refreshes.
-    void refreshAllOauthProfilePlansSilent().catch(() => {
+    void refreshAllOauthProfilePlansThenSnapshot().catch(() => {
       // Best-effort; backend already swallows per-profile errors.
     });
   });
@@ -1102,7 +1124,7 @@ function scheduleDailyPlanRefresh(): void {
         return;
       }
       lastBulkDateKey = today;
-      void refreshAllOauthProfilePlansSilent().catch(() => {
+      void refreshAllOauthProfilePlansThenSnapshot().catch(() => {
         // Best-effort; backend already swallows per-profile errors.
       });
     },

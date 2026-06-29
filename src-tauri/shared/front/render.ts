@@ -555,8 +555,9 @@ export function renderProfiles(
           ? t(state.locale, "profileRefreshDisabled")
           : t(state.locale, "profileRefreshReady");
 
-      const loginDisabled =
-        state.loading || refreshPending || (loginPending && !loginRunning);
+      const loginDisabled = loginRunning
+        ? false
+        : state.loading || refreshPending || loginPending;
       const unavailable = isProfileUnavailable(profile);
 
       const planTooltip = planFreshnessTitle(profile.plan_name, profile.last_plan_check_ms);

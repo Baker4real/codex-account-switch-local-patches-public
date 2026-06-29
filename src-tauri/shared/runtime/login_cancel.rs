@@ -29,24 +29,32 @@
 //!    take the child out *within the same lock* (no race with cancel)
 //!    and call `wait_with_output` outside the lock to collect stdio.
 //!    If `None`, drop the lock and sleep briefly.
-//! 3. Cancel: lock the slot, take the `Child` out, call `Child::kill`,
-//!    drop. Subsequent loop iterations on the spawn site see `None`
-//!    and return `LOGIN_CANCELLED`.
+//! 3. Cancel: lock the slot, take the `Child` out, kill it (and, on
+//!    Windows, its process tree), drop. Subsequent loop iterations on
+//!    the spawn site see `None` and return `LOGIN_CANCELLED`.
 //!
 //! Because both "spawn site notices natural exit" and "cancel kills"
 //! atomically `take()` the same `Mutex<Option<Child>>`, only one path
 //! ever owns the child at a time — there's no PID-reuse window left.
 
 use std::io::Read;
+#[cfg(windows)]
+use std::process::Command;
 use std::process::{Child, Output};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use crate::errors::{AppError, AppResult};
 
 static CURRENT_LOGIN: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
 pub type PipeObserver = Arc<dyn Fn(&[u8]) + Send + Sync + 'static>;
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Polling cadence for the spawn-site loop when peeking at the in-flight
 /// child via `try_wait`. 200 ms is short enough that login completion
@@ -70,14 +78,24 @@ fn lock() -> MutexGuard<'static, Option<Child>> {
 /// Without the `wait` we'd leak a zombie per cancelled login (Unix
 /// `Child` has no reaping `Drop`).
 ///
-/// **Windows caveat:** if `TerminateProcess` fails (e.g. the child is
-/// running elevated and the app isn't), `Child::kill` returns Err and
-/// the subsequent `wait` blocks until the child exits naturally —
-/// which for a stuck `codex login` could be the OAuth timeout
-/// (minutes). In practice the app spawns codex login as a non-elevated
-/// child of itself so access-denied shouldn't fire; if it ever does
-/// we'd want to bound the wait or move it to a detached thread.
-/// Tracking that as a follow-up rather than blocking on it here.
+/// On Windows, Codex may be reached through a `.cmd` shim. Killing only
+/// that wrapper leaves the real `codex app-server` child alive, so use
+/// `taskkill /T` while still anchoring on the live `Child` handle.
+#[cfg(windows)]
+pub(crate) fn drop_killed_child(mut child: Child) {
+    let mut taskkill = Command::new("taskkill");
+    taskkill
+        .arg("/F")
+        .arg("/T")
+        .arg("/PID")
+        .arg(child.id().to_string())
+        .creation_flags(CREATE_NO_WINDOW);
+    let _ = taskkill.output();
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(not(windows))]
 pub(crate) fn drop_killed_child(mut child: Child) {
     let _ = child.kill();
     let _ = child.wait();

@@ -7,10 +7,14 @@ use crate::models::QuotaSummary;
 use crate::platform;
 
 use super::fs_ops::{copy_entry, remove_path};
-use super::metadata::{load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota};
+use super::metadata::{
+    load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota,
+    sync_root_metadata_if_current_profile,
+};
 use super::paths::{
     get_backup_root, get_codex_home, get_refresh_runtime_dir, validate_profile_name,
 };
+use super::profiles::resolve_current_profile;
 use super::runtime_isolation::{
     prune_runtime_extra_features, seed_runtime_shared_assets, RUNTIME_AUTH_FILENAME,
     RUNTIME_PROFILE_METADATA_FILENAME,
@@ -94,6 +98,18 @@ fn prepare_refresh_runtime_home(codex_home: &Path, profile_dir: &Path) -> AppRes
     Ok(runtime_home)
 }
 
+fn sync_live_auth_if_current_profile(
+    profile_name: &str,
+    codex_home: &Path,
+    refreshed_auth_path: &Path,
+) -> AppResult<()> {
+    let backup_root = get_backup_root(Some(codex_home));
+    if resolve_current_profile(&backup_root).as_deref() == Some(profile_name) {
+        copy_entry(refreshed_auth_path, &codex_home.join(RUNTIME_AUTH_FILENAME))?;
+    }
+    Ok(())
+}
+
 /// Best-effort attempt to refresh a profile's quota by hitting the ChatGPT
 /// backend directly. Returns:
 ///   * `Ok(Some(path))` — quota was refreshed via HTTP and persisted.
@@ -139,6 +155,11 @@ fn try_refresh_via_chatgpt_api(
             return Ok(None);
         }
     };
+    sync_live_auth_if_current_profile(
+        profile_name,
+        codex_home,
+        &profile_dir.join(RUNTIME_AUTH_FILENAME),
+    )?;
     let plan_type_from_api = snapshot.plan_type.clone();
     let now_ms = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -155,7 +176,9 @@ fn try_refresh_via_chatgpt_api(
         now_ms,
         Some(codex_home),
     )?;
-    sync_profile_metadata_from_auth(profile_name, plan_type_from_api, Some(codex_home))?;
+    let metadata =
+        sync_profile_metadata_from_auth(profile_name, plan_type_from_api, Some(codex_home))?;
+    sync_root_metadata_if_current_profile(profile_name, &metadata, Some(codex_home))?;
     super::profiles_index::load_profiles_index(Some(codex_home))?;
     Ok(Some(profile_dir.to_string_lossy().into_owned()))
 }
@@ -218,6 +241,7 @@ fn refresh_via_app_server(
         ));
     }
     copy_entry(&refreshed_auth_path, auth_path)?;
+    sync_live_auth_if_current_profile(profile_name, codex_home, &refreshed_auth_path)?;
 
     let now_ms = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -229,7 +253,9 @@ fn refresh_via_app_server(
         now_ms,
         Some(codex_home),
     )?;
-    sync_profile_metadata_from_auth(profile_name, snapshot.plan_type, Some(codex_home))?;
+    let metadata =
+        sync_profile_metadata_from_auth(profile_name, snapshot.plan_type, Some(codex_home))?;
+    sync_root_metadata_if_current_profile(profile_name, &metadata, Some(codex_home))?;
     super::profiles_index::load_profiles_index(Some(codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())

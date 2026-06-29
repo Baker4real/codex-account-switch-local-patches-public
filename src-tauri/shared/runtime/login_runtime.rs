@@ -21,7 +21,7 @@ use std::path::Path;
 use crate::errors::{AppError, AppResult};
 use crate::platform::hooks::PlatformHooks;
 
-use super::metadata::sync_profile_metadata_from_auth;
+use super::metadata::{sync_profile_metadata_from_auth, sync_root_metadata_if_current_profile};
 use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
@@ -208,7 +208,8 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
     // Login flow has no fresher plan signal than the new id_token codex
     // just wrote, so let `sync_profile_metadata_from_auth` re-derive
     // plan / label from disk. No API override needed.
-    sync_profile_metadata_from_auth(&profile_name, None, Some(&codex_home))?;
+    let metadata = sync_profile_metadata_from_auth(&profile_name, None, Some(&codex_home))?;
+    sync_root_metadata_if_current_profile(&profile_name, &metadata, Some(&codex_home))?;
     load_profiles_index(Some(&codex_home))?;
 
     // Best-effort: keep the runtime dir around so the next login on this
@@ -345,6 +346,11 @@ mod tests {
         .unwrap();
         // Live ~/.codex/auth.json starts stale.
         fs::write(codex_home.join("auth.json"), "LIVE_STALE\n").unwrap();
+        fs::write(
+            codex_home.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"stale@example.com"}"#,
+        )
+        .unwrap();
         let hooks = FakeLoginHooks::new(FAKE_AUTH_JSON);
 
         login_profile_with_home(&hooks, "a", Some(&codex_home), &runtime_home).unwrap();
@@ -353,6 +359,15 @@ mod tests {
             fs::read_to_string(codex_home.join("auth.json")).unwrap(),
             FAKE_AUTH_JSON,
             "active-profile login should also refresh ~/.codex/auth.json"
+        );
+        let root_metadata: crate::models::ProfileMetadata =
+            serde_json::from_str(&fs::read_to_string(codex_home.join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(root_metadata.folder_name.as_deref(), Some("a"));
+        assert_ne!(
+            root_metadata.account_label.as_deref(),
+            Some("stale@example.com"),
+            "active-profile login should also refresh ~/.codex/profile.json"
         );
     }
 
