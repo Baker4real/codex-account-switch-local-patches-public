@@ -130,11 +130,11 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 
 - `Switch` writes current root state back to the active profile, snapshots `auth.json`, overlays the target profile into root state, updates active markers, and relaunches Codex if needed
 - `Login` normally runs `codex login` against the current root `CODEX_HOME`, waits for login completion, then writes the refreshed root state back into the active profile
-- Local Windows patched login routes profile `b` through `codex app-server` and opens the returned `account/login/start` auth URL in Chrome; profile `c` uses the same app-server flow but opens Edge.
-- The patched browser-login flow no longer passes `--user-data-dir` or creates dedicated browser profile directories. Chrome / Edge handle the URL with the user's normal browser state. Existing `login_browser_profiles` directories from older local builds are disposable cleanup leftovers.
+- Local Windows patched login routes only the profile whose known account label matches `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` through `codex app-server`, then opens the returned `account/login/start` auth URL in Edge.
+- The patched browser-login flow no longer passes `--user-data-dir`, `--new-window`, or creates dedicated browser profile directories. Edge handles the URL with the user's normal browser state. Existing `login_browser_profiles` directories from older local builds are disposable cleanup leftovers.
 - Because normal browser state can already be logged into the wrong ChatGPT account, per-card login checks the new OAuth identity against any known identity in the target profile before replacing `auth.json`. A mismatch fails before touching the target profile or live root auth.
-- Browser path overrides `CODEX_SWITCH_CHROME_PATH` / `CODEX_SWITCH_EDGE_PATH` are still supported when the common install paths do not find the browser.
-- Other profiles keep the standard `codex login` path so upstream behavior remains the default outside the explicit local profile split
+- Browser path override `CODEX_SWITCH_EDGE_PATH` is still supported when common install paths do not find Edge.
+- Other profiles keep the standard `codex login` path so upstream behavior remains the default outside the forced-Edge account label.
 - `Open Codex` activates the Codex desktop app if already running, or launches it if not
 - `Add Profiles` creates a new profile directory and writes template `auth.json` plus `profile.json`
 - `Contact Us` opens the project GitHub repository

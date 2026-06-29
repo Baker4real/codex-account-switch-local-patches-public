@@ -26,4 +26,4 @@ This project stores and switches tokens locally, but login and quota refresh do 
 
 Main risks are accidental token exposure through Git, screenshots, shared terminals, insecure backups, or loose Windows ACLs.
 
-The local Windows `b` / `c` browser-login patch intentionally reuses the user's normal Chrome / Edge state rather than creating dedicated browser profiles. That removes the old browser-profile cache surface, but it means the browser's currently signed-in ChatGPT account is the identity that OAuth will return. The app must keep the pre-write identity check so a known profile is not silently overwritten by a different browser account.
+The local Windows forced-Edge browser-login patch intentionally reuses the user's normal Edge state for the profile whose known account label matches `FORCED_EDGE_LOGIN_ACCOUNT_LABEL`, rather than creating dedicated browser profiles. That removes the old browser-profile cache surface, but it means Edge's currently signed-in ChatGPT account is the identity that OAuth will return. The app must keep the pre-write identity check so a known profile is not silently overwritten by a different browser account.
