@@ -145,6 +145,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - When an upstream release exists, merge the upstream tag into this source tree and keep the local browser-login and update-request patches before rebuilding
 - The local update checker prefers `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe`, then `pwsh`, then `powershell`, because Windows PowerShell 5.x is blocked on the target host
 - The local portable build command is `npm run tauri:build:portable`; the installed target is `D:\Codex\apps\codex_switch\codex_switch.exe`
+- 本地 MSVC 便携构建命令是 `npm run tauri:build:windows:portable`；它需要 Rust target `x86_64-pc-windows-msvc`、Visual Studio Build Tools C++ 工具链和 Windows SDK，产物写入 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`
 - A GNU/Tauri local portable replacement must copy both `codex_switch.exe` and the adjacent `WebView2Loader.dll` into `D:\Codex\apps\codex_switch\`
 
 ## Windows Codex CLI discovery
