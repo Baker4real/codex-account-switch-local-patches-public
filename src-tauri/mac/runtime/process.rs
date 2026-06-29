@@ -7,9 +7,9 @@ use std::thread;
 use std::time::Duration;
 
 use crate::errors::{AppError, AppResult};
+use crate::models::CodexCliCandidate;
 use crate::platform::hooks::PlatformHooks;
 use crate::shared::codex_app_server::{fetch_account_snapshot, AppServerSnapshot};
-use crate::models::CodexCliCandidate;
 use crate::shared::codex_cli_path::CodexPathResolver;
 pub use crate::shared::codex_cli_path::{InstallState, RealCodexPathSource};
 use crate::shared::login_cancel::wait_for_login_or_cancel;
@@ -204,10 +204,7 @@ pub(super) fn validate_user_codex_cli_path(
     Ok(candidate)
 }
 
-pub fn set_user_codex_cli_path(
-    codex_home: Option<&Path>,
-    raw_input: &str,
-) -> AppResult<PathBuf> {
+pub fn set_user_codex_cli_path(codex_home: Option<&Path>, raw_input: &str) -> AppResult<PathBuf> {
     let resolved = validate_user_codex_cli_path(codex_home, raw_input)?;
     let mut state = load_install_state(codex_home);
     let next = Some(resolved.to_string_lossy().into_owned());
@@ -234,10 +231,7 @@ pub struct MacosCodexPathResolver;
 pub static MACOS_CODEX_PATH_RESOLVER: MacosCodexPathResolver = MacosCodexPathResolver;
 
 impl CodexPathResolver for MacosCodexPathResolver {
-    fn resolve_with_source(
-        &self,
-        codex_home: &Path,
-    ) -> Option<(PathBuf, RealCodexPathSource)> {
+    fn resolve_with_source(&self, codex_home: &Path) -> Option<(PathBuf, RealCodexPathSource)> {
         resolve_real_codex_cli_with_source(Some(codex_home))
     }
 
@@ -661,6 +655,7 @@ impl PlatformHooks for MacosPlatformHooks {
         &self,
         cli_codex_home: &Path,
         runtime_codex_home: &Path,
+        _profile_name: Option<&str>,
     ) -> AppResult<()> {
         run_codex_login(cli_codex_home, runtime_codex_home)
     }
@@ -682,8 +677,8 @@ impl PlatformHooks for MacosPlatformHooks {
 mod tests {
     use super::{
         build_app_server_command, codex_app_candidates, codex_cli_from_app_bundle,
-        discover_real_codex_cli_path, resolve_real_codex_cli_with_source,
-        set_user_codex_cli_path, validate_user_codex_cli_path, RealCodexPathSource,
+        discover_real_codex_cli_path, resolve_real_codex_cli_with_source, set_user_codex_cli_path,
+        validate_user_codex_cli_path, RealCodexPathSource,
     };
     use crate::macos::cli_shim::real_codex_resolver_path;
     use std::fs;

@@ -605,8 +605,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir()
-            .join(format!("codex-switch-metadata-{name}-{unique}"));
+        let path = std::env::temp_dir().join(format!("codex-switch-metadata-{name}-{unique}"));
         std::fs::create_dir_all(&path).unwrap();
         path
     }

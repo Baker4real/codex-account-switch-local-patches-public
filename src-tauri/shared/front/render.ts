@@ -401,10 +401,13 @@ export function showToast(message: string, isError = false): void {
 }
 
 export function showUpdateDialog(update: UpdateCheckResponse): void {
-  elements.updateDialogCopy.textContent = t(state.locale, "updateDialogCopy", {
+  const copy = t(state.locale, "updateDialogCopy", {
     current: update.current_version,
     latest: update.latest_version ?? "--",
   });
+  elements.updateDialogCopy.textContent = update.local_patch_required
+    ? `${copy}\n\n${t(state.locale, "updateDialogLocalPatchRequired")}`
+    : copy;
 
   if (!elements.updateDialog.open) {
     elements.updateDialog.showModal();

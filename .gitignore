@@ -24,4 +24,7 @@ agent/
 codex_history/
 .codex/
 .claude/
-docs/
+.scratch/run-evidence/
+docs/*
+!docs/agents/
+!docs/agents/**

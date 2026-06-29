@@ -108,6 +108,8 @@ const enMessages = {
   failedToCheckUpdate: "Failed to check for updates.",
   updateDialogTitle: "New version available",
   updateDialogCopy: "Version {latest} is available. Current version: {current}.",
+  updateDialogLocalPatchRequired:
+    "This installed build contains local fixes. Merge the upstream tag into this source tree and rebuild before replacing the app, otherwise the local browser-login and PowerShell update fixes will be lost.",
   updateDialogLater: "Later",
   updateDialogOpen: "View release",
   openedXiaohongshu: "Opened Xiaohongshu",
@@ -368,6 +370,8 @@ const messages: Record<Locale, Messages> = {
     failedToCheckUpdate: "检查更新失败。",
     updateDialogTitle: "发现新版本更新",
     updateDialogCopy: "新版本 {latest} 已可用，当前版本为 {current}。",
+    updateDialogLocalPatchRequired:
+      "当前安装版包含本地修复。请先把上游 tag 合并到这份源码后重新构建，再替换应用；否则本地的分浏览器登录和 PowerShell 更新修复会被覆盖。",
     updateDialogLater: "稍后",
     updateDialogOpen: "查看更新",
     openedXiaohongshu: "已打开小红书",

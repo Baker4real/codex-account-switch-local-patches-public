@@ -80,6 +80,7 @@ export interface UpdateCheckResponse {
   current_version: string;
   latest_version: string | null;
   has_update: boolean;
+  local_patch_required: boolean;
   release_url: string | null;
   notes: string | null;
   checked_url: string;

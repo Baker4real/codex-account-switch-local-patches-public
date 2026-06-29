@@ -38,10 +38,15 @@ pub fn check_update(update_url: &str) -> AppResult<UpdateCheckResponse> {
         current_version,
         latest_version: Some(latest_version),
         has_update,
+        local_patch_required: has_update && is_local_patch_protected_build(),
         release_url,
         notes,
         checked_url,
     })
+}
+
+fn is_local_patch_protected_build() -> bool {
+    cfg!(windows)
 }
 
 fn normalize_update_url(update_url: &str) -> AppResult<String> {
@@ -151,6 +156,11 @@ fn fetch_update_json(url: &str) -> AppResult<String> {
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
+    const POWERSHELL_CANDIDATES: [&str; 3] = [
+        r"D:\Codex\tools\PowerShell\7.6.3\pwsh.exe",
+        "pwsh",
+        "powershell",
+    ];
     let script = format!(
         concat!(
             "$ProgressPreference='SilentlyContinue'; ",
@@ -161,25 +171,39 @@ fn fetch_update_json(url: &str) -> AppResult<String> {
         UPDATE_USER_AGENT,
     );
 
-    let output = Command::new("powershell")
-        .args([
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .env("CODEX_SWITCH_UPDATE_URL", url)
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .map_err(|error| {
-            AppError::new(
-                "UPDATE_REQUEST_FAILED",
-                format!("Failed to start update request: {error}"),
-            )
-        })?;
+    let mut last_start_error = None;
+    for candidate in POWERSHELL_CANDIDATES {
+        let output = Command::new(candidate)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
+            .env("CODEX_SWITCH_UPDATE_URL", url)
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
 
-    parse_fetch_output(output.status.success(), &output.stdout, &output.stderr)
+        match output {
+            Ok(output) => {
+                return parse_fetch_output(output.status.success(), &output.stdout, &output.stderr)
+            }
+            Err(error) => last_start_error = Some((candidate, error)),
+        }
+    }
+
+    let message = match last_start_error {
+        Some((candidate, error)) => {
+            format!("Failed to start update request via {candidate}: {error}")
+        }
+        None => {
+            "Failed to start update request: no PowerShell executable was configured.".to_string()
+        }
+    };
+    Err(AppError::new("UPDATE_REQUEST_FAILED", message))
 }
 
 fn parse_fetch_output(success: bool, stdout: &[u8], stderr: &[u8]) -> AppResult<String> {

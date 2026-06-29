@@ -321,6 +321,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
           current_version: "1.5.0",
           latest_version: "1.5.0",
           has_update: false,
+          local_patch_required: false,
           release_url: "https://github.com/Cmochance/Codex_Account_Switch/releases",
           notes: null,
           checked_url: "preview",

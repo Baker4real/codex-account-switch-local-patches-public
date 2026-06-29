@@ -22,6 +22,6 @@ Treat them as secrets.
 
 ## Threat model summary
 
-This project only performs local file operations. It does not transmit tokens over network by design.
+This project stores and switches tokens locally, but login and quota refresh do contact official OpenAI / ChatGPT endpoints through the Codex CLI, ChatGPT Web API, or `codex app-server`. It should not send tokens to third-party services by design.
 
-Main risk is accidental token exposure through Git, screenshots, shared terminals, insecure backups, or loose Windows ACLs.
+Main risk is accidental token exposure through Git, screenshots, shared terminals, browser profile directories used during OAuth login, insecure backups, or loose Windows ACLs.

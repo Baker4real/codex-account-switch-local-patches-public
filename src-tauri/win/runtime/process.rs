@@ -9,9 +9,11 @@ use std::thread;
 use std::time::Duration;
 
 use crate::errors::{AppError, AppResult};
-use crate::platform::hooks::PlatformHooks;
-use crate::shared::codex_app_server::{fetch_account_snapshot, AppServerSnapshot};
 use crate::models::CodexCliCandidate;
+use crate::platform::hooks::PlatformHooks;
+use crate::shared::codex_app_server::{
+    fetch_account_snapshot, run_chatgpt_browser_login, AppServerSnapshot,
+};
 use crate::shared::codex_cli_path::CodexPathResolver;
 pub use crate::shared::codex_cli_path::{InstallState, RealCodexPathSource};
 use crate::shared::login_cancel::wait_for_login_or_cancel;
@@ -31,6 +33,19 @@ static WINDOWS_PLATFORM_HOOKS: WindowsPlatformHooks = WindowsPlatformHooks;
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum AppLaunchTarget {
     WindowsStore(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginBrowser {
+    Chrome,
+    Edge,
+}
+
+#[derive(Debug, Clone)]
+struct LoginBrowserLaunch {
+    browser: LoginBrowser,
+    executable: PathBuf,
+    profile_dir: PathBuf,
 }
 
 pub struct WindowsPlatformHooks;
@@ -128,6 +143,53 @@ fn push_candidate(candidates: &mut Vec<PathBuf>, path: PathBuf) {
     }
 }
 
+fn push_versioned_codex_bins<F>(bin_root: PathBuf, push: &mut F)
+where
+    F: FnMut(PathBuf),
+{
+    let Ok(entries) = fs::read_dir(bin_root) else {
+        return;
+    };
+    let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+    });
+    entries.reverse();
+
+    for entry in entries {
+        if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+            push(entry.path().join("codex.exe"));
+        }
+    }
+}
+
+fn push_official_codex_cli_candidates<F>(push: &mut F)
+where
+    F: FnMut(PathBuf),
+{
+    if let Some(codex_exe) = env::var_os("CODEX_EXE") {
+        push(PathBuf::from(codex_exe));
+    }
+
+    if let Some(install_dir) = env::var_os("CODEX_INSTALL_DIR") {
+        let install_dir = PathBuf::from(install_dir);
+        push(install_dir.join("codex.exe"));
+        push_versioned_codex_bins(install_dir, push);
+    }
+
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        let bin_root = PathBuf::from(local_app_data)
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin");
+        push(bin_root.join("codex.exe"));
+        push_versioned_codex_bins(bin_root, push);
+    }
+}
+
 fn managed_codex_shim_path(codex_home: Option<&Path>) -> PathBuf {
     codex_home
         .map(Path::to_path_buf)
@@ -147,6 +209,11 @@ pub(super) fn hide_console_window(command: &mut Command) -> &mut Command {
 
 pub(super) fn discover_real_codex_cli_path(managed_shim_path: Option<&Path>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
+    let mut push_candidate_path = |path: PathBuf| {
+        push_real_codex_candidate(&mut candidates, path, managed_shim_path);
+    };
+
+    push_official_codex_cli_candidates(&mut push_candidate_path);
 
     if cfg!(target_os = "windows") {
         let mut command = Command::new("where");
@@ -159,11 +226,7 @@ pub(super) fn discover_real_codex_cli_path(managed_shim_path: Option<&Path>) -> 
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
                 {
-                    push_real_codex_candidate(
-                        &mut candidates,
-                        PathBuf::from(line),
-                        managed_shim_path,
-                    );
+                    push_candidate_path(PathBuf::from(line));
                 }
             }
         }
@@ -176,11 +239,13 @@ pub(super) fn discover_real_codex_cli_path(managed_shim_path: Option<&Path>) -> 
             } else {
                 entry.join("codex")
             };
-            push_real_codex_candidate(&mut candidates, candidate, managed_shim_path);
+            push_candidate_path(candidate);
         }
     }
 
-    candidates.into_iter().next()
+    candidates
+        .into_iter()
+        .find(|path| probe_codex_version(path).is_some())
 }
 
 fn windows_store_shell_target(app_id: &str) -> String {
@@ -281,14 +346,15 @@ pub(super) fn resolve_real_codex_cli_with_source(
     let managed_shim_path = managed_codex_shim_path(codex_home);
     let state = load_install_state(codex_home);
 
-    // User override wins. If it doesn't pass validation any more (file
-    // moved, AV pruned the .cmd, etc.) we silently fall through to the
-    // normal discovery chain so the user isn't permanently stuck — the
-    // override stays persisted so a stable retry will pick it up if the
-    // file reappears.
+    // User override wins only while runnable. If it doesn't pass
+    // validation any more (file moved, AV pruned the .cmd, shim points
+    // at a deleted runtime, etc.) we silently fall through to the normal
+    // discovery chain so the user isn't permanently stuck. The override
+    // stays persisted so a stable retry will pick it up if it recovers.
     if let Some(raw_user_path) = state.user_codex_path.as_ref().map(PathBuf::from) {
         if let Some(resolved_path) = resolve_windows_invokable_path(&raw_user_path)
             .filter(|path| is_acceptable_real_codex_cli_path(path, Some(&managed_shim_path)))
+            .filter(|path| probe_codex_version(path).is_some())
         {
             return Some((resolved_path, RealCodexPathSource::UserOverride));
         }
@@ -298,6 +364,7 @@ pub(super) fn resolve_real_codex_cli_with_source(
     if let Some(raw_path) = state.real_codex_path.as_ref().map(PathBuf::from) {
         if let Some(resolved_path) = resolve_windows_invokable_path(&raw_path)
             .filter(|path| is_acceptable_real_codex_cli_path(path, Some(&managed_shim_path)))
+            .filter(|path| probe_codex_version(path).is_some())
         {
             persist_real_codex_path(codex_home, &mut state, Some(&resolved_path));
             return Some((resolved_path, RealCodexPathSource::InstallState));
@@ -372,6 +439,164 @@ fn build_login_command(real_codex_path: &Path, runtime_codex_home: &Path) -> Com
     command
 }
 
+fn login_browser_for_profile(profile_name: Option<&str>) -> Option<LoginBrowser> {
+    match profile_name
+        .map(|name| name.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("b") => Some(LoginBrowser::Chrome),
+        Some("c") => Some(LoginBrowser::Edge),
+        _ => None,
+    }
+}
+
+impl LoginBrowser {
+    fn slug(self) -> &'static str {
+        match self {
+            LoginBrowser::Chrome => "chrome",
+            LoginBrowser::Edge => "edge",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            LoginBrowser::Chrome => "Chrome",
+            LoginBrowser::Edge => "Edge",
+        }
+    }
+
+    fn override_env_var(self) -> &'static str {
+        match self {
+            LoginBrowser::Chrome => "CODEX_SWITCH_CHROME_PATH",
+            LoginBrowser::Edge => "CODEX_SWITCH_EDGE_PATH",
+        }
+    }
+}
+
+fn resolve_login_browser_launch(
+    cli_codex_home: &Path,
+    profile_name: Option<&str>,
+) -> AppResult<Option<LoginBrowserLaunch>> {
+    let Some(browser) = login_browser_for_profile(profile_name) else {
+        return Ok(None);
+    };
+    let Some(executable) = resolve_login_browser_executable(browser) else {
+        return Err(AppError::new(
+            "LOGIN_BROWSER_NOT_FOUND",
+            format!(
+                "{} was not found. Install it or set {} before logging into this profile.",
+                browser.label(),
+                browser.override_env_var()
+            ),
+        ));
+    };
+    let profile_dir =
+        login_browser_profile_dir(cli_codex_home, profile_name.unwrap_or("current"), browser);
+
+    Ok(Some(LoginBrowserLaunch {
+        browser,
+        executable,
+        profile_dir,
+    }))
+}
+
+fn resolve_login_browser_executable(browser: LoginBrowser) -> Option<PathBuf> {
+    env::var_os(browser.override_env_var())
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+        .or_else(|| {
+            common_login_browser_paths(browser)
+                .into_iter()
+                .find(|path| path.is_file())
+        })
+}
+
+fn common_login_browser_paths(browser: LoginBrowser) -> Vec<PathBuf> {
+    let mut paths = match browser {
+        LoginBrowser::Chrome => vec![
+            PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+        ],
+        LoginBrowser::Edge => vec![
+            PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+            PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+        ],
+    };
+
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
+        let local_app_data = PathBuf::from(local_app_data);
+        match browser {
+            LoginBrowser::Chrome => paths.push(
+                local_app_data
+                    .join("Google")
+                    .join("Chrome")
+                    .join("Application")
+                    .join("chrome.exe"),
+            ),
+            LoginBrowser::Edge => paths.push(
+                local_app_data
+                    .join("Microsoft")
+                    .join("Edge")
+                    .join("Application")
+                    .join("msedge.exe"),
+            ),
+        }
+    }
+
+    paths
+}
+
+fn login_browser_profile_dir(
+    cli_codex_home: &Path,
+    profile_name: &str,
+    browser: LoginBrowser,
+) -> PathBuf {
+    cli_codex_home
+        .join("account_backup")
+        .join("windows")
+        .join("login_browser_profiles")
+        .join(format!(
+            "{}-{}",
+            sanitize_profile_segment(profile_name),
+            browser.slug()
+        ))
+}
+
+fn sanitize_profile_segment(profile_name: &str) -> String {
+    let sanitized = profile_name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+
+    if sanitized.is_empty() {
+        "current".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn open_login_url_in_browser(launch: &LoginBrowserLaunch, url: &str) -> std::io::Result<()> {
+    fs::create_dir_all(&launch.profile_dir)?;
+    let mut command = Command::new(&launch.executable);
+    command
+        .arg(format!(
+            "--user-data-dir={}",
+            launch.profile_dir.to_string_lossy()
+        ))
+        .arg("--new-window")
+        .arg(url);
+    hide_console_window(&mut command);
+    command.spawn().map(|_| ())
+}
+
 pub fn fetch_account_via_app_server(
     cli_codex_home: &Path,
     runtime_codex_home: &Path,
@@ -387,13 +612,31 @@ pub fn fetch_account_via_app_server(
     fetch_account_snapshot(command)
 }
 
-pub fn run_codex_login(cli_codex_home: &Path, runtime_codex_home: &Path) -> AppResult<()> {
+pub fn run_codex_login(
+    cli_codex_home: &Path,
+    runtime_codex_home: &Path,
+    profile_name: Option<&str>,
+) -> AppResult<()> {
     let Some(real_codex_path) = resolve_real_codex_cli(Some(cli_codex_home)) else {
         return Err(AppError::new(
             "REAL_CODEX_NOT_FOUND",
             "Real Codex CLI path not found. Set the codex CLI location in the dashboard before logging in.",
         ));
     };
+    if let Some(launch) = resolve_login_browser_launch(cli_codex_home, profile_name)? {
+        let command = build_app_server_command(&real_codex_path, runtime_codex_home);
+        return run_chatgpt_browser_login(command, |auth_url| {
+            open_login_url_in_browser(&launch, auth_url).map_err(|error| {
+                AppError::new(
+                    "LOGIN_BROWSER_OPEN_FAILED",
+                    format!(
+                        "Failed to open login URL in {}: {error}",
+                        launch.browser.label()
+                    ),
+                )
+            })
+        });
+    }
 
     // Pipe stdio so wait_with_output() captures stderr/stdout the same
     // way the previous `.output()` call did — we surface those bytes in
@@ -457,16 +700,22 @@ pub(super) fn validate_user_codex_cli_path(
             "That path is the codex_switch managed shim or a Windows Apps alias; pick the real codex CLI binary instead.",
         ));
     }
+    if probe_codex_version(&resolved).is_none() {
+        return Err(AppError::new(
+            "CODEX_CLI_PATH_NOT_RUNNABLE",
+            format!(
+                "{} exists but did not run `codex --version` successfully.",
+                resolved.display()
+            ),
+        ));
+    }
 
     Ok(resolved)
 }
 
 /// Persist a user override for the real codex CLI path. Returns the
 /// canonicalized path that was saved.
-pub fn set_user_codex_cli_path(
-    codex_home: Option<&Path>,
-    raw_input: &str,
-) -> AppResult<PathBuf> {
+pub fn set_user_codex_cli_path(codex_home: Option<&Path>, raw_input: &str) -> AppResult<PathBuf> {
     let resolved = validate_user_codex_cli_path(codex_home, raw_input)?;
     let mut state = load_install_state(codex_home);
     let next = Some(resolved.to_string_lossy().into_owned());
@@ -494,10 +743,7 @@ pub struct WindowsCodexPathResolver;
 pub static WINDOWS_CODEX_PATH_RESOLVER: WindowsCodexPathResolver = WindowsCodexPathResolver;
 
 impl CodexPathResolver for WindowsCodexPathResolver {
-    fn resolve_with_source(
-        &self,
-        codex_home: &Path,
-    ) -> Option<(PathBuf, RealCodexPathSource)> {
+    fn resolve_with_source(&self, codex_home: &Path) -> Option<(PathBuf, RealCodexPathSource)> {
         resolve_real_codex_cli_with_source(Some(codex_home))
     }
 
@@ -538,8 +784,14 @@ pub fn suggested_codex_cli_paths(codex_home: Option<&Path>) -> Vec<PathBuf> {
         let base = PathBuf::from(local_app_data);
         push(base.join("Programs").join("codex").join("codex.exe"));
         push(base.join("Programs").join("codex").join("codex.cmd"));
-        push(base.join("Programs").join("codex").join("bin").join("codex.cmd"));
+        push(
+            base.join("Programs")
+                .join("codex")
+                .join("bin")
+                .join("codex.cmd"),
+        );
     }
+    push_official_codex_cli_candidates(&mut push);
     if let Some(app_data) = env::var_os("APPDATA") {
         let npm_base = PathBuf::from(app_data).join("npm");
         push(npm_base.join("codex.cmd"));
@@ -706,8 +958,9 @@ impl PlatformHooks for WindowsPlatformHooks {
         &self,
         cli_codex_home: &Path,
         runtime_codex_home: &Path,
+        profile_name: Option<&str>,
     ) -> AppResult<()> {
-        run_codex_login(cli_codex_home, runtime_codex_home)
+        run_codex_login(cli_codex_home, runtime_codex_home, profile_name)
     }
 
     fn fetch_account_via_app_server(
@@ -738,14 +991,15 @@ impl PlatformHooks for WindowsPlatformHooks {
 mod tests {
     use super::{
         build_app_server_command, discover_real_codex_cli_path, is_acceptable_real_codex_cli_path,
-        load_install_state, probe_codex_version, resolve_real_codex_cli,
-        resolve_windows_app_target, windows_store_shell_target, AppLaunchTarget, InstallState,
+        load_install_state, login_browser_for_profile, login_browser_profile_dir,
+        resolve_real_codex_cli, resolve_windows_app_target, sanitize_profile_segment,
+        windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
         WINDOWS_STORE_APP_ID,
     };
     use crate::windows::env_guard;
     use serde_json::to_string_pretty;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_codex_home(name: &str) -> PathBuf {
@@ -754,6 +1008,68 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("codex-switch-process-{name}-{unique}"))
+    }
+
+    fn write_runnable_codex(path: &Path, version: &str) {
+        if cfg!(target_os = "windows") {
+            fs::write(path, format!("@echo off\r\necho {version}\r\n")).unwrap();
+        } else {
+            fs::write(path, format!("#!/bin/sh\necho {version}\n")).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(path).unwrap().permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(path, permissions).unwrap();
+            }
+        }
+    }
+
+    fn write_failing_codex(path: &Path) {
+        if cfg!(target_os = "windows") {
+            fs::write(path, "@echo off\r\nexit /b 127\r\n").unwrap();
+        } else {
+            fs::write(path, "#!/bin/sh\nexit 127\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                let mut permissions = fs::metadata(path).unwrap().permissions();
+                permissions.set_mode(0o755);
+                fs::set_permissions(path, permissions).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn login_browser_for_profile_routes_b_to_chrome_and_c_to_edge() {
+        assert_eq!(
+            login_browser_for_profile(Some("b")),
+            Some(LoginBrowser::Chrome)
+        );
+        assert_eq!(
+            login_browser_for_profile(Some(" C ")),
+            Some(LoginBrowser::Edge)
+        );
+        assert_eq!(login_browser_for_profile(Some("a")), None);
+        assert_eq!(login_browser_for_profile(None), None);
+    }
+
+    #[test]
+    fn login_browser_profile_dir_stays_under_codex_home() {
+        let codex_home = temp_codex_home("browser-profile-dir");
+        let profile_dir = login_browser_profile_dir(&codex_home, "B slot", LoginBrowser::Chrome);
+
+        assert!(profile_dir.starts_with(&codex_home));
+        assert!(profile_dir
+            .to_string_lossy()
+            .contains("login_browser_profiles"));
+        assert_eq!(sanitize_profile_segment("B slot"), "b_slot");
+        assert_eq!(
+            profile_dir.file_name().unwrap().to_string_lossy(),
+            "b_slot-chrome"
+        );
     }
 
     // Runs on the Linux `cargo test --lib` job (the win module compiles on
@@ -765,13 +1081,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probe_codex_version_rejects_missing_and_failing_captures_zero_exit() {
+        use super::probe_codex_version;
         use std::os::unix::fs::PermissionsExt;
 
         let codex_home = temp_codex_home("probe-runnable");
         fs::create_dir_all(&codex_home).unwrap();
 
         // (a) non-file path → None, never spawned.
-        assert_eq!(probe_codex_version(&codex_home.join("does-not-exist")), None);
+        assert_eq!(
+            probe_codex_version(&codex_home.join("does-not-exist")),
+            None
+        );
 
         let set_exec = |path: &std::path::Path| {
             let mut perm = fs::metadata(path).unwrap().permissions();
@@ -807,7 +1127,7 @@ mod tests {
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(managed_bin.join("codex.cmd"), "@echo off\r\n").unwrap();
         fs::write(npm_dir.join("codex"), "#!/bin/sh\n").unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        write_runnable_codex(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
 
         let original_path = std::env::var_os("PATH");
         std::env::set_var(
@@ -843,7 +1163,7 @@ mod tests {
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(managed_bin.join("codex.cmd"), "@echo off\r\n").unwrap();
         fs::write(alias_dir.join("codex.exe"), "alias").unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        write_runnable_codex(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
 
         let original_path = std::env::var_os("PATH");
         std::env::set_var(
@@ -871,7 +1191,7 @@ mod tests {
         fs::create_dir_all(&runtime_dir).unwrap();
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(npm_dir.join("codex"), "#!/bin/sh\n").unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        write_runnable_codex(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
         let install_state = InstallState {
             real_codex_path: Some(npm_dir.join("codex").to_string_lossy().into_owned()),
             path_added_by_installer: false,
@@ -909,7 +1229,7 @@ mod tests {
         fs::create_dir_all(&alias_dir).unwrap();
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(alias_dir.join("codex.exe"), "alias").unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        write_runnable_codex(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
         let install_state = InstallState {
             real_codex_path: Some(alias_dir.join("codex.exe").to_string_lossy().into_owned()),
             path_added_by_installer: false,
@@ -938,6 +1258,69 @@ mod tests {
             persisted_state.real_codex_path,
             Some(npm_dir.join("codex.cmd").to_string_lossy().into_owned())
         );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn resolve_real_codex_cli_skips_unrunnable_cached_shim_and_repairs_state() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("repair-broken-shim-state");
+        let runtime_dir = codex_home.join("account_backup").join("windows");
+        let npm_dir = codex_home.join("npm");
+        let local_app_data = codex_home.join("local-app-data");
+        let official_bin = local_app_data
+            .join("OpenAI")
+            .join("Codex")
+            .join("bin")
+            .join("current-runtime");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::create_dir_all(&npm_dir).unwrap();
+        fs::create_dir_all(&official_bin).unwrap();
+        let broken_shim = npm_dir.join("codex.cmd");
+        let official_codex = official_bin.join("codex.exe");
+        write_failing_codex(&broken_shim);
+        write_runnable_codex(&official_codex, "codex-cli 0.142.0-alpha.6");
+        let install_state = InstallState {
+            real_codex_path: Some(broken_shim.to_string_lossy().into_owned()),
+            path_added_by_installer: false,
+            user_codex_path: None,
+        };
+        fs::write(
+            runtime_dir.join("install_state.json"),
+            format!("{}\n", to_string_pretty(&install_state).unwrap()),
+        )
+        .unwrap();
+
+        std::env::set_var("PATH", &npm_dir);
+        std::env::set_var("LOCALAPPDATA", &local_app_data);
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+
+        let resolved = resolve_real_codex_cli(Some(&codex_home));
+        let persisted_state = load_install_state(Some(&codex_home));
+
+        assert_eq!(resolved, Some(official_codex.clone()));
+        assert_eq!(
+            persisted_state.real_codex_path,
+            Some(official_codex.to_string_lossy().into_owned())
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn validate_user_codex_cli_path_rejects_existing_but_unrunnable_path() {
+        let codex_home = temp_codex_home("reject-unrunnable-user-path");
+        fs::create_dir_all(&codex_home).unwrap();
+        let broken_shim = codex_home.join("codex.cmd");
+        write_failing_codex(&broken_shim);
+
+        let error = super::validate_user_codex_cli_path(
+            Some(&codex_home),
+            &broken_shim.display().to_string(),
+        )
+        .expect_err("broken shim should not be accepted");
+
+        assert_eq!(error.error_code, "CODEX_CLI_PATH_NOT_RUNNABLE");
         let _ = fs::remove_dir_all(&codex_home);
     }
 

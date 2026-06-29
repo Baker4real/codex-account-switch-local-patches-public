@@ -178,6 +178,7 @@ pub struct UpdateCheckResponse {
     pub current_version: String,
     pub latest_version: Option<String>,
     pub has_update: bool,
+    pub local_patch_required: bool,
     pub release_url: Option<String>,
     pub notes: Option<String>,
     pub checked_url: String,

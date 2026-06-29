@@ -37,8 +37,9 @@ struct CachedProfilesIndex {
 
 fn cache_slot() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, CachedProfilesIndex>>
 {
-    static SLOT: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, CachedProfilesIndex>>> =
-        OnceLock::new();
+    static SLOT: OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, CachedProfilesIndex>>,
+    > = OnceLock::new();
     SLOT.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 

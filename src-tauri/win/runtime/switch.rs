@@ -157,6 +157,7 @@ mod tests {
             &self,
             _cli_codex_home: &Path,
             _runtime_codex_home: &Path,
+            _profile_name: Option<&str>,
         ) -> AppResult<()> {
             unreachable!("not used in switch tests")
         }

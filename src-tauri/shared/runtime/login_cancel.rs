@@ -39,13 +39,14 @@
 
 use std::io::Read;
 use std::process::{Child, Output};
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::thread;
 use std::time::Duration;
 
 use crate::errors::{AppError, AppResult};
 
 static CURRENT_LOGIN: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+pub type PipeObserver = Arc<dyn Fn(&[u8]) + Send + Sync + 'static>;
 
 /// Polling cadence for the spawn-site loop when peeking at the in-flight
 /// child via `try_wait`. 200 ms is short enough that login completion
@@ -152,14 +153,27 @@ pub fn peek_login_status() -> std::io::Result<LoginPeek> {
 /// the orchestration here means there's exactly one place that knows
 /// the contract between "spawn site holds the child" and "cancel takes
 /// the child" — they both go through `peek_login_status` and the slot.
-pub fn wait_for_login_or_cancel(mut child: Child) -> AppResult<Output> {
+pub fn wait_for_login_or_cancel(child: Child) -> AppResult<Output> {
+    wait_for_login_or_cancel_with_stdout_observer(child, None)
+}
+
+pub fn wait_for_login_or_cancel_with_stdout_observer(
+    mut child: Child,
+    stdout_observer: Option<PipeObserver>,
+) -> AppResult<Output> {
     // Take the stdio handles before parking the Child in the slot. The
     // drainer threads own them for the duration of the process; when
     // the child dies (naturally or via cancel kill) the OS closes the
     // pipes, the drainers see EOF, and they hand back their accumulated
     // bytes via thread::join.
-    let stdout_drainer = child.stdout.take().map(spawn_pipe_drainer);
-    let stderr_drainer = child.stderr.take().map(spawn_pipe_drainer);
+    let stdout_drainer = child
+        .stdout
+        .take()
+        .map(|stdout| spawn_pipe_drainer(stdout, stdout_observer));
+    let stderr_drainer = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_pipe_drainer(stderr, None));
 
     register_login_child(child);
 
@@ -175,12 +189,8 @@ pub fn wait_for_login_or_cancel(mut child: Child) -> AppResult<Output> {
                         format!("`codex login` reap failed: {error}"),
                     )
                 })?;
-                let stdout = stdout_drainer
-                    .map(join_drainer)
-                    .unwrap_or_default();
-                let stderr = stderr_drainer
-                    .map(join_drainer)
-                    .unwrap_or_default();
+                let stdout = stdout_drainer.map(join_drainer).unwrap_or_default();
+                let stderr = stderr_drainer.map(join_drainer).unwrap_or_default();
                 return Ok(Output {
                     status,
                     stdout,
@@ -221,6 +231,7 @@ pub fn wait_for_login_or_cancel(mut child: Child) -> AppResult<Output> {
 
 fn spawn_pipe_drainer<P: Read + Send + 'static>(
     mut pipe: P,
+    observer: Option<PipeObserver>,
 ) -> std::thread::JoinHandle<Vec<u8>> {
     thread::spawn(move || {
         let mut buf = Vec::new();
@@ -236,7 +247,20 @@ fn spawn_pipe_drainer<P: Read + Send + 'static>(
         // This trade-off would be worth revisiting if the project ever
         // gains a structured logger so we could at least emit a
         // breadcrumb for the rare Err path.
-        let _ = pipe.read_to_end(&mut buf);
+        let mut chunk = [0_u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(bytes_read) => {
+                    let bytes = &chunk[..bytes_read];
+                    if let Some(observer) = &observer {
+                        observer(bytes);
+                    }
+                    buf.extend_from_slice(bytes);
+                }
+                Err(_) => break,
+            }
+        }
         buf
     })
 }
@@ -275,7 +299,7 @@ pub fn cancel_login_in_progress() -> bool {
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
     /// Tests in this module touch a process-wide static slot, so they
@@ -471,6 +495,38 @@ mod tests {
             target_bytes,
             "drainer should have collected the full {target_bytes}-byte payload"
         );
+        assert!(lock().is_none());
+    }
+
+    #[test]
+    fn wait_for_login_or_cancel_observes_stdout_chunks() {
+        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        drain_slot();
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observer_buffer = observed.clone();
+        let child = Command::new("/bin/sh")
+            .args(["-c", "printf 'hello observer'"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn shell");
+
+        let output = wait_for_login_or_cancel_with_stdout_observer(
+            child,
+            Some(Arc::new(move |chunk| {
+                observer_buffer.lock().unwrap().extend_from_slice(chunk);
+            })),
+        )
+        .expect("ok");
+
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "hello observer");
+        let observed_text = {
+            let observed = observed.lock().unwrap();
+            String::from_utf8_lossy(&observed).into_owned()
+        };
+        assert_eq!(observed_text, "hello observer");
         assert!(lock().is_none());
     }
 

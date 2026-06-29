@@ -57,7 +57,7 @@
 - Windows install fills any missing `a`-`d` `auth.json` files from `examples/account_backup/demo/auth.json.example`
 - If a real root `%CODEX_HOME%\auth.json` exists, Windows install overwrites `a/auth.json` with it
 - If a real root auth exists and no active profile is initialized yet, Windows install sets `a` as the active profile
-- Windows install records `real_codex_path` and `path_added_by_installer` in `install_state.json`
+- Windows install records `real_codex_path` and `path_added_by_installer` in `install_state.json` after resolving a runnable real Codex CLI
 
 ## Desktop app first-run bootstrap
 
@@ -123,16 +123,40 @@ The switch script itself does not create profile folders or generate missing aut
 The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HOME%\bin` is first in the user PATH.
 
 - `codex switch ...` routes to `%CODEX_HOME%\account_backup\windows\codex_switch_cli.exe shim switch ...`
-- Non-switch `codex` commands are forwarded to the previously resolved real Codex CLI path from `install_state.json`
+- Non-switch `codex` commands are forwarded to the previously resolved real Codex CLI path from `install_state.json` only while that path still passes `codex --version`
 - `%CODEX_HOME%\account_backup\windows` is reserved runtime state and excluded from profile listing / active-profile scans
 
 ## Windows desktop app actions
 
 - `Switch` writes current root state back to the active profile, snapshots `auth.json`, overlays the target profile into root state, updates active markers, and relaunches Codex if needed
-- `Login` runs `codex login` against the current root `CODEX_HOME`, waits for login completion, then writes the refreshed root state back into the active profile
+- `Login` normally runs `codex login` against the current root `CODEX_HOME`, waits for login completion, then writes the refreshed root state back into the active profile
+- Local Windows patched login routes profile `b` through `codex app-server` and opens the returned `account/login/start` auth URL in Chrome; profile `c` uses the same app-server flow but opens Edge
+- The patched browser-login flow stores browser user data under `%CODEX_HOME%\account_backup\windows\login_browser_profiles\<profile>-<browser>` and accepts `CODEX_SWITCH_CHROME_PATH` / `CODEX_SWITCH_EDGE_PATH` overrides when the common install paths do not find the browser
+- Other profiles keep the standard `codex login` path so upstream behavior remains the default outside the explicit local profile split
 - `Open Codex` activates the Codex desktop app if already running, or launches it if not
 - `Add Profiles` creates a new profile directory and writes template `auth.json` plus `profile.json`
 - `Contact Us` opens the project GitHub repository
+
+## Local Windows patch build
+
+- `LOCAL_PATCHES.md` is the upgrade checklist for this machine's installed local-patch build
+- When an upstream release exists, merge the upstream tag into this source tree and keep the local browser-login and update-request patches before rebuilding
+- The local update checker prefers `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe`, then `pwsh`, then `powershell`, because Windows PowerShell 5.x is blocked on the target host
+- The local portable build command is `npm run tauri:build:portable`; the installed target is `D:\Codex\apps\codex_switch\codex_switch.exe`
+- A GNU/Tauri local portable replacement must copy both `codex_switch.exe` and the adjacent `WebView2Loader.dll` into `D:\Codex\apps\codex_switch\`
+
+## Windows Codex CLI discovery
+
+Windows real-Codex resolution rejects the managed shim, Windows Apps aliases, and any existing user/cached path that cannot run `codex --version` successfully. Discovery includes:
+
+1. `CODEX_EXE`
+2. `CODEX_INSTALL_DIR\codex.exe`
+3. versioned subdirectories under `CODEX_INSTALL_DIR`
+4. `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
+5. versioned `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`
+6. PATH and the existing npm/common install locations
+
+If a cached `install_state.json` path becomes stale after a Codex upgrade, the resolver falls through to discovery and persists the first runnable replacement. `install_state.json` is machine-local: account/auth state syncs should copy root/profile auth and metadata, but preserve the target host's `%CODEX_HOME%\account_backup\windows\install_state.json`.
 
 ## Windows app discovery
 

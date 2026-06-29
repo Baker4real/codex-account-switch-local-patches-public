@@ -21,6 +21,7 @@ pub trait PlatformHooks: Send + Sync {
         &self,
         cli_codex_home: &Path,
         runtime_codex_home: &Path,
+        profile_name: Option<&str>,
     ) -> AppResult<()>;
     /// Drive `codex app-server` to fetch the live account plan + rate
     /// limits without paying for an LLM round-trip. Replaces the
