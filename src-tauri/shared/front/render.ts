@@ -375,20 +375,16 @@ function buildTokenStatusMarkup(
   const label = tokenHealthLabel(status.health);
   const updated = formatTokenObservedAge(status.last_refresh_at_ms ?? status.auth_updated_at_ms);
   const refreshExpiry = formatTokenDate(status.refresh_token_expires_at_ms);
-  const accessExpiry = formatTokenDate(status.access_token_expires_at_ms ?? status.id_token_expires_at_ms);
+  const authCacheAge = t(state.locale, "tokenAuthCacheUpdated", { value: updated });
   const expiryLine = refreshExpiry
     ? t(state.locale, "tokenRefreshExpiresAt", { value: refreshExpiry })
-    : accessExpiry
-      ? t(state.locale, "tokenExpiresAt", { value: accessExpiry })
-      : t(state.locale, "tokenRefreshExpiryUnknown");
+    : t(state.locale, "tokenRefreshExpiryUnknown");
   const inlineExpiry = refreshExpiry
     ? t(state.locale, "tokenRefreshExpiresShort", { value: refreshExpiry })
-    : accessExpiry
-      ? t(state.locale, "tokenAccessExpiresShort", { value: accessExpiry })
-      : t(state.locale, "tokenRefreshExpiryUnknown");
+    : authCacheAge;
   const action = tokenActionText(status);
   const inlineAction = tokenInlineAction(status);
-  const title = `${label}. ${updated}. ${expiryLine}. ${action}`;
+  const title = `${label}. ${authCacheAge}. ${expiryLine}. ${action}`;
 
   return `
     <div

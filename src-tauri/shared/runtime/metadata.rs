@@ -73,7 +73,9 @@ pub struct AuthDerivedMetadata {
 }
 
 const TOKEN_REFRESH_DUE_MS: u64 = 24 * 60 * 60 * 1000;
-const UNKNOWN_REFRESH_TOKEN_RELOGIN_REMINDER_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+// Official Codex CI/CD guidance describes last_refresh older than about
+// 8 days as a stale token bundle. This is not a refresh-token expiry.
+const TOKEN_BUNDLE_STALE_REMINDER_MS: u64 = 8 * 24 * 60 * 60 * 1000;
 
 fn normalized_value(value: Option<String>) -> Option<String> {
     value.and_then(|raw| {
@@ -170,7 +172,7 @@ fn refresh_token_health(
     }
 
     if last_refresh_at_ms.is_some_and(|updated_at| {
-        now_ms.saturating_sub(updated_at) >= UNKNOWN_REFRESH_TOKEN_RELOGIN_REMINDER_MS
+        now_ms.saturating_sub(updated_at) >= TOKEN_BUNDLE_STALE_REMINDER_MS
     }) {
         return RefreshTokenHealth::RefreshDue;
     }
@@ -962,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_status_is_unknown_when_refresh_token_expiry_not_provided() {
+    fn refresh_status_is_unknown_when_token_bundle_recent_and_refresh_token_expiry_not_provided() {
         let dir = temp_dir("refresh-status-unknown");
         let future = chrono::Utc::now().timestamp() + 7 * 24 * 60 * 60;
         let last_refresh = chrono::Utc::now().to_rfc3339();
@@ -991,6 +993,54 @@ mod tests {
     }
 
     #[test]
+    fn refresh_status_is_unknown_when_token_bundle_is_not_stale() {
+        let dir = temp_dir("refresh-status-recent-bundle");
+        let last_refresh = (chrono::Utc::now() - chrono::Duration::days(7)).to_rfc3339();
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "refresh_token": "refresh-secret"
+            },
+            "last_refresh": last_refresh
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::UnknownExpiry);
+        assert!(status.can_refresh);
+        assert_eq!(status.refresh_token_expires_at_ms, None);
+    }
+
+    #[test]
+    fn refresh_status_is_due_when_token_bundle_is_stale_without_refresh_expiry() {
+        let dir = temp_dir("refresh-status-stale-bundle");
+        let last_refresh = (chrono::Utc::now() - chrono::Duration::days(9)).to_rfc3339();
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "refresh_token": "refresh-secret"
+            },
+            "last_refresh": last_refresh
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::RefreshDue);
+        assert!(status.can_refresh);
+        assert_eq!(status.refresh_token_expires_at_ms, None);
+    }
+
+    #[test]
     fn refresh_status_keeps_refresh_expiry_unknown_when_access_token_expires_soon() {
         let dir = temp_dir("refresh-status-due");
         let soon = chrono::Utc::now().timestamp() + 15 * 60;
@@ -1011,6 +1061,7 @@ mod tests {
 
         assert_eq!(status.health, RefreshTokenHealth::UnknownExpiry);
         assert!(status.can_refresh);
+        assert_eq!(status.refresh_token_expires_at_ms, None);
         assert!(status.access_token_expires_at_ms.is_some());
     }
 
@@ -1037,6 +1088,31 @@ mod tests {
         assert_eq!(status.health, RefreshTokenHealth::NeedsLogin);
         assert!(status.can_refresh);
         assert_eq!(status.refresh_token_expires_at_ms, Some(expired_ms));
+    }
+
+    #[test]
+    fn refresh_status_reads_refresh_token_expiry_from_rfc3339_string() {
+        let dir = temp_dir("refresh-status-rfc3339-expiry");
+        let expires_at = (chrono::Utc::now() + chrono::Duration::minutes(30)).to_rfc3339();
+        let expected_expiry_ms = parse_timestamp_ms(&expires_at);
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "refresh_token": "refresh-secret",
+                "refresh_token_expires_at": expires_at
+            }
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::RefreshDue);
+        assert!(status.can_refresh);
+        assert_eq!(status.refresh_token_expires_at_ms, expected_expiry_ms);
     }
 
     #[test]
