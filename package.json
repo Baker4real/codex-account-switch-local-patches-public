@@ -26,7 +26,7 @@
     "tauri:build:windows": "npm run version:sync:release && tauri build --target x86_64-pc-windows-msvc",
     "tauri:build:linux": "npm run version:sync:release && tauri build --target x86_64-unknown-linux-gnu",
     "tauri:build:portable": "npm run version:sync && tauri build --no-bundle",
-    "tauri:build:windows:portable": "npm run version:sync && tauri build --target x86_64-pc-windows-msvc --no-bundle",
+    "tauri:build:windows:portable": "npm run version:sync && node scripts/tauri-windows-msvc-build.mjs",
     "tauri:build:macos-dmg": "npm run tauri:build:macos-release",
     "tauri:build:macos-app": "npm run version:sync && npm run macos:artifacts:prepare:app && tauri build --bundles app --no-sign && npm run macos:artifacts:finalize:app",
     "tauri:build:macos-release": "npm run version:sync && npm run macos:artifacts:prepare:release && tauri build --bundles app,dmg && npm run macos:pkg && npm run macos:artifacts:finalize:release"
