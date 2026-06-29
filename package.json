@@ -17,6 +17,7 @@
     "macos:pkg": "node scripts/create-macos-pkg.mjs",
     "test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "test:rust:windows-gnu": "node scripts/verify-windows-gnu-tests.mjs",
     "check:rust:windows": "cargo check --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc --lib",
     "test:rust:windows": "cargo test --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc",
     "tauri": "tauri",

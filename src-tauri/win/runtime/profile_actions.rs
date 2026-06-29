@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(test))]
 use tauri_plugin_opener::OpenerExt;
 
 use crate::errors::{AppError, AppResult};
@@ -16,8 +17,10 @@ use super::metadata::{
 };
 use super::paths::{
     get_backup_root, get_codex_home, get_login_runtime_dir, validate_profile_name,
-    ACTIVE_MARKER_FILE, CONTACT_URL, RELEASES_URL, XIAOHONGSHU_URL,
+    ACTIVE_MARKER_FILE,
 };
+#[cfg(not(test))]
+use super::paths::{CONTACT_URL, RELEASES_URL, XIAOHONGSHU_URL};
 use super::profiles::resolve_current_profile;
 
 const AUTH_TEMPLATE: &str = include_str!("../../../examples/account_backup/demo/auth.json.example");
@@ -237,6 +240,7 @@ pub fn rename_profile(profile_name: &str, new_folder_name: &str) -> AppResult<St
     rename_profile_with_home(profile_name, new_folder_name, None)
 }
 
+#[cfg(not(test))]
 pub fn open_profile_folder(app: &tauri::AppHandle, profile_name: &str) -> AppResult<String> {
     let profile_name = validate_profile_name(profile_name)?;
     let profile_dir = get_backup_root(None).join(&profile_name);
@@ -293,6 +297,7 @@ pub fn add_profile(folder_name: &str, openai_base_url: Option<&str>) -> AppResul
     Ok(profile_dir.to_string_lossy().into_owned())
 }
 
+#[cfg(not(test))]
 pub fn open_contact(app: &tauri::AppHandle) -> AppResult<String> {
     app.opener()
         .open_url(CONTACT_URL, None::<&str>)
@@ -306,6 +311,7 @@ pub fn open_contact(app: &tauri::AppHandle) -> AppResult<String> {
     Ok(CONTACT_URL.to_string())
 }
 
+#[cfg(not(test))]
 pub fn open_releases(app: &tauri::AppHandle) -> AppResult<String> {
     app.opener()
         .open_url(RELEASES_URL, None::<&str>)
@@ -319,6 +325,7 @@ pub fn open_releases(app: &tauri::AppHandle) -> AppResult<String> {
     Ok(RELEASES_URL.to_string())
 }
 
+#[cfg(not(test))]
 pub fn open_url(app: &tauri::AppHandle, url: &str) -> AppResult<String> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
@@ -337,6 +344,7 @@ pub fn open_url(app: &tauri::AppHandle, url: &str) -> AppResult<String> {
     Ok(trimmed.to_string())
 }
 
+#[cfg(not(test))]
 pub fn open_xiaohongshu(app: &tauri::AppHandle) -> AppResult<String> {
     app.opener()
         .open_url(XIAOHONGSHU_URL, None::<&str>)

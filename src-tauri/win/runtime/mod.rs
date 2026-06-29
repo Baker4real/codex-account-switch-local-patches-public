@@ -3,7 +3,6 @@
 pub mod bootstrap;
 pub mod install;
 pub mod process;
-#[cfg(not(test))]
 pub mod profile_actions;
 pub mod profiles_index;
 pub mod refresh_runtime;
@@ -14,12 +13,14 @@ pub use crate::shared::{
     session_usage,
 };
 
-#[cfg(not(test))]
 pub mod actions {
     pub use super::profile_actions::{
         add_profile, clear_profile_account, delete_profile, login_current_profile, login_profile,
-        open_codex_app, open_contact, open_profile_folder, open_releases, open_url,
-        open_xiaohongshu, rename_profile, update_profile_base_url,
+        open_codex_app, rename_profile, update_profile_base_url,
+    };
+    #[cfg(not(test))]
+    pub use super::profile_actions::{
+        open_contact, open_profile_folder, open_releases, open_url, open_xiaohongshu,
     };
     pub use super::refresh_runtime::refresh_profile;
 }
@@ -44,4 +45,34 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
     env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) struct EnvVarGuard {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+}
+
+#[cfg(test)]
+impl EnvVarGuard {
+    pub(crate) fn capture(names: &[&'static str]) -> Self {
+        Self {
+            saved: names
+                .iter()
+                .map(|name| (*name, std::env::var_os(name)))
+                .collect(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        for (name, value) in self.saved.iter().rev() {
+            if let Some(value) = value {
+                std::env::set_var(name, value);
+            } else {
+                std::env::remove_var(name);
+            }
+        }
+    }
 }

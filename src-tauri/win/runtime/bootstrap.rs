@@ -91,9 +91,9 @@ mod tests {
         ensure_backup_initialized, ensure_refresh_runtime_config_initialized,
         REFRESH_RUNTIME_DEFAULT_CONFIG,
     };
-    use crate::windows::env_guard;
     use crate::windows::paths::get_refresh_runtime_dir;
     use crate::windows::process::load_install_state;
+    use crate::windows::{env_guard, EnvVarGuard};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -148,26 +148,29 @@ mod tests {
     fn bootstrap_records_windows_cmd_path_in_install_state() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("bootstrap-real-cli");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let bin_dir = codex_home.join("bin");
         let npm_dir = codex_home.join("npm");
         fs::create_dir_all(&bin_dir).unwrap();
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(bin_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
         fs::write(npm_dir.join("codex"), "#!/bin/sh\n").unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        fs::write(
+            npm_dir.join("codex.cmd"),
+            "@echo off\r\necho codex-cli 0.133.0\r\n",
+        )
+        .unwrap();
 
-        let original_path = std::env::var_os("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
         std::env::set_var(
             "PATH",
             std::env::join_paths([bin_dir.clone(), npm_dir.clone()]).unwrap(),
         );
 
         let initialized = ensure_backup_initialized(Some(&codex_home)).unwrap();
-        if let Some(path) = original_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
 
         let install_state = load_install_state(Some(&codex_home));
 

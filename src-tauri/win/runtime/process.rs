@@ -838,11 +838,17 @@ const RUNNABLE_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Realistic machines have 1-3 candidates.
 const MAX_PROBE_CANDIDATES: usize = 12;
 
+fn looks_like_codex_version(version: &str) -> bool {
+    version.split_whitespace().next().is_some_and(|name| {
+        name.eq_ignore_ascii_case("codex-cli") || name.eq_ignore_ascii_case("codex")
+    })
+}
+
 /// Probe whether `path` is a runnable codex CLI and capture its version.
-/// `Some(version)` (possibly empty) means it's a file that ran and exited
-/// 0; `None` means not-a-file, couldn't spawn, exited non-zero, or timed
-/// out. The failure is logged so a broken install leaves a diagnostic
-/// trail instead of looking identical to "not found".
+/// `Some(version)` means it's a file that ran, exited 0, and reported a
+/// Codex version line; `None` means not-a-file, not Codex, couldn't spawn,
+/// exited non-zero, or timed out. The failure is logged so a broken install
+/// leaves a diagnostic trail instead of looking identical to "not found".
 fn probe_codex_version(path: &Path) -> Option<String> {
     if !path.is_file() {
         return None;
@@ -852,13 +858,23 @@ fn probe_codex_version(path: &Path) -> Option<String> {
     hide_console_window(&mut command);
     let result =
         crate::shared::codex_cli_path::probe_version_with_timeout(command, RUNNABLE_PROBE_TIMEOUT);
-    if result.is_none() {
-        eprintln!(
-            "codex probe: {} is not a runnable codex (spawn / non-zero exit / timeout)",
-            path.display()
-        );
+    match result {
+        Some(version) if looks_like_codex_version(&version) => Some(version),
+        Some(version) => {
+            eprintln!(
+                "codex probe: {} did not report a Codex version: {version:?}",
+                path.display()
+            );
+            None
+        }
+        None => {
+            eprintln!(
+                "codex probe: {} is not a runnable codex (spawn / non-zero exit / timeout)",
+                path.display()
+            );
+            None
+        }
     }
-    result
 }
 
 /// Force a fresh scan for the Settings auto-detect button, keeping only
@@ -992,11 +1008,11 @@ mod tests {
     use super::{
         build_app_server_command, discover_real_codex_cli_path, is_acceptable_real_codex_cli_path,
         load_install_state, login_browser_for_profile, login_browser_profile_dir,
-        resolve_real_codex_cli, resolve_windows_app_target, sanitize_profile_segment,
-        windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
-        WINDOWS_STORE_APP_ID,
+        looks_like_codex_version, resolve_real_codex_cli, resolve_windows_app_target,
+        sanitize_profile_segment, windows_store_shell_target, AppLaunchTarget, InstallState,
+        LoginBrowser, WINDOWS_STORE_APP_ID,
     };
-    use crate::windows::env_guard;
+    use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1024,6 +1040,29 @@ mod tests {
                 fs::set_permissions(path, permissions).unwrap();
             }
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_runnable_codex_exe(path: &Path, version: &str) {
+        let source_path = path.with_extension("rs");
+        fs::write(
+            &source_path,
+            format!("fn main() {{ println!({version:?}); }}\n"),
+        )
+        .unwrap();
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| std::ffi::OsString::from("rustc"));
+        let output = std::process::Command::new(rustc)
+            .arg(&source_path)
+            .arg("-o")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "failed to compile codex.exe fixture\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn write_failing_codex(path: &Path) {
@@ -1072,12 +1111,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn looks_like_codex_version_requires_codex_binary_name() {
+        assert!(looks_like_codex_version("codex-cli 0.142.0-alpha.6"));
+        assert!(looks_like_codex_version("codex 0.142.0-alpha.6"));
+        assert!(!looks_like_codex_version(
+            "Microsoft Windows [Version 10.0]"
+        ));
+        assert!(!looks_like_codex_version(""));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn probe_codex_version_rejects_non_codex_zero_exit_exe() {
+        use super::probe_codex_version;
+
+        let cmd_exe = std::env::var_os("COMSPEC")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("SystemRoot")
+                    .map(PathBuf::from)
+                    .map(|root| root.join("System32").join("cmd.exe"))
+            })
+            .filter(|path| path.is_file())
+            .expect("Windows tests require cmd.exe");
+
+        assert_eq!(probe_codex_version(&cmd_exe), None);
+    }
+
     // Runs on the Linux `cargo test --lib` job (the win module compiles on
     // non-macOS): a `#!/bin/sh` candidate is spawnable there, and
     // `hide_console_window` is a no-op off Windows. Pins the three
     // behaviours auto-detect depends on: a non-file is rejected without
     // spawning, a binary that runs but exits non-zero is rejected (broken
-    // install), and only a zero-exit binary is accepted.
+    // install), and only a zero-exit Codex version line is accepted.
     #[cfg(unix)]
     #[test]
     fn probe_codex_version_rejects_missing_and_failing_captures_zero_exit() {
@@ -1121,6 +1188,8 @@ mod tests {
     fn discover_real_codex_cli_path_prefers_cmd_and_skips_managed_shim() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("discover-real-cli");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let managed_bin = codex_home.join("bin");
         let npm_dir = codex_home.join("npm");
         fs::create_dir_all(&managed_bin).unwrap();
@@ -1129,19 +1198,15 @@ mod tests {
         fs::write(npm_dir.join("codex"), "#!/bin/sh\n").unwrap();
         write_runnable_codex(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
 
-        let original_path = std::env::var_os("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
         std::env::set_var(
             "PATH",
             std::env::join_paths([managed_bin.clone(), npm_dir.clone()]).unwrap(),
         );
 
         let resolved = discover_real_codex_cli_path(Some(&managed_bin.join("codex.cmd")));
-
-        if let Some(path) = original_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
 
         assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
         let _ = fs::remove_dir_all(&codex_home);
@@ -1151,6 +1216,8 @@ mod tests {
     fn discover_real_codex_cli_path_skips_windows_apps_aliases() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("discover-real-cli-windowsapps");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let managed_bin = codex_home.join("bin");
         let alias_dir = codex_home
             .join("AppData")
@@ -1165,19 +1232,15 @@ mod tests {
         fs::write(alias_dir.join("codex.exe"), "alias").unwrap();
         write_runnable_codex(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
 
-        let original_path = std::env::var_os("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
         std::env::set_var(
             "PATH",
             std::env::join_paths([alias_dir.clone(), npm_dir.clone()]).unwrap(),
         );
 
         let resolved = discover_real_codex_cli_path(Some(&managed_bin.join("codex.cmd")));
-
-        if let Some(path) = original_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
 
         assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
         let _ = fs::remove_dir_all(&codex_home);
@@ -1218,6 +1281,8 @@ mod tests {
     fn resolve_real_codex_cli_skips_cached_windows_apps_alias_and_repairs_state() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("repair-windowsapps-state");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let runtime_dir = codex_home.join("account_backup").join("windows");
         let alias_dir = codex_home
             .join("AppData")
@@ -1241,17 +1306,13 @@ mod tests {
         )
         .unwrap();
 
-        let original_path = std::env::var_os("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
         std::env::set_var("PATH", &npm_dir);
 
         let resolved = resolve_real_codex_cli(Some(&codex_home));
         let persisted_state = load_install_state(Some(&codex_home));
-
-        if let Some(path) = original_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
 
         assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
         assert_eq!(
@@ -1265,6 +1326,8 @@ mod tests {
     fn resolve_real_codex_cli_skips_unrunnable_cached_shim_and_repairs_state() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("repair-broken-shim-state");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let runtime_dir = codex_home.join("account_backup").join("windows");
         let npm_dir = codex_home.join("npm");
         let local_app_data = codex_home.join("local-app-data");
@@ -1279,6 +1342,9 @@ mod tests {
         let broken_shim = npm_dir.join("codex.cmd");
         let official_codex = official_bin.join("codex.exe");
         write_failing_codex(&broken_shim);
+        #[cfg(target_os = "windows")]
+        write_runnable_codex_exe(&official_codex, "codex-cli 0.142.0-alpha.6");
+        #[cfg(not(target_os = "windows"))]
         write_runnable_codex(&official_codex, "codex-cli 0.142.0-alpha.6");
         let install_state = InstallState {
             real_codex_path: Some(broken_shim.to_string_lossy().into_owned()),

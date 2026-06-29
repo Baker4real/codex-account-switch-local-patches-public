@@ -86,6 +86,7 @@ npm run build                      # 仅前端 production build（vite + tsc）
 npm run test                       # cargo test --manifest-path src-tauri/Cargo.toml
 npm run check:rust:windows         # cross check Windows target（macOS 本地交叉验证）
 npm run test:rust:windows          # 在 Windows runner 上跑（CI 主用）
+npm run test:rust:windows-gnu      # 在 Windows GNU/MinGW host 上验证本地链接与单测启动路径
 ```
 
 ## 桌面端打包

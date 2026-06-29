@@ -572,6 +572,7 @@ mod tests {
     use crate::windows::{
         env_guard,
         process::{load_install_state, InstallState},
+        EnvVarGuard,
     };
 
     fn temp_codex_home(name: &str) -> PathBuf {
@@ -615,25 +616,27 @@ mod tests {
     fn install_from_copies_cli_and_writes_state() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("install");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let source_cli = codex_home.join("source").join(CLI_RUNTIME_FILENAME);
         fs::create_dir_all(source_cli.parent().unwrap()).unwrap();
         fs::write(&source_cli, "cli").unwrap();
         fs::write(codex_home.join("auth.json"), "seed-auth").unwrap();
 
-        let original_path = std::env::var_os("PATH");
         let npm_dir = codex_home.join("npm");
         fs::create_dir_all(&npm_dir).unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        fs::write(
+            npm_dir.join("codex.cmd"),
+            "@echo off\r\necho codex-cli 0.133.0\r\n",
+        )
+        .unwrap();
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
         std::env::set_var("PATH", &npm_dir);
 
         let result =
             install_from_with_path_hook(&source_cli, Some(&codex_home), |_| Ok(true)).unwrap();
-
-        if let Some(path) = original_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
 
         assert!(result.runtime_cli_path.is_file());
         assert!(result.managed_shim_path.is_file());
@@ -658,6 +661,8 @@ mod tests {
     fn refresh_install_state_replaces_cached_windows_apps_alias() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("refresh-install-state-windowsapps");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
         let runtime_dir = codex_home.join("account_backup").join("windows");
         let managed_bin = codex_home.join("bin");
         let alias_dir = codex_home
@@ -672,7 +677,11 @@ mod tests {
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(managed_bin.join("codex.cmd"), "@echo off\r\n").unwrap();
         fs::write(alias_dir.join("codex.exe"), "alias").unwrap();
-        fs::write(npm_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
+        fs::write(
+            npm_dir.join("codex.cmd"),
+            "@echo off\r\necho codex-cli 0.133.0\r\n",
+        )
+        .unwrap();
         fs::write(
             runtime_dir.join("install_state.json"),
             format!(
@@ -689,7 +698,9 @@ mod tests {
         )
         .unwrap();
 
-        let original_path = std::env::var_os("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
         std::env::set_var(
             "PATH",
             std::env::join_paths([managed_bin.clone(), npm_dir.clone()]).unwrap(),
@@ -697,12 +708,6 @@ mod tests {
 
         refresh_install_state(&codex_home).unwrap();
         let state = load_install_state(Some(&codex_home));
-
-        if let Some(path) = original_path {
-            std::env::set_var("PATH", path);
-        } else {
-            std::env::remove_var("PATH");
-        }
 
         assert_eq!(
             state.real_codex_path,
