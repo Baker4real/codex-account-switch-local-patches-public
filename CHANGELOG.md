@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Windows 本地补丁登录现在仍让 profile `b` 走 Chrome、profile `c` 走 Edge，但打开 OAuth URL 时只调用目标浏览器本身，不再传 `--user-data-dir` / `--new-window`，因此会复用用户当前常用的浏览器状态。若目标 profile 已有可识别账号，新登录身份不一致时会在写入前拒绝覆盖旧 `auth.json`。
+- Windows 本地补丁登录现在改为账号标签路由：匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 的目标账号无论在哪个 profile 槽位都通过 `codex app-server` 打开用户正常 Edge 状态；profile `b` / `c` 不再自带 Chrome / Edge 强制规则。定向 Edge flow 仍不传 `--user-data-dir` / `--new-window`，并保留写入前账号身份校验。
 
 ## 1.5.12 - 2026-05-29
 

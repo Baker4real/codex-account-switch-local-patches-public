@@ -17,6 +17,7 @@ use crate::shared::codex_app_server::{
 use crate::shared::codex_cli_path::CodexPathResolver;
 pub use crate::shared::codex_cli_path::{InstallState, RealCodexPathSource};
 use crate::shared::login_cancel::wait_for_login_or_cancel;
+use crate::shared::metadata::load_profile_metadata;
 
 use super::paths::{get_codex_home, get_install_state_file};
 
@@ -25,6 +26,7 @@ const WINDOWS_INVOKABLE_SUFFIXES: [&str; 4] = ["cmd", "exe", "bat", "com"];
 const WINDOWS_APPS_PATH_SEGMENT: &str = r"\microsoft\windowsapps\";
 const WINDOWS_STORE_APP_ID: &str = "OpenAI.Codex_2p2nqsd0c76g0!App";
 const WINDOWS_STORE_SHELL_PREFIX: &str = r"shell:AppsFolder\";
+const FORCED_EDGE_LOGIN_ACCOUNT_LABEL: &str = "forced-edge-login@example.com";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 static WINDOWS_APP_TARGET_CACHE: OnceLock<String> = OnceLock::new();
@@ -37,7 +39,6 @@ enum AppLaunchTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LoginBrowser {
-    Chrome,
     Edge,
 }
 
@@ -438,37 +439,43 @@ fn build_login_command(real_codex_path: &Path, runtime_codex_home: &Path) -> Com
     command
 }
 
-fn login_browser_for_profile(profile_name: Option<&str>) -> Option<LoginBrowser> {
-    match profile_name
-        .map(|name| name.trim().to_ascii_lowercase())
-        .as_deref()
-    {
-        Some("b") => Some(LoginBrowser::Chrome),
-        Some("c") => Some(LoginBrowser::Edge),
-        _ => None,
+fn account_label_requires_edge(account_label: Option<&str>) -> bool {
+    account_label
+        .map(str::trim)
+        .map(|label| label.eq_ignore_ascii_case(FORCED_EDGE_LOGIN_ACCOUNT_LABEL))
+        .unwrap_or(false)
+}
+
+fn login_browser_for_profile(
+    codex_home: Option<&Path>,
+    profile_name: Option<&str>,
+) -> Option<LoginBrowser> {
+    let profile_name = profile_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let metadata = load_profile_metadata(profile_name, codex_home);
+    if account_label_requires_edge(metadata.account_label.as_deref()) {
+        Some(LoginBrowser::Edge)
+    } else {
+        None
     }
 }
 
 impl LoginBrowser {
     fn label(self) -> &'static str {
-        match self {
-            LoginBrowser::Chrome => "Chrome",
-            LoginBrowser::Edge => "Edge",
-        }
+        "Edge"
     }
 
     fn override_env_var(self) -> &'static str {
-        match self {
-            LoginBrowser::Chrome => "CODEX_SWITCH_CHROME_PATH",
-            LoginBrowser::Edge => "CODEX_SWITCH_EDGE_PATH",
-        }
+        "CODEX_SWITCH_EDGE_PATH"
     }
 }
 
 fn resolve_login_browser_launch(
+    codex_home: Option<&Path>,
     profile_name: Option<&str>,
 ) -> AppResult<Option<LoginBrowserLaunch>> {
-    let Some(browser) = login_browser_for_profile(profile_name) else {
+    let Some(browser) = login_browser_for_profile(codex_home, profile_name) else {
         return Ok(None);
     };
     let Some(executable) = resolve_login_browser_executable(browser) else {
@@ -489,10 +496,11 @@ fn resolve_login_browser_launch(
 
 fn resolve_login_browser_app_server_launch(
     real_codex_path: &Path,
+    cli_codex_home: &Path,
     runtime_codex_home: &Path,
     profile_name: Option<&str>,
 ) -> AppResult<Option<(Command, LoginBrowserLaunch)>> {
-    let Some(launch) = resolve_login_browser_launch(profile_name)? else {
+    let Some(launch) = resolve_login_browser_launch(Some(cli_codex_home), profile_name)? else {
         return Ok(None);
     };
     Ok(Some((
@@ -506,42 +514,27 @@ fn resolve_login_browser_executable(browser: LoginBrowser) -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|path| path.is_file())
         .or_else(|| {
-            common_login_browser_paths(browser)
+            common_login_browser_paths()
                 .into_iter()
                 .find(|path| path.is_file())
         })
 }
 
-fn common_login_browser_paths(browser: LoginBrowser) -> Vec<PathBuf> {
-    let mut paths = match browser {
-        LoginBrowser::Chrome => vec![
-            PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
-            PathBuf::from(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
-        ],
-        LoginBrowser::Edge => vec![
-            PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
-            PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
-        ],
-    };
+fn common_login_browser_paths() -> Vec<PathBuf> {
+    let mut paths = vec![
+        PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+        PathBuf::from(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
+    ];
 
     if let Some(local_app_data) = env::var_os("LOCALAPPDATA") {
         let local_app_data = PathBuf::from(local_app_data);
-        match browser {
-            LoginBrowser::Chrome => paths.push(
-                local_app_data
-                    .join("Google")
-                    .join("Chrome")
-                    .join("Application")
-                    .join("chrome.exe"),
-            ),
-            LoginBrowser::Edge => paths.push(
-                local_app_data
-                    .join("Microsoft")
-                    .join("Edge")
-                    .join("Application")
-                    .join("msedge.exe"),
-            ),
-        }
+        paths.push(
+            local_app_data
+                .join("Microsoft")
+                .join("Edge")
+                .join("Application")
+                .join("msedge.exe"),
+        );
     }
 
     paths
@@ -585,9 +578,12 @@ pub fn run_codex_login(
             "Real Codex CLI path not found. Set the codex CLI location in the dashboard before logging in.",
         ));
     };
-    if let Some((command, launch)) =
-        resolve_login_browser_app_server_launch(&real_codex_path, runtime_codex_home, profile_name)?
-    {
+    if let Some((command, launch)) = resolve_login_browser_app_server_launch(
+        &real_codex_path,
+        cli_codex_home,
+        runtime_codex_home,
+        profile_name,
+    )? {
         return run_chatgpt_browser_login(command, |auth_url| {
             open_login_url_in_browser(&launch, auth_url).map_err(|error| {
                 AppError::new(
@@ -973,7 +969,7 @@ mod tests {
         is_acceptable_real_codex_cli_path, load_install_state, login_browser_for_profile,
         looks_like_codex_version, resolve_login_browser_app_server_launch, resolve_real_codex_cli,
         resolve_windows_app_target, windows_store_shell_target, AppLaunchTarget, InstallState,
-        LoginBrowser, LoginBrowserLaunch, WINDOWS_STORE_APP_ID,
+        LoginBrowser, LoginBrowserLaunch, FORCED_EDGE_LOGIN_ACCOUNT_LABEL, WINDOWS_STORE_APP_ID,
     };
     use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
@@ -987,6 +983,18 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("codex-switch-process-{name}-{unique}"))
+    }
+
+    fn write_profile_metadata(codex_home: &Path, profile_name: &str, account_label: &str) {
+        let profile_dir = codex_home.join("account_backup").join(profile_name);
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            format!(
+                "{{\n  \"folder_name\": \"{profile_name}\",\n  \"account_label\": \"{account_label}\"\n}}\n"
+            ),
+        )
+        .unwrap();
     }
 
     fn write_runnable_codex(path: &Path, version: &str) {
@@ -1045,17 +1053,31 @@ mod tests {
     }
 
     #[test]
-    fn login_browser_for_profile_routes_b_to_chrome_and_c_to_edge() {
-        assert_eq!(
-            login_browser_for_profile(Some("b")),
-            Some(LoginBrowser::Chrome)
+    fn login_browser_for_profile_routes_forced_edge_account_only() {
+        let codex_home = temp_codex_home("forced-edge-account");
+        write_profile_metadata(
+            &codex_home,
+            "a",
+            &format!("  {}  ", FORCED_EDGE_LOGIN_ACCOUNT_LABEL.to_uppercase()),
         );
+        write_profile_metadata(&codex_home, "b", "someone@example.com");
+        write_profile_metadata(&codex_home, "c", "someone-else@example.com");
+
         assert_eq!(
-            login_browser_for_profile(Some(" C ")),
+            login_browser_for_profile(Some(&codex_home), Some(" a ")),
             Some(LoginBrowser::Edge)
         );
-        assert_eq!(login_browser_for_profile(Some("a")), None);
-        assert_eq!(login_browser_for_profile(None), None);
+        assert_eq!(
+            login_browser_for_profile(Some(&codex_home), Some("b")),
+            None
+        );
+        assert_eq!(
+            login_browser_for_profile(Some(&codex_home), Some(" C ")),
+            None
+        );
+        assert_eq!(login_browser_for_profile(Some(&codex_home), None), None);
+
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]
@@ -1077,24 +1099,18 @@ mod tests {
     }
 
     #[test]
-    fn login_browser_app_server_launch_routes_b_and_c_without_legacy_profile_dir() {
+    fn login_browser_app_server_launch_routes_forced_edge_account_without_legacy_profile_dir() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("browser-app-server-launch");
-        let browser_env_vars: &[&'static str] = &[
-            "CODEX_SWITCH_CHROME_PATH",
-            "CODEX_SWITCH_EDGE_PATH",
-            "LOCALAPPDATA",
-        ];
+        let browser_env_vars: &[&'static str] = &["CODEX_SWITCH_EDGE_PATH", "LOCALAPPDATA"];
         let _env = EnvVarGuard::capture(browser_env_vars);
         let browser_dir = codex_home.join("browsers");
         fs::create_dir_all(&browser_dir).unwrap();
-        let chrome_path = browser_dir.join("chrome.exe");
         let edge_path = browser_dir.join("msedge.exe");
-        fs::write(&chrome_path, "").unwrap();
         fs::write(&edge_path, "").unwrap();
-        std::env::set_var("CODEX_SWITCH_CHROME_PATH", &chrome_path);
         std::env::set_var("CODEX_SWITCH_EDGE_PATH", &edge_path);
         std::env::remove_var("LOCALAPPDATA");
+        write_profile_metadata(&codex_home, "a", FORCED_EDGE_LOGIN_ACCOUNT_LABEL);
 
         let real_codex_path = codex_home.join("codex.exe");
         let runtime_codex_home = codex_home
@@ -1106,18 +1122,19 @@ mod tests {
             .join("windows")
             .join("login_browser_profiles");
 
-        let (b_command, b_launch) = resolve_login_browser_app_server_launch(
+        let (a_command, a_launch) = resolve_login_browser_app_server_launch(
             &real_codex_path,
+            &codex_home,
             &runtime_codex_home,
-            Some("b"),
+            Some("a"),
         )
         .unwrap()
-        .expect("profile b should use app-server browser login");
-        let b_args = b_command
+        .expect("the forced Edge account should use app-server browser login");
+        let a_args = a_command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        let b_envs = b_command
+        let a_envs = a_command
             .get_envs()
             .map(|(key, value)| {
                 (
@@ -1126,37 +1143,40 @@ mod tests {
                 )
             })
             .collect::<Vec<_>>();
-        assert_eq!(b_launch.browser, LoginBrowser::Chrome);
-        assert_eq!(b_launch.executable, chrome_path);
-        assert_eq!(b_command.get_program(), real_codex_path.as_os_str());
-        assert_eq!(b_args, vec!["app-server".to_string()]);
+        assert_eq!(a_launch.browser, LoginBrowser::Edge);
+        assert_eq!(a_launch.executable, edge_path);
+        assert_eq!(a_command.get_program(), real_codex_path.as_os_str());
+        assert_eq!(a_args, vec!["app-server".to_string()]);
         assert_eq!(
-            b_command.get_current_dir(),
+            a_command.get_current_dir(),
             Some(runtime_codex_home.as_path())
         );
-        assert!(b_envs.iter().any(|(key, value)| {
+        assert!(a_envs.iter().any(|(key, value)| {
             key == "CODEX_HOME"
                 && value.as_deref() == Some(runtime_codex_home.to_string_lossy().as_ref())
         }));
 
-        let (_c_command, c_launch) = resolve_login_browser_app_server_launch(
-            &real_codex_path,
-            &runtime_codex_home,
-            Some(" C "),
-        )
-        .unwrap()
-        .expect("profile c should use app-server browser login");
-        assert_eq!(c_launch.browser, LoginBrowser::Edge);
-        assert_eq!(c_launch.executable, edge_path);
         assert!(
             resolve_login_browser_app_server_launch(
                 &real_codex_path,
+                &codex_home,
                 &runtime_codex_home,
-                Some("a")
+                Some("b")
             )
             .unwrap()
             .is_none(),
-            "other profiles should keep the plain codex login path"
+            "slot b alone should no longer force Chrome"
+        );
+        assert!(
+            resolve_login_browser_app_server_launch(
+                &real_codex_path,
+                &codex_home,
+                &runtime_codex_home,
+                Some("c")
+            )
+            .unwrap()
+            .is_none(),
+            "slot c alone should no longer force Edge"
         );
         assert!(
             !legacy_browser_profile_dir.exists(),

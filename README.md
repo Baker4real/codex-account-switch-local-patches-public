@@ -25,7 +25,7 @@
 
 - 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `config.toml` / `sessions/`），切换时把目标账号 swap 进 `~/.codex/`，旧账号自动归档到备份目录。
 - **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮。
-- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版会让 `b` 槽通过 `codex app-server` 打开 Chrome、`c` 槽打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
+- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 指定账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
 - **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号，per-card 刷新按钮也共享同一缓存；切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。
 - **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
 - **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
@@ -57,7 +57,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 1. 从 Releases 下载并安装 Codex Switch，启动桌面窗口。
 2. 进入「设置」页，确认 **Codex CLI 路径** 已自动填好（默认探测 PATH / `~/.codex/bin`）；缺失时手动指定，状态变绿即可。
 3. 进入「账号」页，点「添加账号」→ 输入账号别名（落地为 `~/.codex/account_backup/<别名>/`）。
-4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，`b` 槽会打开 Chrome，`c` 槽会打开 Edge。
+4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，指定账号会打开 Edge；其他账号走普通登录浏览器行为。
 5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/`，原账号自动归档。
 6. 需要清空 quota cache 或重新拉计划时，点对应账号的「刷新」（≥ 6h 走完整 OAuth rotation，< 6h 复用缓存）。
 
@@ -156,9 +156,9 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### per-card「登录」按钮为什么有时变成「取消」
 
-普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版的 `b` / `c` 槽改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl` 后，由应用用指定浏览器的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
+普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版中，账号标签匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
 
-因为 `b` / `c` 复用的是 Chrome / Edge 当前正常登录状态，点击登录前请确认该浏览器里的 ChatGPT 账号就是目标槽位要保存的账号。若目标槽位已有可识别账号，应用会在写入前校验新旧账号标识，不一致时拒绝覆盖旧 `auth.json`。
+因为定向 Edge 登录复用的是 Edge 当前正常登录状态，点击登录前请确认 Edge 里的 ChatGPT 账号就是目标 profile 要保存的账号。若目标 profile 已有可识别账号，应用会在写入前校验新旧账号标识，不一致时拒绝覆盖旧 `auth.json`。
 
 ### Custom Base URL 配置后能继续用 ChatGPT OAuth 吗
 
@@ -181,7 +181,7 @@ App 暂未做 Apple Developer 代码签名 / notarization。第一次启动按�
 ## 技术栈
 
 - **后端 / runtime**：Rust 1.80+ · Tauri 2.x · tokio + reqwest（rustls-tls）· chrono · serde
-- **协议适配**：`shared/runtime/chatgpt_api.rs`（ChatGPT Web API `account/{read,rateLimits/read}`）+ `shared/runtime/codex_app_server.rs`（Codex app-server JSON-RPC，用于 quota fallback 和 Windows 定向浏览器登录）
+- **协议适配**：`shared/runtime/chatgpt_api.rs`（ChatGPT Web API `account/{read,rateLimits/read}`）+ `shared/runtime/codex_app_server.rs`（Codex app-server JSON-RPC，用于 quota fallback 和 Windows 定向 Edge 登录）
 - **前端**：HTML + CSS + 原生 TypeScript（`shared/front/{render,state,actions,theme,i18n,tauri}.ts`），无前端框架；Vite 7 打包
 - **跨平台 runtime**：mac / win runtime 各自实现 spawn / process control / OS-native title bar；shared runtime 处理协议、profile lifecycle、JSON-RPC、缓存、文件锁
 - **构建 / 发布**：`tauri build` 单命令出 dmg / pkg / exe；`.github/workflows/build.yml` 出 draft release，全部 asset 由 GitHub Actions 上传

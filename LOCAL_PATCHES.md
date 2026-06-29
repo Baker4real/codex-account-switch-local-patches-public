@@ -7,19 +7,20 @@ directly.
 Merge the upstream tag into this source tree, keep the local patches below, and
 then rebuild and replace the installed executable:
 
-- Profile `b` 登录继续使用 `codex app-server`，并用用户正常 Chrome
-  状态打开返回的 auth URL；不要再传 `--user-data-dir` 或创建独立浏览器
-  profile。
-- Profile `c` 登录继续使用 `codex app-server`，并用用户正常 Edge
-  状态打开返回的 auth URL；不要再传 `--user-data-dir` 或创建独立浏览器
-  profile。
-- Because these flows reuse normal browser state, preserve the pre-write
-  account identity check: if an existing profile has a known ChatGPT identity,
-  a login completed by a different browser account must fail before replacing
+- Windows 定向浏览器登录不再按 profile `b` / `c` 槽位选浏览器。仅当目标
+  profile 已有账号标签匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 时，登录使用
+  `codex app-server`，并用用户正常 Edge 状态打开返回的 auth URL。
+- 其他 profile 不强制 Chrome 或 Edge，可继续走普通 `codex login` /
+  上游默认浏览器行为；不要恢复按槽位名路由浏览器的旧规则。
+- 定向 Edge flow 不要再传 `--user-data-dir`、`--new-window`，也不要创建
+  独立浏览器 profile。
+- Because this flow reuses normal browser state, preserve the pre-write account
+  identity check: if an existing profile has a known ChatGPT identity, a login
+  completed by a different browser account must fail before replacing
   `auth.json`.
-- Do not replace those two paths with plain `codex login`; the upstream CLI
-  opens the default browser and does not expose a supported browser-selection
-  flag for this flow.
+- Do not replace the forced-Edge account path with plain `codex login`; the
+  upstream CLI opens the default browser and does not expose a supported
+  browser-selection flag for this flow.
 - Update checks prefer `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe` before
   falling back to other PowerShell executables.
 - Update dialogs warn that local patches must be merged before replacement.
