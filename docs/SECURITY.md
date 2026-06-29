@@ -24,4 +24,6 @@ Treat them as secrets.
 
 This project stores and switches tokens locally, but login and quota refresh do contact official OpenAI / ChatGPT endpoints through the Codex CLI, ChatGPT Web API, or `codex app-server`. It should not send tokens to third-party services by design.
 
-Main risk is accidental token exposure through Git, screenshots, shared terminals, browser profile directories used during OAuth login, insecure backups, or loose Windows ACLs.
+Main risks are accidental token exposure through Git, screenshots, shared terminals, insecure backups, or loose Windows ACLs.
+
+The local Windows `b` / `c` browser-login patch intentionally reuses the user's normal Chrome / Edge state rather than creating dedicated browser profiles. That removes the old browser-profile cache surface, but it means the browser's currently signed-in ChatGPT account is the identity that OAuth will return. The app must keep the pre-write identity check so a known profile is not silently overwritten by a different browser account.

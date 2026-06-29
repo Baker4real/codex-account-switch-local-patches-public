@@ -95,7 +95,7 @@ auth.json
 
 `ChatGptApiSnapshot.plan_type` from `/wham/usage` IS populated on every silent
 refresh but never persisted (`#[allow(dead_code)]`). That is the freshest
-plan signal we have today.
+plan signal available in the 1.5.4 audit context.
 
 ### Update triggers
 
