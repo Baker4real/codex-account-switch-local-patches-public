@@ -10,7 +10,7 @@ use crate::shared::metadata::{
     load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota_with_provenance,
 };
 use crate::shared::paths::{get_backup_root, get_codex_home, validate_profile_name};
-use crate::shared::profiles_index::load_profiles_index;
+use crate::shared::profiles_index::reload_profiles_index_after_mutation;
 use crate::shared::runtime_isolation::{
     prune_runtime_extra_features, seed_runtime_shared_assets, RUNTIME_AUTH_FILENAME,
     RUNTIME_PROFILE_METADATA_FILENAME,
@@ -178,7 +178,7 @@ fn try_refresh_via_chatgpt_api(
         plan_type_from_api,
         Some(codex_home),
     )?;
-    load_profiles_index(Some(codex_home))?;
+    reload_profiles_index_after_mutation(Some(codex_home))?;
     Ok(Some(profile_dir.to_string_lossy().into_owned()))
 }
 
@@ -261,7 +261,7 @@ fn refresh_via_app_server(
         Some(codex_home),
     )?;
     sync_profile_metadata_from_auth(profile_name, snapshot.plan_type, Some(codex_home))?;
-    load_profiles_index(Some(codex_home))?;
+    reload_profiles_index_after_mutation(Some(codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }

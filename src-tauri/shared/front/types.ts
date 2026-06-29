@@ -22,6 +22,25 @@ export interface QuotaSummary {
   provenance?: QuotaProvenance;
 }
 
+export type RefreshTokenHealth =
+  | "healthy"
+  | "refresh_due"
+  | "needs_login"
+  | "unknown_expiry"
+  | "not_refreshable"
+  | "missing_auth";
+
+export interface RefreshTokenStatus {
+  health: RefreshTokenHealth;
+  can_refresh: boolean;
+  refresh_token_present: boolean;
+  refresh_token_expires_at_ms: number | null;
+  access_token_expires_at_ms: number | null;
+  id_token_expires_at_ms: number | null;
+  auth_updated_at_ms: number | null;
+  last_refresh_at_ms: number | null;
+}
+
 export interface ProfileCard {
   folder_name: string;
   display_title: string;
@@ -34,6 +53,7 @@ export interface ProfileCard {
   openai_base_url: string | null;
   quota: QuotaSummary;
   last_plan_check_ms: number | null;
+  refresh_token_status: RefreshTokenStatus;
 }
 
 export interface CurrentCard {
@@ -45,6 +65,7 @@ export interface CurrentCard {
   subscription_days_left: number | null;
   profile_folder_path: string;
   last_plan_check_ms: number | null;
+  refresh_token_status: RefreshTokenStatus;
 }
 
 export interface PagingInfo {

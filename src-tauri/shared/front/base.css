@@ -2115,6 +2115,61 @@ button.pager-pill:hover:not(:disabled) {
   justify-content: flex-start;
 }
 
+.token-status-row {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-body);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.token-status-row--current {
+  align-self: flex-start;
+}
+
+.token-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.token-status-row.is-healthy {
+  color: #276749;
+}
+
+.token-status-row.is-refresh-due,
+.token-status-row.is-unknown-expiry {
+  color: #9a6b00;
+}
+
+.token-status-row.is-needs-login,
+.token-status-row.is-not-refreshable,
+.token-status-row.is-missing-auth {
+  color: var(--danger-text);
+}
+
+.token-status-label {
+  min-width: 0;
+}
+
+.token-status-age {
+  min-width: 0;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.token-status-action {
+  flex: 0 0 auto;
+  color: var(--text-body);
+  font-weight: 700;
+}
+
 .quota-source-badge {
   display: inline-flex;
   align-items: center;
@@ -2780,11 +2835,13 @@ button.pager-pill:disabled {
     align-items: flex-start;
   }
 
-  .quota-evidence-row {
+  .quota-evidence-row,
+  .token-status-row {
     flex-wrap: wrap;
   }
 
-  .quota-observed-age {
+  .quota-observed-age,
+  .token-status-age {
     text-align: left;
   }
 

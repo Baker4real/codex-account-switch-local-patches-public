@@ -8,7 +8,9 @@ use super::session_usage::{
     load_latest_local_quota_snapshot, normalize_quota_summary, LocalQuotaSnapshot,
 };
 
-pub use crate::shared::profiles_index::{load_profiles_index, load_profiles_snapshot};
+pub use crate::shared::profiles_index::{
+    load_profiles_index, load_profiles_snapshot, reload_profiles_index_after_mutation,
+};
 
 fn select_current_quota(
     entry: &ProfileIndexEntry,

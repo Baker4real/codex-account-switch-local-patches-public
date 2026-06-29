@@ -9,7 +9,7 @@ use crate::models::{
     ProfilesSnapshotResponse,
 };
 
-use super::metadata::load_profile_metadata;
+use super::metadata::{derive_refresh_token_status_from_auth_path, load_profile_metadata};
 use super::paths::{
     get_backup_root, get_codex_home, get_profiles_index_path, list_profile_dirs, utc_timestamp,
     DEFAULT_PAGE_SIZE,
@@ -19,7 +19,7 @@ use super::profiles::{
 };
 use super::session_usage::{load_latest_local_quota_snapshot, normalize_quota_summary};
 
-const PROFILES_INDEX_SCHEMA_VERSION: u32 = 3;
+const PROFILES_INDEX_SCHEMA_VERSION: u32 = 4;
 
 /// How long a freshly-rebuilt index lives in the in-process cache
 /// before the next `load_profiles_index` call re-reads the disk.
@@ -30,9 +30,26 @@ const PROFILES_INDEX_SCHEMA_VERSION: u32 = 3;
 /// across user-visible state changes.
 const PROFILES_INDEX_CACHE_TTL_MS: u128 = 250;
 
+#[cfg(test)]
+thread_local! {
+    static TEST_PROFILE_INDEX_CACHE_ENABLED: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 struct CachedProfilesIndex {
     fetched_at: Instant,
     index: ProfilesIndex,
+}
+
+fn profile_index_cache_enabled() -> bool {
+    #[cfg(test)]
+    {
+        TEST_PROFILE_INDEX_CACHE_ENABLED.with(|enabled| enabled.get())
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
 }
 
 fn cache_slot() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, CachedProfilesIndex>>
@@ -49,7 +66,7 @@ fn try_load_cached_index(codex_home: &Path) -> Option<ProfilesIndex> {
     // invalidation. Production has a single `codex_home` and benefits
     // from the dedup; tests run with throw-away temp dirs and do
     // their own state setup between calls.
-    if cfg!(test) {
+    if !profile_index_cache_enabled() {
         return None;
     }
     let slot = cache_slot().lock().ok()?;
@@ -71,7 +88,7 @@ fn try_load_cached_index(codex_home: &Path) -> Option<ProfilesIndex> {
 /// breaking this invariant would silently leak stale data through
 /// the 250 ms cache window for the next concurrent IPC pair.
 fn store_cached_index(codex_home: &Path, index: &ProfilesIndex) {
-    if cfg!(test) {
+    if !profile_index_cache_enabled() {
         return;
     }
     let Ok(mut slot) = cache_slot().lock() else {
@@ -84,6 +101,23 @@ fn store_cached_index(codex_home: &Path, index: &ProfilesIndex) {
             index: index.clone(),
         },
     );
+}
+
+pub fn invalidate_profiles_index_cache(codex_home: Option<&Path>) {
+    if !profile_index_cache_enabled() {
+        return;
+    }
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let Ok(mut slot) = cache_slot().lock() else {
+        return;
+    };
+    slot.remove(&codex_home);
+}
+
+pub fn reload_profiles_index_after_mutation(codex_home: Option<&Path>) -> AppResult<ProfilesIndex> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    invalidate_profiles_index_cache(Some(&codex_home));
+    load_profiles_index(Some(&codex_home))
 }
 
 fn file_signature(path: &Path) -> (Option<u64>, Option<u64>) {
@@ -127,6 +161,7 @@ fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIn
         stored_quota: metadata.quota,
         stored_quota_updated_at_ms: metadata.quota_updated_at_ms,
         last_plan_check_ms: metadata.last_plan_check_ms,
+        refresh_token_status: derive_refresh_token_status_from_auth_path(&auth_path),
         auth_mtime_ms,
         auth_size,
         profile_mtime_ms,
@@ -320,6 +355,7 @@ fn build_profile_card(entry: &ProfileIndexEntry, current_profile: Option<&str>) 
             entry.has_account_identity,
         ),
         last_plan_check_ms: entry.last_plan_check_ms,
+        refresh_token_status: entry.refresh_token_status.clone(),
     }
 }
 
@@ -337,6 +373,7 @@ fn build_current_card(entry: &ProfileIndexEntry, codex_home: &Path) -> CurrentCa
         ),
         profile_folder_path: profile_dir.to_string_lossy().into_owned(),
         last_plan_check_ms: entry.last_plan_check_ms,
+        refresh_token_status: entry.refresh_token_status.clone(),
     }
 }
 
@@ -428,4 +465,87 @@ pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQu
         profile: Some(entry.folder_name.clone()),
         quota: Some(quota),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::RefreshTokenHealth;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestCacheGuard;
+
+    impl TestCacheGuard {
+        fn enable() -> Self {
+            TEST_PROFILE_INDEX_CACHE_ENABLED.with(|enabled| enabled.set(true));
+            Self
+        }
+    }
+
+    impl Drop for TestCacheGuard {
+        fn drop(&mut self) {
+            TEST_PROFILE_INDEX_CACHE_ENABLED.with(|enabled| enabled.set(false));
+        }
+    }
+
+    fn temp_codex_home(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("codex-switch-profiles-index-{name}-{unique}"))
+    }
+
+    fn write_profile_auth(codex_home: &Path, profile: &str, refresh_expiry_ms: u64) {
+        let profile_dir = get_backup_root(Some(codex_home)).join(profile);
+        fs::create_dir_all(&profile_dir).unwrap();
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "refresh_token": "refresh-secret",
+                "refresh_token_expires_at_ms": refresh_expiry_ms
+            }
+        });
+        fs::write(
+            profile_dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn only_profile_health(index: &ProfilesIndex) -> RefreshTokenHealth {
+        index
+            .profiles
+            .first()
+            .expect("expected one profile")
+            .refresh_token_status
+            .health
+    }
+
+    #[test]
+    fn reload_after_mutation_invalidates_short_lived_cache() {
+        const THIRTY_DAYS_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+        let _cache = TestCacheGuard::enable();
+        let codex_home = temp_codex_home("cache-invalidation");
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        write_profile_auth(&codex_home, "a", now_ms + THIRTY_DAYS_MS);
+
+        let first = load_profiles_index(Some(&codex_home)).unwrap();
+        assert_eq!(only_profile_health(&first), RefreshTokenHealth::Healthy);
+
+        write_profile_auth(&codex_home, "a", now_ms.saturating_sub(60_000));
+        let cached = load_profiles_index(Some(&codex_home)).unwrap();
+        assert_eq!(only_profile_health(&cached), RefreshTokenHealth::Healthy);
+
+        let reloaded = reload_profiles_index_after_mutation(Some(&codex_home)).unwrap();
+        assert_eq!(
+            only_profile_health(&reloaded),
+            RefreshTokenHealth::NeedsLogin
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
 }

@@ -106,7 +106,8 @@ fn refresh_active_profile_quota_silent_inner() -> Result<CurrentQuotaResponse, C
             plan_type_from_api,
             Some(&codex_home),
         );
-        let _ = crate::shared::profiles_index::load_profiles_index(Some(&codex_home));
+        let _ =
+            crate::shared::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home));
     }
 
     platform_runtime::profiles_index::load_current_live_quota(None).map_err(Into::into)
@@ -225,7 +226,9 @@ fn refresh_all_oauth_profile_plans_silent_inner() -> Result<u32, CommandError> {
     }
 
     if refreshed > 0 {
-        if let Err(error) = crate::shared::profiles_index::load_profiles_index(Some(&codex_home)) {
+        if let Err(error) =
+            crate::shared::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))
+        {
             eprintln!(
                 "bulk plan refresh: post-loop index reload failed: {}",
                 error.message

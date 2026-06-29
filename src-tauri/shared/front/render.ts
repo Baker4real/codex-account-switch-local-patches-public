@@ -8,6 +8,8 @@ import type {
   QuotaSource,
   QuotaSummary,
   QuotaWindow,
+  RefreshTokenHealth,
+  RefreshTokenStatus,
   ShellRoute,
   UpdateCheckResponse,
 } from "@front-shared/types";
@@ -259,6 +261,147 @@ function formatQuotaObservedAge(provenance: QuotaProvenance): string {
   }
 
   return t(state.locale, "quotaObservedDaysAgo", { value: Math.floor(hours / 24) });
+}
+
+function formatTokenObservedAge(timestamp: number | null): string {
+  if (timestamp == null) {
+    return t(state.locale, "tokenUpdatedUnknown");
+  }
+
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 1) {
+    return t(state.locale, "tokenUpdatedJustNow");
+  }
+  if (minutes < 60) {
+    return t(state.locale, "tokenUpdatedMinutesAgo", { value: minutes });
+  }
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    return t(state.locale, "tokenUpdatedHoursAgo", { value: hours });
+  }
+
+  return t(state.locale, "tokenUpdatedDaysAgo", { value: Math.floor(hours / 24) });
+}
+
+function formatTokenDate(timestamp: number | null): string | null {
+  if (timestamp == null) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat(state.locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(timestamp));
+}
+
+function tokenHealthLabel(health: RefreshTokenHealth): string {
+  switch (health) {
+    case "healthy":
+      return t(state.locale, "tokenHealthHealthy");
+    case "refresh_due":
+      return t(state.locale, "tokenHealthRefreshDue");
+    case "needs_login":
+      return t(state.locale, "tokenHealthNeedsLogin");
+    case "not_refreshable":
+      return t(state.locale, "tokenHealthNotRefreshable");
+    case "missing_auth":
+      return t(state.locale, "tokenHealthMissingAuth");
+    case "unknown_expiry":
+    default:
+      return t(state.locale, "tokenHealthUnknownExpiry");
+  }
+}
+
+function tokenHealthClass(health: RefreshTokenHealth): string {
+  switch (health) {
+    case "healthy":
+      return "is-healthy";
+    case "refresh_due":
+      return "is-refresh-due";
+    case "needs_login":
+      return "is-needs-login";
+    case "not_refreshable":
+      return "is-not-refreshable";
+    case "missing_auth":
+      return "is-missing-auth";
+    case "unknown_expiry":
+    default:
+      return "is-unknown-expiry";
+  }
+}
+
+function tokenActionText(status: RefreshTokenStatus): string {
+  switch (status.health) {
+    case "needs_login":
+      return t(state.locale, "tokenActionLogin");
+    case "not_refreshable":
+      return t(state.locale, "tokenActionNotRefreshable");
+    case "missing_auth":
+      return t(state.locale, "tokenActionMissingAuth");
+    case "healthy":
+    case "refresh_due":
+    case "unknown_expiry":
+    default:
+      return status.can_refresh
+        ? t(state.locale, "tokenActionRefresh")
+        : t(state.locale, "tokenActionLogin");
+  }
+}
+
+function tokenInlineAction(status: RefreshTokenStatus): string {
+  switch (status.health) {
+    case "healthy":
+      return t(state.locale, "tokenInlineNoAction");
+    case "needs_login":
+    case "missing_auth":
+      return t(state.locale, "tokenInlineLogin");
+    case "not_refreshable":
+      return t(state.locale, "tokenInlineNoAction");
+    case "refresh_due":
+    case "unknown_expiry":
+    default:
+      return status.can_refresh
+        ? t(state.locale, "tokenInlineRefresh")
+        : t(state.locale, "tokenInlineLogin");
+  }
+}
+
+function buildTokenStatusMarkup(
+  status: RefreshTokenStatus,
+  layout: "profile" | "current",
+): string {
+  const label = tokenHealthLabel(status.health);
+  const updated = formatTokenObservedAge(status.last_refresh_at_ms ?? status.auth_updated_at_ms);
+  const refreshExpiry = formatTokenDate(status.refresh_token_expires_at_ms);
+  const accessExpiry = formatTokenDate(status.access_token_expires_at_ms ?? status.id_token_expires_at_ms);
+  const expiryLine = refreshExpiry
+    ? t(state.locale, "tokenRefreshExpiresAt", { value: refreshExpiry })
+    : accessExpiry
+      ? t(state.locale, "tokenExpiresAt", { value: accessExpiry })
+      : t(state.locale, "tokenRefreshExpiryUnknown");
+  const inlineExpiry = refreshExpiry
+    ? t(state.locale, "tokenRefreshExpiresShort", { value: refreshExpiry })
+    : accessExpiry
+      ? t(state.locale, "tokenAccessExpiresShort", { value: accessExpiry })
+      : t(state.locale, "tokenRefreshExpiryUnknown");
+  const action = tokenActionText(status);
+  const inlineAction = tokenInlineAction(status);
+  const title = `${label}. ${updated}. ${expiryLine}. ${action}`;
+
+  return `
+    <div
+      class="token-status-row token-status-row--${layout} ${tokenHealthClass(status.health)}"
+      title="${escapeHtml(title)}"
+      aria-label="${escapeHtml(title)}"
+    >
+      <span class="token-status-dot" aria-hidden="true"></span>
+      <span class="token-status-label">${escapeHtml(label)}</span>
+      <span class="token-status-age">${escapeHtml(inlineExpiry)}</span>
+      <span class="token-status-action">${escapeHtml(inlineAction)}</span>
+    </div>
+  `;
 }
 
 function buildQuotaEvidenceMarkup(
@@ -529,6 +672,7 @@ function buildProfileQuotaMarkup(profile: ProfileCard): string {
         ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "profile")}
       </div>
       <div class="quota-meta-stack quota-meta-stack--profile">
+        ${buildTokenStatusMarkup(profile.refresh_token_status, "profile")}
         ${buildQuotaEvidenceMarkup(quota, "profile")}
         ${buildQuotaLowWarningMarkup(quota, unavailable, "profile")}
       </div>
@@ -539,11 +683,13 @@ function buildProfileQuotaMarkup(profile: ProfileCard): string {
 function buildCurrentQuotaMarkup(
   quota: QuotaSummary | null | undefined,
   hasAccountIdentity: boolean,
+  refreshTokenStatus: RefreshTokenStatus,
 ): string {
   const unavailable = !hasAccountIdentity;
 
   return `
     <div class="current-quota-stack">
+      ${buildTokenStatusMarkup(refreshTokenStatus, "current")}
       ${buildQuotaEvidenceMarkup(quota, "current")}
       ${buildMetricLineMarkup(t(state.locale, "fiveHourAllowance"), quota?.five_hour, "blue", unavailable, "current")}
       ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "current")}
@@ -674,6 +820,7 @@ export function renderCurrentCard(dashboard: DashboardViewModel): void {
   elements.currentQuotaPanel.innerHTML = buildCurrentQuotaMarkup(
     dashboard.current_quota_card,
     current.has_account_identity,
+    current.refresh_token_status,
   );
 }
 

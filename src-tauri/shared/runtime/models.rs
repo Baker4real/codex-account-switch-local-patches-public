@@ -114,6 +114,40 @@ pub struct ProfileMetadata {
     pub last_plan_check_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshTokenHealth {
+    Healthy,
+    RefreshDue,
+    NeedsLogin,
+    UnknownExpiry,
+    NotRefreshable,
+    MissingAuth,
+}
+
+impl Default for RefreshTokenHealth {
+    fn default() -> Self {
+        Self::UnknownExpiry
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct RefreshTokenStatus {
+    pub health: RefreshTokenHealth,
+    pub can_refresh: bool,
+    pub refresh_token_present: bool,
+    /// OAuth providers do not always expose refresh-token expiry. Keep
+    /// this nullable and let the UI say "unknown" instead of inventing a
+    /// date. If OpenAI/Codex starts writing one, the derivation layer can
+    /// fill it without changing the front-end contract.
+    pub refresh_token_expires_at_ms: Option<u64>,
+    pub access_token_expires_at_ms: Option<u64>,
+    pub id_token_expires_at_ms: Option<u64>,
+    pub auth_updated_at_ms: Option<u64>,
+    pub last_refresh_at_ms: Option<u64>,
+}
+
 impl ProfileMetadata {
     pub fn with_folder_name(folder_name: &str) -> Self {
         Self {
@@ -159,6 +193,7 @@ pub struct ProfileCard {
     /// re-fetching per-profile metadata. `None` for legacy entries
     /// that predate the field.
     pub last_plan_check_ms: Option<u64>,
+    pub refresh_token_status: RefreshTokenStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +206,7 @@ pub struct CurrentCard {
     pub subscription_days_left: Option<i64>,
     pub profile_folder_path: String,
     pub last_plan_check_ms: Option<u64>,
+    pub refresh_token_status: RefreshTokenStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,6 +225,7 @@ pub struct ProfileIndexEntry {
     /// rolls up profile.json. Lets the dashboard show plan freshness
     /// without re-reading per-profile metadata.
     pub last_plan_check_ms: Option<u64>,
+    pub refresh_token_status: RefreshTokenStatus,
     pub auth_mtime_ms: Option<u64>,
     pub auth_size: Option<u64>,
     pub profile_mtime_ms: Option<u64>,

@@ -10,7 +10,7 @@ use super::fs_ops::{
 use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
-use super::profiles_index::load_profiles_index;
+use super::profiles_index::reload_profiles_index_after_mutation;
 
 fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard> {
     acquire_process_lock(
@@ -63,7 +63,7 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
     overlay_directory_contents(&profile_dir, &codex_home)?;
     hooks.sync_root_openai_base_url_for_profile(&profile_name, Some(&codex_home))?;
     set_active_marker(&profile_name, &backup_root)?;
-    load_profiles_index(Some(&codex_home))?;
+    reload_profiles_index_after_mutation(Some(&codex_home))?;
     let warnings = hooks.reopen_codex_app_if_needed(app_was_running, Some(&codex_home));
 
     Ok(SwitchResponse {

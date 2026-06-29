@@ -180,7 +180,7 @@ fn try_refresh_via_chatgpt_api(
     let metadata =
         sync_profile_metadata_from_auth(profile_name, plan_type_from_api, Some(codex_home))?;
     sync_root_metadata_if_current_profile(profile_name, &metadata, Some(codex_home))?;
-    super::profiles_index::load_profiles_index(Some(codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(codex_home))?;
     Ok(Some(profile_dir.to_string_lossy().into_owned()))
 }
 
@@ -258,7 +258,7 @@ fn refresh_via_app_server(
     let metadata =
         sync_profile_metadata_from_auth(profile_name, snapshot.plan_type, Some(codex_home))?;
     sync_root_metadata_if_current_profile(profile_name, &metadata, Some(codex_home))?;
-    super::profiles_index::load_profiles_index(Some(codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }

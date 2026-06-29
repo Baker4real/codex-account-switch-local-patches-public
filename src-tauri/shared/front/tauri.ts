@@ -12,6 +12,7 @@ import type {
   QuotaConfidence,
   QuotaSource,
   QuotaSummary,
+  RefreshTokenStatus,
   SwitchResponse,
   UpdateCheckResponse,
 } from "@front-shared/types";
@@ -64,6 +65,22 @@ function quota(
   };
 }
 
+function refreshStatus(
+  overrides: Partial<RefreshTokenStatus> = {},
+): RefreshTokenStatus {
+  return {
+    health: "unknown_expiry",
+    can_refresh: true,
+    refresh_token_present: true,
+    refresh_token_expires_at_ms: null,
+    access_token_expires_at_ms: Date.now() + 2 * 60 * 60 * 1000,
+    id_token_expires_at_ms: Date.now() + 2 * 60 * 60 * 1000,
+    auth_updated_at_ms: Date.now() - 3 * 24 * 60 * 60 * 1000,
+    last_refresh_at_ms: null,
+    ...overrides,
+  };
+}
+
 const previewProfiles: ProfileCard[] = [
   {
     folder_name: "workspace-alpha",
@@ -77,6 +94,7 @@ const previewProfiles: ProfileCard[] = [
     openai_base_url: null,
     quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 30 * 60 * 1000),
     last_plan_check_ms: Date.now() - 30 * 60 * 1000,
+    refresh_token_status: refreshStatus(),
   },
   {
     folder_name: "workspace-beta",
@@ -90,6 +108,10 @@ const previewProfiles: ProfileCard[] = [
     openai_base_url: null,
     quota: quota(18, "1小时后刷新", 42, "4天6小时后刷新", "codex_app_server", "fallback", 3 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 4 * 60 * 60 * 1000,
+    refresh_token_status: refreshStatus({
+      health: "refresh_due",
+      access_token_expires_at_ms: Date.now() + 45 * 60 * 1000,
+    }),
   },
   {
     folder_name: "workspace-gamma",
@@ -103,6 +125,14 @@ const previewProfiles: ProfileCard[] = [
     openai_base_url: null,
     quota: quota(null, "6小时后刷新", null, "7天2小时后刷新", "unknown", "unknown", null),
     last_plan_check_ms: null,
+    refresh_token_status: refreshStatus({
+      health: "missing_auth",
+      can_refresh: false,
+      refresh_token_present: false,
+      access_token_expires_at_ms: null,
+      id_token_expires_at_ms: null,
+      auth_updated_at_ms: null,
+    }),
   },
   {
     folder_name: "workspace-delta",
@@ -116,6 +146,11 @@ const previewProfiles: ProfileCard[] = [
     openai_base_url: "https://example.com/v1",
     quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新", "session_jsonl", "local_observation", 26 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 8 * 24 * 60 * 60 * 1000,
+    refresh_token_status: refreshStatus({
+      health: "not_refreshable",
+      can_refresh: false,
+      refresh_token_present: false,
+    }),
   },
   {
     folder_name: "workspace-epsilon",
@@ -129,6 +164,10 @@ const previewProfiles: ProfileCard[] = [
     openai_base_url: null,
     quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 2 * 24 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 2 * 24 * 60 * 60 * 1000,
+    refresh_token_status: refreshStatus({
+      health: "healthy",
+      refresh_token_expires_at_ms: Date.now() + 14 * 24 * 60 * 60 * 1000,
+    }),
   },
   {
     folder_name: "workspace-zeta",
@@ -142,6 +181,10 @@ const previewProfiles: ProfileCard[] = [
     openai_base_url: "https://example.com/v1",
     quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新", "codex_app_server", "fallback", 8 * 24 * 60 * 60 * 1000),
     last_plan_check_ms: null,
+    refresh_token_status: refreshStatus({
+      health: "refresh_due",
+      auth_updated_at_ms: Date.now() - 36 * 24 * 60 * 60 * 1000,
+    }),
   },
 ];
 
@@ -154,6 +197,7 @@ let previewCurrentCard: CurrentCard = {
   subscription_days_left: 18,
   profile_folder_path: "/mock/workspace-alpha",
   last_plan_check_ms: Date.now() - 30 * 60 * 1000,
+  refresh_token_status: refreshStatus(),
 };
 
 let previewCurrentQuota: QuotaSummary = quota(
@@ -233,6 +277,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
             subscription_days_left: next.subscription_days_left,
             profile_folder_path: `C:/mock/${next.folder_name}`,
             last_plan_check_ms: next.last_plan_check_ms,
+            refresh_token_status: clone(next.refresh_token_status),
           };
           previewCurrentQuota = clone(next.quota);
           refreshPreviewSnapshot();
@@ -286,6 +331,10 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
             openai_base_url: payload.openai_base_url ?? null,
             quota: quota(52, "5小时后刷新", 67, "3天后刷新"),
             last_plan_check_ms: Date.now(),
+            refresh_token_status: refreshStatus({
+              health: "unknown_expiry",
+              auth_updated_at_ms: Date.now(),
+            }),
           });
           refreshPreviewSnapshot();
         }

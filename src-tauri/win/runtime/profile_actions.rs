@@ -81,7 +81,7 @@ pub fn login_current_profile() -> AppResult<String> {
 
     backup_root_state_to_profile(&current_profile, &codex_home, &backup_root)?;
     sync_profile_metadata_from_auth(&current_profile, None, Some(&codex_home))?;
-    super::profiles_index::load_profiles_index(Some(&codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }
@@ -103,7 +103,7 @@ pub fn update_profile_base_url(profile_name: &str, openai_base_url: &str) -> App
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
         sync_root_openai_base_url_from_profile_metadata(&profile_name, Some(&codex_home))?;
     }
-    super::profiles_index::load_profiles_index(Some(&codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }
@@ -141,7 +141,7 @@ pub fn delete_profile(profile_name: &str) -> AppResult<String> {
     }
 
     remove_path(&profile_dir)?;
-    super::profiles_index::load_profiles_index(Some(&codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }
@@ -172,7 +172,7 @@ pub fn clear_profile_account(profile_name: &str) -> AppResult<String> {
         &ProfileMetadata::with_folder_name(&profile_name),
         Some(&codex_home),
     )?;
-    super::profiles_index::load_profiles_index(Some(&codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }
@@ -231,7 +231,7 @@ fn rename_profile_with_home(
     let mut metadata = load_profile_metadata(&new_folder_name, Some(&codex_home));
     metadata.folder_name = Some(new_folder_name.clone());
     save_profile_metadata(&new_folder_name, &metadata, Some(&codex_home))?;
-    super::profiles_index::load_profiles_index(Some(&codex_home))?;
+    super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(renamed_dir.to_string_lossy().into_owned())
 }
@@ -292,7 +292,7 @@ pub fn add_profile(folder_name: &str, openai_base_url: Option<&str>) -> AppResul
     let mut metadata = ProfileMetadata::with_folder_name(&folder_name);
     metadata.openai_base_url = normalize_openai_base_url(openai_base_url.unwrap_or_default())?;
     save_profile_metadata(&folder_name, &metadata, None)?;
-    super::profiles_index::load_profiles_index(None)?;
+    super::profiles_index::reload_profiles_index_after_mutation(None)?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
 }

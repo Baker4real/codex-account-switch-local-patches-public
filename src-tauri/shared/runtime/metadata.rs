@@ -1,9 +1,12 @@
 use base64::{engine::general_purpose, Engine as _};
+use chrono::DateTime;
 use serde::Deserialize;
 use std::fs;
 use std::path::Path;
 
-use crate::models::{ProfileMetadata, QuotaProvenance, QuotaSummary};
+use crate::models::{
+    ProfileMetadata, QuotaProvenance, QuotaSummary, RefreshTokenHealth, RefreshTokenStatus,
+};
 
 use super::paths::{
     get_backup_root, get_codex_home, get_profile_metadata_path, validate_profile_name,
@@ -22,7 +25,10 @@ pub(super) const UNKNOWN_PAID_PLAN_NAME: &str = "unknown_paid";
 
 #[derive(Deserialize)]
 struct AuthFile {
+    auth_mode: Option<String>,
     tokens: Option<AuthTokens>,
+    last_refresh: Option<String>,
+    last_refresh_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -30,6 +36,9 @@ struct AuthTokens {
     access_token: Option<String>,
     id_token: Option<String>,
     account_id: Option<String>,
+    refresh_token: Option<String>,
+    refresh_token_expires_at: Option<serde_json::Value>,
+    refresh_token_expires_at_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -63,6 +72,9 @@ pub struct AuthDerivedMetadata {
     pub has_plan_claims: bool,
 }
 
+const TOKEN_REFRESH_DUE_MS: u64 = 24 * 60 * 60 * 1000;
+const UNKNOWN_REFRESH_TOKEN_RELOGIN_REMINDER_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+
 fn normalized_value(value: Option<String>) -> Option<String> {
     value.and_then(|raw| {
         let trimmed = raw.trim();
@@ -78,6 +90,165 @@ fn decode_token_claims(token: &str) -> Option<IdTokenClaims> {
         .or_else(|_| general_purpose::URL_SAFE.decode(payload))
         .ok()?;
     serde_json::from_slice::<IdTokenClaims>(&decoded).ok()
+}
+
+fn decode_token_expiry_ms(token: &str) -> Option<u64> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| general_purpose::URL_SAFE.decode(payload))
+        .ok()?;
+    let value = serde_json::from_slice::<serde_json::Value>(&decoded).ok()?;
+    let exp = value.get("exp")?.as_i64()?;
+    u64::try_from(exp).ok()?.checked_mul(1000)
+}
+
+fn parse_timestamp_ms(value: &str) -> Option<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("replace-me") {
+        return None;
+    }
+
+    if let Ok(raw) = trimmed.parse::<u64>() {
+        return Some(if raw > 10_000_000_000 {
+            raw
+        } else {
+            raw.saturating_mul(1000)
+        });
+    }
+
+    DateTime::parse_from_rfc3339(trimmed)
+        .ok()
+        .and_then(|datetime| u64::try_from(datetime.timestamp_millis()).ok())
+}
+
+fn parse_json_timestamp_ms(value: &serde_json::Value) -> Option<u64> {
+    match value {
+        serde_json::Value::Number(number) => number.as_u64().map(|raw| {
+            if raw > 10_000_000_000 {
+                raw
+            } else {
+                raw.saturating_mul(1000)
+            }
+        }),
+        serde_json::Value::String(text) => parse_timestamp_ms(text),
+        _ => None,
+    }
+}
+
+fn auth_file_modified_ms(auth_path: &Path) -> Option<u64> {
+    fs::metadata(auth_path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|value| u64::try_from(value.as_millis()).ok())
+}
+
+fn refresh_token_health(
+    can_refresh: bool,
+    last_refresh_at_ms: Option<u64>,
+    refresh_token_expires_at_ms: Option<u64>,
+) -> RefreshTokenHealth {
+    if !can_refresh {
+        return RefreshTokenHealth::NotRefreshable;
+    }
+
+    let Some(now_ms) = current_time_ms() else {
+        return RefreshTokenHealth::UnknownExpiry;
+    };
+
+    if let Some(expiry_ms) = refresh_token_expires_at_ms {
+        if expiry_ms <= now_ms {
+            return RefreshTokenHealth::NeedsLogin;
+        }
+        if expiry_ms.saturating_sub(now_ms) <= TOKEN_REFRESH_DUE_MS {
+            return RefreshTokenHealth::RefreshDue;
+        }
+        return RefreshTokenHealth::Healthy;
+    }
+
+    if last_refresh_at_ms.is_some_and(|updated_at| {
+        now_ms.saturating_sub(updated_at) >= UNKNOWN_REFRESH_TOKEN_RELOGIN_REMINDER_MS
+    }) {
+        return RefreshTokenHealth::RefreshDue;
+    }
+
+    RefreshTokenHealth::UnknownExpiry
+}
+
+pub fn derive_refresh_token_status_from_auth_path(auth_path: &Path) -> RefreshTokenStatus {
+    if !auth_path.is_file() {
+        return RefreshTokenStatus {
+            health: RefreshTokenHealth::MissingAuth,
+            ..RefreshTokenStatus::default()
+        };
+    }
+
+    let auth_updated_at_ms = auth_file_modified_ms(auth_path);
+    let raw = match fs::read_to_string(auth_path) {
+        Ok(value) => value,
+        Err(_) => {
+            return RefreshTokenStatus {
+                health: RefreshTokenHealth::NotRefreshable,
+                auth_updated_at_ms,
+                ..RefreshTokenStatus::default()
+            };
+        }
+    };
+    let auth = match serde_json::from_str::<AuthFile>(&raw) {
+        Ok(value) => value,
+        Err(_) => {
+            return RefreshTokenStatus {
+                health: RefreshTokenHealth::NotRefreshable,
+                auth_updated_at_ms,
+                ..RefreshTokenStatus::default()
+            };
+        }
+    };
+
+    let Some(tokens) = auth.tokens else {
+        return RefreshTokenStatus {
+            health: RefreshTokenHealth::NotRefreshable,
+            auth_updated_at_ms,
+            ..RefreshTokenStatus::default()
+        };
+    };
+
+    let refresh_token_present = normalized_value(tokens.refresh_token).is_some();
+    let auth_mode = auth.auth_mode.unwrap_or_default();
+    let auth_mode = auth_mode.trim();
+    let can_refresh = refresh_token_present
+        && (auth_mode.is_empty() || auth_mode.eq_ignore_ascii_case("chatgpt"));
+    let refresh_token_expires_at_ms = tokens.refresh_token_expires_at_ms.or_else(|| {
+        tokens
+            .refresh_token_expires_at
+            .as_ref()
+            .and_then(parse_json_timestamp_ms)
+    });
+    let access_token_expires_at_ms = tokens
+        .access_token
+        .as_deref()
+        .and_then(decode_token_expiry_ms);
+    let id_token_expires_at_ms = tokens.id_token.as_deref().and_then(decode_token_expiry_ms);
+    let last_refresh_at_ms = auth
+        .last_refresh_at
+        .as_deref()
+        .and_then(parse_timestamp_ms)
+        .or_else(|| auth.last_refresh.as_deref().and_then(parse_timestamp_ms));
+    let health = refresh_token_health(can_refresh, last_refresh_at_ms, refresh_token_expires_at_ms);
+
+    RefreshTokenStatus {
+        health,
+        can_refresh,
+        refresh_token_present,
+        refresh_token_expires_at_ms,
+        access_token_expires_at_ms,
+        id_token_expires_at_ms,
+        auth_updated_at_ms,
+        last_refresh_at_ms,
+    }
 }
 
 pub(super) fn load_auth_metadata_from_path(auth_path: &Path) -> Option<AuthDerivedMetadata> {
@@ -678,6 +849,10 @@ mod tests {
         format!("{header}.{payload}.signature")
     }
 
+    fn token_with_exp(exp_seconds: i64) -> String {
+        synthesize_jwt(&format!(r#"{{"exp":{exp_seconds}}}"#))
+    }
+
     fn write_auth_with_id_token(dir: &Path, id_token: &str) {
         let auth_json = format!(
             "{{\"tokens\":{{\"id_token\":{}}}}}",
@@ -784,5 +959,126 @@ mod tests {
         assert_eq!(derived.plan_name, None);
         assert_eq!(derived.subscription_expires_at, None);
         assert!(!derived.has_plan_claims);
+    }
+
+    #[test]
+    fn refresh_status_is_unknown_when_refresh_token_expiry_not_provided() {
+        let dir = temp_dir("refresh-status-unknown");
+        let future = chrono::Utc::now().timestamp() + 7 * 24 * 60 * 60;
+        let last_refresh = chrono::Utc::now().to_rfc3339();
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": token_with_exp(future),
+                "id_token": token_with_exp(future),
+                "refresh_token": "refresh-secret"
+            },
+            "last_refresh": last_refresh
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert!(status.can_refresh);
+        assert!(status.refresh_token_present);
+        assert_eq!(status.health, RefreshTokenHealth::UnknownExpiry);
+        assert_eq!(status.refresh_token_expires_at_ms, None);
+        assert_eq!(status.last_refresh_at_ms, parse_timestamp_ms(&last_refresh));
+    }
+
+    #[test]
+    fn refresh_status_keeps_refresh_expiry_unknown_when_access_token_expires_soon() {
+        let dir = temp_dir("refresh-status-due");
+        let soon = chrono::Utc::now().timestamp() + 15 * 60;
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": token_with_exp(soon),
+                "refresh_token": "refresh-secret"
+            }
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::UnknownExpiry);
+        assert!(status.can_refresh);
+        assert!(status.access_token_expires_at_ms.is_some());
+    }
+
+    #[test]
+    fn refresh_status_requires_login_when_refresh_token_expired() {
+        let dir = temp_dir("refresh-status-expired");
+        let expired_ms = chrono::Utc::now().timestamp_millis().saturating_sub(60_000) as u64;
+        let auth_json = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": token_with_exp(chrono::Utc::now().timestamp() + 3600),
+                "refresh_token": "refresh-secret",
+                "refresh_token_expires_at_ms": expired_ms
+            }
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::NeedsLogin);
+        assert!(status.can_refresh);
+        assert_eq!(status.refresh_token_expires_at_ms, Some(expired_ms));
+    }
+
+    #[test]
+    fn refresh_status_apikey_auth_is_not_refreshable() {
+        let dir = temp_dir("refresh-status-apikey");
+        let auth_json = serde_json::json!({
+            "auth_mode": "apikey",
+            "tokens": {
+                "refresh_token": "refresh-secret"
+            }
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::NotRefreshable);
+        assert!(!status.can_refresh);
+        assert!(status.refresh_token_present);
+    }
+
+    #[test]
+    fn refresh_status_missing_auth_mode_remains_legacy_refreshable() {
+        let dir = temp_dir("refresh-status-legacy-mode");
+        let auth_json = serde_json::json!({
+            "tokens": {
+                "refresh_token": "refresh-secret"
+            }
+        });
+        std::fs::write(
+            dir.join("auth.json"),
+            serde_json::to_string(&auth_json).unwrap(),
+        )
+        .unwrap();
+
+        let status = derive_refresh_token_status_from_auth_path(&dir.join("auth.json"));
+
+        assert_eq!(status.health, RefreshTokenHealth::UnknownExpiry);
+        assert!(status.can_refresh);
+        assert!(status.refresh_token_present);
     }
 }
