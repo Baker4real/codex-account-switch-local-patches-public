@@ -18,9 +18,9 @@ then rebuild and replace the installed executable:
   falling back to other PowerShell executables.
 - Update dialogs warn that local patches must be merged before replacement.
 - Windows real-Codex discovery validates cached and user-specified paths with
-  `codex --version`, skips stale shims, and probes official OpenAI versioned
-  runtime directories so Codex upgrades do not strand the app on a deleted
-  runtime path.
+  `codex --version` and a Codex version line, skips stale shims, and probes
+  official OpenAI versioned runtime directories so Codex upgrades do not strand
+  the app on a deleted runtime path.
 - When mirroring auth/profile state to another Windows host, preserve that
   host's `%CODEX_HOME%\account_backup\windows\install_state.json`; only sync
   root/profile auth and metadata. Disposable `login_runtime`, `refresh_runtime`,

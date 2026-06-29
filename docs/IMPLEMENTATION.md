@@ -123,7 +123,7 @@ The switch script itself does not create profile folders or generate missing aut
 The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HOME%\bin` is first in the user PATH.
 
 - `codex switch ...` routes to `%CODEX_HOME%\account_backup\windows\codex_switch_cli.exe shim switch ...`
-- Non-switch `codex` commands are forwarded to the previously resolved real Codex CLI path from `install_state.json` only while that path still passes `codex --version`
+- Non-switch `codex` commands are forwarded to the previously resolved real Codex CLI path from `install_state.json` only while that path still passes `codex --version` and reports a Codex version line
 - `%CODEX_HOME%\account_backup\windows` is reserved runtime state and excluded from profile listing / active-profile scans
 
 ## Windows desktop app actions
@@ -147,7 +147,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 
 ## Windows Codex CLI discovery
 
-Windows real-Codex resolution rejects the managed shim, Windows Apps aliases, and any existing user/cached path that cannot run `codex --version` successfully. Discovery includes:
+Windows real-Codex resolution rejects the managed shim, Windows Apps aliases, and any existing user/cached path that cannot run `codex --version` successfully with a Codex version line. Discovery includes:
 
 1. `CODEX_EXE`
 2. `CODEX_INSTALL_DIR\codex.exe`
@@ -176,3 +176,4 @@ Windows desktop app discovery first prefers the path recorded in `install_state.
 - Primary regression baseline is the Rust suite under `src-tauri/`
 - Root command: `npm test`
 - Equivalent direct command: `cargo test --manifest-path src-tauri/Cargo.toml`
+- Windows GNU/MinGW host check: `npm run test:rust:windows-gnu`
