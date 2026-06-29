@@ -139,6 +139,13 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - `Add Profiles` creates a new profile directory and writes template `auth.json` plus `profile.json`
 - `Contact Us` opens the project GitHub repository
 
+## Plan / quota 来源与可信度
+
+- `QuotaSummary` 在 5 小时和周额度窗口之外携带 `provenance` 元数据，让前端能区分官方新鲜数据、fallback 数据和本地观测数据。
+- 来源取值为 `chat_gpt_api`、`codex_app_server`、`session_jsonl`、`unknown`；可信度取值为 `official`、`fallback`、`local_observation`、`unknown`。
+- ChatGPT Web API 路径把 quota 标记为 `official`；Codex app-server JSON-RPC 路径标记为 `fallback`；session JSONL 解析标记为 `local_observation`，并在可用时附带来源文件 mtime。
+- 账号页在 quota 数值旁显示来源 badge 和观测年龄。5 小时或周额度剩余百分比低于或等于 20% 时只进入警示状态；账号切换仍必须由用户显式触发。
+
 ## Local Windows patch build
 
 - `LOCAL_PATCHES.md` is the upgrade checklist for this machine's installed local-patch build
@@ -146,7 +153,8 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - The local update checker prefers `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe`, then `pwsh`, then `powershell`, because Windows PowerShell 5.x is blocked on the target host
 - The local portable build command is `npm run tauri:build:portable`; the installed target is `D:\Codex\apps\codex_switch\codex_switch.exe`
 - 本地 MSVC 便携构建命令是 `npm run tauri:build:windows:portable`；它需要 Rust target `x86_64-pc-windows-msvc`、Visual Studio Build Tools C++ 工具链和 Windows SDK，产物写入 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`
-- A GNU/Tauri local portable replacement must copy both `codex_switch.exe` and the adjacent `WebView2Loader.dll` into `D:\Codex\apps\codex_switch\`
+- `scripts/tauri-windows-msvc-build.mjs` 只修改构建子进程内的 `PATH`：它把 `D:\Codex\.cargo\bin` 放到前面，检查 `rustc -vV`，并在当前 compiler host 不是 `x86_64-pc-windows-msvc` 时中止
+- 本地便携替换必须把 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 一起复制到 `D:\Codex\apps\codex_switch\`；target-specific MSVC 构建里，loader 可能位于 `webview2-com-sys` build output，而不是 release 可执行文件旁边
 
 ## Windows Codex CLI discovery
 

@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Windows 本地补丁登录现在改为账号标签路由：匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 的目标账号无论在哪个 profile 槽位都通过 `codex app-server` 打开用户正常 Edge 状态；profile `b` / `c` 不再自带 Chrome / Edge 强制规则。定向 Edge flow 仍不传 `--user-data-dir` / `--new-window`，并保留写入前账号身份校验。
+- 账号页 quota 读数现在显示来源与新鲜度：官方 ChatGPT API、Codex app-server fallback、本地 session 观测或未知来源。5 小时 / 周额度低于或等于 20% 时只显示低额度提示，不自动切换账号。
+- Windows 本地 MSVC 便携构建现在通过 `scripts/tauri-windows-msvc-build.mjs` 执行；脚本优先使用 `D:\Codex\.cargo\bin` 下的 rustup shim，并在 `rustc -vV` 未报告 `x86_64-pc-windows-msvc` 时拒绝构建，避免 PATH 中更靠前的 GNU Rust 静默产出错误本地产物。
 
 ## 1.5.12 - 2026-05-29
 

@@ -17,16 +17,16 @@
 
 **Codex 账号切换工具**（Codex Switch）是一个面向 **OpenAI Codex CLI** 的本地桌面账号管理器。它把多份 `~/.codex/{auth.json,config.toml,sessions/...}` 状态各自打包到独立账号备份目录，一键切换"当前 Codex 账号"，并把每个账号的 plan / 5 小时额度 / 周额度直接渲染在桌面端。
 
-跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，不需要本地解析 Codex sessions/jsonl 日志即可看到每个账号"还能用多久"。
+跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，并在 UI 标明额度来源与观测时间；只有没有实时来源时才退回本地 sessions/jsonl 观测。
 
 当前版本 **v1.5.12**（详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases)）。
 
 ## 能做什么
 
 - 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `config.toml` / `sessions/`），切换时把目标账号 swap 进 `~/.codex/`，旧账号自动归档到备份目录。
-- **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮。
+- **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮，并用来源 badge 区分官方 API、app-server fallback、本地观测或未知数据。
 - **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 指定账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
-- **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号，per-card 刷新按钮也共享同一缓存；切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。
+- **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号，per-card 刷新按钮也共享同一缓存；切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。5 小时或周额度低于 20% 时只提示风险，不自动切换账号。
 - **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
 - **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
 - **跨平台原生 Tauri**：macOS arm64 / x64 与 Windows x64 提供原生窗口、原生标题栏 / 关闭按钮，配套 5 套浅色 / 深色主题与中英文界面。
@@ -123,7 +123,7 @@ dist/
     ...
 ```
 
-Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`；本地补丁验证可用 `npm run tauri:build:portable` 生成 `src-tauri/target/release/codex_switch.exe`。替换本机安装版时，必须同时把同目录的 `WebView2Loader.dll` 放到 `D:\Codex\apps\codex_switch\`，否则桌面端会因为找不到 WebView loader 而启动失败。
+Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`；本地 GNU 补丁验证可用 `npm run tauri:build:portable` 生成 `src-tauri/target/release/codex_switch.exe`。替换本机安装版时，必须同时把同目标架构的 `WebView2Loader.dll` 放到 `D:\Codex\apps\codex_switch\`，否则桌面端会因为找不到 WebView loader 而启动失败。
 
 Windows 本地 MSVC 便携构建可用 `npm run tauri:build:windows:portable`，产物为 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该命令会优先使用 `D:\Codex\.cargo\bin` 里的 rustup shim，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`，避免独立安装的 GNU Rust 抢先进入 PATH。该命令仍需要 Rust 的 `x86_64-pc-windows-msvc` target，以及 Visual Studio Build Tools 的 C++ 工具链和 Windows SDK；如果 Git for Windows 的 `link.exe` 抢先进入 PATH，请从 VS developer shell 运行，或确保 MSVC `link.exe` 优先。
 

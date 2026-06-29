@@ -1,11 +1,8 @@
-# Local patch update procedure
+# 本地补丁更新流程
 
-This installed build is a local-patch build. When the update check reports a
-new upstream version, do not replace the app with the upstream installer
-directly.
+当前安装版是本地补丁构建。更新检查提示有新版上游发布时，不要直接用上游安装包覆盖。
 
-Merge the upstream tag into this source tree, keep the local patches below, and
-then rebuild and replace the installed executable:
+先把上游 tag 合并进这份源码树，保留下面的本地补丁，再重新构建并替换已安装的可执行文件：
 
 - Windows 定向浏览器登录不再按 profile `b` / `c` 槽位选浏览器。仅当目标
   profile 已有账号标签匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 时，登录使用
@@ -14,30 +11,26 @@ then rebuild and replace the installed executable:
   上游默认浏览器行为；不要恢复按槽位名路由浏览器的旧规则。
 - 定向 Edge flow 不要再传 `--user-data-dir`、`--new-window`，也不要创建
   独立浏览器 profile。
-- Because this flow reuses normal browser state, preserve the pre-write account
-  identity check: if an existing profile has a known ChatGPT identity, a login
-  completed by a different browser account must fail before replacing
-  `auth.json`.
-- Do not replace the forced-Edge account path with plain `codex login`; the
-  upstream CLI opens the default browser and does not expose a supported
-  browser-selection flag for this flow.
-- Update checks prefer `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe` before
-  falling back to other PowerShell executables.
-- Update dialogs warn that local patches must be merged before replacement.
-- Windows real-Codex discovery validates cached and user-specified paths with
-  `codex --version` and a Codex version line, skips stale shims, and probes
-  official OpenAI versioned runtime directories so Codex upgrades do not strand
-  the app on a deleted runtime path.
-- When mirroring auth/profile state to another Windows host, preserve that
-  host's `%CODEX_HOME%\account_backup\windows\install_state.json`; only sync
-  root/profile auth and metadata. Disposable `login_runtime`, `refresh_runtime`,
-  and stale `.switch.lock` may be removed because the app recreates them. Old
-  `login_browser_profiles` directories from earlier local builds may also be
-  removed; current builds no longer create them.
+- 由于这个 flow 复用用户正常浏览器状态，必须保留写入前账号身份校验：如果
+  现有 profile 已有已知 ChatGPT 身份，而浏览器完成登录的是另一个账号，
+  则必须在替换 `auth.json` 前失败。
+- 不要把 forced-Edge 账号路径替换成普通 `codex login`；上游 CLI 会打开
+  默认浏览器，并且没有给这个 flow 暴露受支持的浏览器选择参数。
+- 更新检查优先使用 `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe`，再回退到
+  其他 PowerShell 可执行文件。
+- 更新对话框必须提示：替换前需要先合并本地补丁。
+- Windows real-Codex discovery 必须用 `codex --version` 和 Codex 版本行校验
+  缓存路径及用户指定路径，跳过 stale shim，并探测官方 OpenAI versioned
+  runtime 目录，避免 Codex 升级后应用继续指向已删除 runtime。
+- 账号页 quota 读数必须保留 provenance 元数据，避免把低可信度 fallback
+  或本地 session 观测结果展示得像官方 ChatGPT API 读数。
+- 本地 Windows MSVC 构建必须使用 `npm run tauri:build:windows:portable`；
+  该 wrapper 优先使用 `D:\Codex\.cargo\bin` 下的 rustup shim，并在
+  `rustc -vV` 报告非 `x86_64-pc-windows-msvc` host 时拒绝构建。
+- 向另一台 Windows 主机同步 auth/profile 状态时，必须保留目标主机自己的
+  `%CODEX_HOME%\account_backup\windows\install_state.json`；只同步 root/profile
+  auth 和 metadata。一次性的 `login_runtime`、`refresh_runtime`、stale
+  `.switch.lock` 可以删除，因为应用会重新生成。旧本地构建留下的
+  `login_browser_profiles` 目录也可以删除；当前构建不再创建它们。
 
-Acceptance target: the installed
-`D:\Codex\apps\codex_switch\codex_switch.exe` must be rebuilt from this merged
-source tree, not copied from a plain upstream release. For local portable Tauri
-builds, copy the adjacent `WebView2Loader.dll` into the same install directory
-as the executable; otherwise the desktop app can fail at startup before loading
-the UI.
+验收目标：已安装的 `D:\Codex\apps\codex_switch\codex_switch.exe` 必须从这份已合并源码树重新构建，不能直接复制纯上游 release。做本地便携 Tauri 替换时，必须把匹配的 x64 `WebView2Loader.dll` 复制到可执行文件同一安装目录；否则桌面端可能在加载 UI 前启动失败。MSVC target 构建中，loader 可能来自目标架构的 `webview2-com-sys` build output，而不是 release 根目录。
