@@ -25,7 +25,7 @@
 
 - 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `config.toml` / `sessions/`），切换时把目标账号 swap 进 `~/.codex/`，旧账号自动归档到备份目录。
 - **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮。
-- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版会让 `b` 槽通过 `codex app-server` 打开 Chrome、`c` 槽打开 Edge，各自使用独立浏览器 profile 目录，避免默认浏览器串槽。
+- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版会让 `b` 槽通过 `codex app-server` 打开 Chrome、`c` 槽打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
 - **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号，per-card 刷新按钮也共享同一缓存；切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。
 - **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
 - **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
@@ -156,7 +156,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### per-card「登录」按钮为什么有时变成「取消」
 
-普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版的 `b` / `c` 槽改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl` 后由应用打开指定浏览器，并等待 `account/login/completed` 通知。
+普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版的 `b` / `c` 槽改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl` 后，由应用用指定浏览器的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
 
 ### Custom Base URL 配置后能继续用 ChatGPT OAuth 吗
 
@@ -173,7 +173,7 @@ App 暂未做 Apple Developer 代码签名 / notarization。第一次启动按�
 ### 日志和账号数据存在哪里
 
 - 账号备份：`~/.codex/account_backup/<别名>/`（macOS / Linux）/ `%USERPROFILE%\.codex\account_backup\<别名>\`（Windows）
-- 应用运行时状态：Windows 为 `%CODEX_HOME%\account_backup\windows\`（`install_state.json`、`quota_cache.json`、可再生成的 login runtime / browser profile cache）；macOS 为 `~/.codex/account_backup/macos/`
+- 应用运行时状态：Windows 为 `%CODEX_HOME%\account_backup\windows\`（`install_state.json`、`quota_cache.json`、可再生成的 login runtime / refresh runtime）；macOS 为 `~/.codex/account_backup/macos/`
 - Codex 当前账号状态：`~/.codex/auth.json` + `~/.codex/config.toml`
 
 ## 技术栈

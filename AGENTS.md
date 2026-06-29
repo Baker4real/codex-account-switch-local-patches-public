@@ -12,7 +12,7 @@
 ## Local Windows Patch Discipline
 
 - The installed Windows build may include local patches documented in `LOCAL_PATCHES.md`; when updating from upstream, merge the upstream tag into this source tree and preserve those patches before rebuilding.
-- Keep profile `b` login on `codex app-server` + Chrome and profile `c` login on `codex app-server` + Edge. Do not collapse this back to plain `codex login`, which opens the default browser.
+- Keep profile `b` login on `codex app-server` + Chrome and profile `c` login on `codex app-server` + Edge. Do not collapse this back to plain `codex login`, which opens the default browser. Do not reintroduce `--user-data-dir` or dedicated browser profile directories for these browser launches.
 - When replacing `D:\Codex\apps\codex_switch\`, copy both `codex_switch.exe` and the adjacent `WebView2Loader.dll` from the Tauri release output.
 
 ## Agent skills

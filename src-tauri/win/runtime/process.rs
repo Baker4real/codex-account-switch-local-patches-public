@@ -45,7 +45,6 @@ enum LoginBrowser {
 struct LoginBrowserLaunch {
     browser: LoginBrowser,
     executable: PathBuf,
-    profile_dir: PathBuf,
 }
 
 pub struct WindowsPlatformHooks;
@@ -451,13 +450,6 @@ fn login_browser_for_profile(profile_name: Option<&str>) -> Option<LoginBrowser>
 }
 
 impl LoginBrowser {
-    fn slug(self) -> &'static str {
-        match self {
-            LoginBrowser::Chrome => "chrome",
-            LoginBrowser::Edge => "edge",
-        }
-    }
-
     fn label(self) -> &'static str {
         match self {
             LoginBrowser::Chrome => "Chrome",
@@ -474,7 +466,6 @@ impl LoginBrowser {
 }
 
 fn resolve_login_browser_launch(
-    cli_codex_home: &Path,
     profile_name: Option<&str>,
 ) -> AppResult<Option<LoginBrowserLaunch>> {
     let Some(browser) = login_browser_for_profile(profile_name) else {
@@ -490,13 +481,9 @@ fn resolve_login_browser_launch(
             ),
         ));
     };
-    let profile_dir =
-        login_browser_profile_dir(cli_codex_home, profile_name.unwrap_or("current"), browser);
-
     Ok(Some(LoginBrowserLaunch {
         browser,
         executable,
-        profile_dir,
     }))
 }
 
@@ -546,54 +533,15 @@ fn common_login_browser_paths(browser: LoginBrowser) -> Vec<PathBuf> {
     paths
 }
 
-fn login_browser_profile_dir(
-    cli_codex_home: &Path,
-    profile_name: &str,
-    browser: LoginBrowser,
-) -> PathBuf {
-    cli_codex_home
-        .join("account_backup")
-        .join("windows")
-        .join("login_browser_profiles")
-        .join(format!(
-            "{}-{}",
-            sanitize_profile_segment(profile_name),
-            browser.slug()
-        ))
-}
-
-fn sanitize_profile_segment(profile_name: &str) -> String {
-    let sanitized = profile_name
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-
-    if sanitized.is_empty() {
-        "current".to_string()
-    } else {
-        sanitized
-    }
+fn build_login_browser_command(launch: &LoginBrowserLaunch, url: &str) -> Command {
+    let mut command = Command::new(&launch.executable);
+    command.arg(url);
+    hide_console_window(&mut command);
+    command
 }
 
 fn open_login_url_in_browser(launch: &LoginBrowserLaunch, url: &str) -> std::io::Result<()> {
-    fs::create_dir_all(&launch.profile_dir)?;
-    let mut command = Command::new(&launch.executable);
-    command
-        .arg(format!(
-            "--user-data-dir={}",
-            launch.profile_dir.to_string_lossy()
-        ))
-        .arg("--new-window")
-        .arg(url);
-    hide_console_window(&mut command);
+    let mut command = build_login_browser_command(launch, url);
     command.spawn().map(|_| ())
 }
 
@@ -623,7 +571,7 @@ pub fn run_codex_login(
             "Real Codex CLI path not found. Set the codex CLI location in the dashboard before logging in.",
         ));
     };
-    if let Some(launch) = resolve_login_browser_launch(cli_codex_home, profile_name)? {
+    if let Some(launch) = resolve_login_browser_launch(profile_name)? {
         let command = build_app_server_command(&real_codex_path, runtime_codex_home);
         return run_chatgpt_browser_login(command, |auth_url| {
             open_login_url_in_browser(&launch, auth_url).map_err(|error| {
@@ -1006,11 +954,11 @@ impl PlatformHooks for WindowsPlatformHooks {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_app_server_command, discover_real_codex_cli_path, is_acceptable_real_codex_cli_path,
-        load_install_state, login_browser_for_profile, login_browser_profile_dir,
+        build_app_server_command, build_login_browser_command, discover_real_codex_cli_path,
+        is_acceptable_real_codex_cli_path, load_install_state, login_browser_for_profile,
         looks_like_codex_version, resolve_real_codex_cli, resolve_windows_app_target,
-        sanitize_profile_segment, windows_store_shell_target, AppLaunchTarget, InstallState,
-        LoginBrowser, WINDOWS_STORE_APP_ID,
+        windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
+        LoginBrowserLaunch, WINDOWS_STORE_APP_ID,
     };
     use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
@@ -1096,19 +1044,21 @@ mod tests {
     }
 
     #[test]
-    fn login_browser_profile_dir_stays_under_codex_home() {
-        let codex_home = temp_codex_home("browser-profile-dir");
-        let profile_dir = login_browser_profile_dir(&codex_home, "B slot", LoginBrowser::Chrome);
+    fn build_login_browser_command_uses_existing_browser_profile() {
+        let launch = LoginBrowserLaunch {
+            browser: LoginBrowser::Edge,
+            executable: PathBuf::from(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
+        };
+        let command = build_login_browser_command(&launch, "https://auth.example/login");
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
 
-        assert!(profile_dir.starts_with(&codex_home));
-        assert!(profile_dir
-            .to_string_lossy()
-            .contains("login_browser_profiles"));
-        assert_eq!(sanitize_profile_segment("B slot"), "b_slot");
-        assert_eq!(
-            profile_dir.file_name().unwrap().to_string_lossy(),
-            "b_slot-chrome"
-        );
+        assert_eq!(command.get_program(), launch.executable.as_os_str());
+        assert_eq!(args, vec!["https://auth.example/login".to_string()]);
+        assert!(!args.iter().any(|arg| arg.starts_with("--user-data-dir")));
+        assert!(!args.iter().any(|arg| arg == "--new-window"));
     }
 
     #[test]
