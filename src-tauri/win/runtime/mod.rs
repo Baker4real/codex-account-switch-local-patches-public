@@ -3,6 +3,7 @@
 pub mod bootstrap;
 pub mod install;
 pub mod process;
+#[cfg(not(test))]
 pub mod profile_actions;
 pub mod profiles_index;
 pub mod refresh_runtime;
@@ -13,6 +14,7 @@ pub use crate::shared::{
     session_usage,
 };
 
+#[cfg(not(test))]
 pub mod actions {
     pub use super::profile_actions::{
         add_profile, clear_profile_account, delete_profile, login_current_profile, login_profile,

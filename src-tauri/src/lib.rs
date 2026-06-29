@@ -1,7 +1,9 @@
+#[cfg(not(test))]
 use tauri::Manager;
 
 #[path = "../shared/runtime/cli.rs"]
 pub mod cli;
+#[cfg(not(test))]
 #[path = "../shared/commands/mod.rs"]
 pub mod commands;
 #[path = "../shared/runtime/errors.rs"]
@@ -15,13 +17,14 @@ pub mod models;
 pub mod platform;
 #[path = "../shared/runtime/mod.rs"]
 pub mod shared;
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(test)))]
 #[path = "../win/runtime/windowing.rs"]
 pub mod windowing;
 #[cfg(not(target_os = "macos"))]
 #[path = "../win/runtime/mod.rs"]
 pub mod windows;
 
+#[cfg(not(test))]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -65,6 +68,11 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+pub fn run() {
+    panic!("tauri runtime is not started by unit tests");
 }
 
 pub fn run_cli(args: &[String]) -> i32 {

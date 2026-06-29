@@ -5,6 +5,7 @@ use std::path::Path;
 use crate::errors::AppResult;
 use crate::shared::codex_app_server::AppServerSnapshot;
 use hooks::PlatformHooks;
+#[cfg(not(test))]
 use tauri::App;
 
 #[cfg(target_os = "macos")]
@@ -64,11 +65,13 @@ pub fn sync_on_window_close() -> AppResult<()> {
     current_hooks().sync_on_window_close()
 }
 
+#[cfg(not(test))]
 #[cfg(target_os = "macos")]
 pub fn install_windowing(app: &mut App) -> tauri::Result<()> {
     crate::macos::windowing::install(app)
 }
 
+#[cfg(not(test))]
 #[cfg(not(target_os = "macos"))]
 pub fn install_windowing(app: &mut App) -> tauri::Result<()> {
     crate::windowing::install(app)
