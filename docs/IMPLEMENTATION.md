@@ -4,8 +4,8 @@
 
 - Shared Codex state root: `CODEX_HOME` or `~/.codex`
 - Profile backups: `~/.codex/account_backup/<profile>`
-- Current profile pointer: `~/.codex/account_backup/.current_profile`
-- Active marker per profile: `~/.codex/account_backup/<profile>/.active_profile`
+- Current profile pointer: `~/.codex/account_backup/.current_profile` (routing hint, not account identity)
+- Active marker per profile: `~/.codex/account_backup/<profile>/.active_profile` (routing hint, not account identity)
 - Auto snapshots: `~/.codex/account_backup/_autosave/<timestamp>/auth.json`
 - macOS runtime files: `~/.codex/account_backup/macos/`
 - macOS command shim: `~/.codex/bin/codex`
@@ -82,17 +82,23 @@ The switch script itself does not create profile folders or generate missing aut
 1. Validate that the target profile name and directory are valid profile state, not runtime folders, symlinks, or reparse points.
 2. Validate that the target profile contains a regular-file `auth.json`.
 3. If the Codex desktop app is running, terminate it before switching.
-4. Resolve current active profile from `.current_profile` only when it is a valid profile name whose directory passes `is_profile_dir`; otherwise fall back to `.active_profile`.
-5. Write managed root account-state files from `~/.codex` back into the active profile folder.
-6. Save a timestamped snapshot of root `auth.json`.
-7. Overlay managed account-state files from the target profile into `~/.codex`.
-8. Update `.current_profile` and `.active_profile`.
-9. If the app was running before the switch, relaunch it.
+4. Resolve a current-profile marker candidate from `.current_profile` only when it is a valid profile name whose directory passes `is_profile_dir`; otherwise fall back to `.active_profile`.
+5. Load the live root `auth.json` identity and choose the write-back target by account identity, not by marker alone:
+   - if the marker profile has the same `account_id` / `email`, write back to that marker;
+   - if another managed profile owns the live identity, write back to that actual owner and heal the stale marker;
+   - if the marker is a genuine empty placeholder, seat the new account there;
+   - if the live root identity is known but unmanaged, do not write it into any existing slot and clear active markers.
+6. Write managed root account-state files from `~/.codex` back only into the resolved backup target.
+7. Save a timestamped snapshot of root `auth.json`.
+8. Overlay managed account-state files from the target profile into `~/.codex`.
+9. Update `.current_profile` and `.active_profile`.
+10. If the app was running before the switch, relaunch it.
 
 ## File sync strategy
 
 - The native Rust profile backup and root overlay steps manage only `auth.json` and `profile.json`.
 - The root copy step does not whole-tree copy a profile directory into `~/.codex`.
+- Root write-back treats `.current_profile` and `.active_profile` as hints only. The actual destination is resolved from the live `auth.json` account identity so a stale marker cannot overwrite the wrong profile.
 - Global or runtime assets such as `skills`, plugin caches, `AGENTS.md`, `rules`, `memories`, `vendor_imports`, sqlite state, and sessions/jsonl history are ignored even if they remain in an old profile directory.
 - Managed entries are validated before copy; directories, symlinks, Windows reparse points, and other non-regular files fail with `PROFILE_STATE_INVALID` instead of replacing live root files.
 - Files absent from the target profile are not automatically removed from the root state.
@@ -131,8 +137,8 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 
 ## Windows desktop app actions
 
-- `Switch` writes current root state back to the active profile, snapshots `auth.json`, overlays the target profile into root state, updates active markers, and relaunches Codex if needed
-- `Login` normally runs `codex login` against the current root `CODEX_HOME`, waits for login completion, then writes the refreshed root state back into the active profile
+- `Switch` writes current root state back to the identity-resolved profile, snapshots `auth.json`, overlays the target profile into root state, updates active markers, and relaunches Codex if needed
+- `Login` reuses the per-card login path for the current profile, so login output is checked against the target profile identity before any profile `auth.json` is replaced
 - Local Windows patched login routes only the profile whose known account label matches `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` through `codex app-server`, then opens the returned `account/login/start` auth URL in Edge.
 - The patched browser-login flow no longer passes `--user-data-dir`, `--new-window`, or creates dedicated browser profile directories. Edge handles the URL with the user's normal browser state. Existing `login_browser_profiles` directories from older local builds are disposable cleanup leftovers.
 - Because normal browser state can already be logged into the wrong ChatGPT account, per-card login checks the new OAuth identity against any known identity in the target profile before replacing `auth.json`. A mismatch fails before touching the target profile or live root auth.

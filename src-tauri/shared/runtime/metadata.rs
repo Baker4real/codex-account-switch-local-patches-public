@@ -300,6 +300,108 @@ pub(super) fn load_auth_metadata_from_path(auth_path: &Path) -> Option<AuthDeriv
     Some(metadata)
 }
 
+/// Stable account identity for an on-disk `auth.json`: the OAuth `account_id`
+/// and the id_token / access_token `email` claim, whichever are present.
+///
+/// Carries both values because one account can present an email-only auth before
+/// a later refresh adds `account_id`; matching on only one string would treat
+/// that same account as unrelated.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccountIdentity {
+    pub account_id: Option<String>,
+    pub email: Option<String>,
+}
+
+impl AccountIdentity {
+    /// Two identities refer to the same OpenAI account when they share a
+    /// non-empty `account_id` or a non-empty `email`.
+    pub fn same_account(&self, other: &AccountIdentity) -> bool {
+        if let (Some(left), Some(right)) = (&self.account_id, &other.account_id) {
+            if left == right {
+                return true;
+            }
+        }
+        if let (Some(left), Some(right)) = (&self.email, &other.email) {
+            if left.eq_ignore_ascii_case(right) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Human label for prompts: email preferred, else the account id.
+    pub fn label(&self) -> Option<String> {
+        self.email.clone().or_else(|| self.account_id.clone())
+    }
+}
+
+/// Load the account identity from an `auth.json`. Returns `None` only when
+/// neither `account_id` nor `email` is resolvable. Callers must treat `None` as
+/// identity unknown, not as a proven mismatch, so API-key and placeholder cards
+/// keep their legacy behavior.
+pub fn load_account_identity_from_path(auth_path: &Path) -> Option<AccountIdentity> {
+    let raw = fs::read_to_string(auth_path).ok()?;
+    let auth = serde_json::from_str::<AuthFile>(&raw).ok()?;
+    let tokens = auth.tokens?;
+
+    let account_id = normalized_value(tokens.account_id.clone());
+    let email = tokens
+        .id_token
+        .as_deref()
+        .and_then(decode_token_claims)
+        .or_else(|| tokens.access_token.as_deref().and_then(decode_token_claims))
+        .and_then(|claims| normalized_value(claims.email));
+
+    let identity = AccountIdentity { account_id, email };
+    (identity != AccountIdentity::default()).then_some(identity)
+}
+
+/// True only when `auth.json` is a genuine empty placeholder: parseable and
+/// carrying no usable OAuth or API-key credentials. This prevents a drifted
+/// OAuth account from being seated on top of a real API-key card.
+pub fn auth_is_empty_placeholder(auth_path: &Path) -> bool {
+    let Ok(raw) = fs::read_to_string(auth_path) else {
+        return false;
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return false;
+    };
+
+    if value.get("auth_mode").and_then(serde_json::Value::as_str) == Some("apikey") {
+        return false;
+    }
+    if value
+        .get("OPENAI_API_KEY")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        return false;
+    }
+
+    if let Some(tokens) = value.get("tokens") {
+        let has_real_token = ["access_token", "id_token", "refresh_token", "account_id"]
+            .iter()
+            .any(|field| {
+                tokens
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .is_some_and(|value| {
+                        !value.is_empty() && !value.eq_ignore_ascii_case("replace-me")
+                    })
+            });
+        if has_real_token {
+            return false;
+        }
+    }
+
+    true
+}
+
 fn load_auth_metadata(
     profile_name: &str,
     codex_home: Option<&Path>,
@@ -539,13 +641,7 @@ pub fn sync_profile_quota(
     quota_updated_at_ms: Option<u64>,
     codex_home: Option<&Path>,
 ) -> Result<ProfileMetadata, crate::errors::AppError> {
-    sync_profile_quota_with_provenance(
-        profile_name,
-        quota,
-        quota_updated_at_ms,
-        None,
-        codex_home,
-    )
+    sync_profile_quota_with_provenance(profile_name, quota, quota_updated_at_ms, None, codex_home)
 }
 
 pub fn sync_profile_quota_with_provenance(
@@ -675,12 +771,21 @@ mod tests {
         .expect("quota sync succeeds");
 
         assert_eq!(metadata.quota.provenance.source, QuotaSource::ChatGptApi);
-        assert_eq!(metadata.quota.provenance.confidence, QuotaConfidence::Official);
-        assert_eq!(metadata.quota.provenance.observed_at_ms, Some(1_800_000_000_000));
+        assert_eq!(
+            metadata.quota.provenance.confidence,
+            QuotaConfidence::Official
+        );
+        assert_eq!(
+            metadata.quota.provenance.observed_at_ms,
+            Some(1_800_000_000_000)
+        );
 
         let reloaded = load_profile_metadata("alpha", Some(&codex_home));
         assert_eq!(reloaded.quota.provenance.source, QuotaSource::ChatGptApi);
-        assert_eq!(reloaded.quota.provenance.confidence, QuotaConfidence::Official);
+        assert_eq!(
+            reloaded.quota.provenance.confidence,
+            QuotaConfidence::Official
+        );
 
         let _ = std::fs::remove_dir_all(&codex_home);
     }

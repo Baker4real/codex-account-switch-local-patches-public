@@ -23,7 +23,7 @@
 
 ## 能做什么
 
-- 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `profile.json` 元数据），切换时把目标账号态写入 `~/.codex/`，旧账号的账号态自动回写到备份目录。
+- 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `profile.json` 元数据），切换时把目标账号态写入 `~/.codex/`；旧账号的账号态会先按 `auth.json` 身份路由回真实所属 profile，无法识别时拒绝写回旧槽位。
 - **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮，并用来源 badge 区分官方 API、app-server fallback、本地观测或未知数据。
 - **授权缓存状态**：账号卡片和当前账号面板会显示 refresh token / 授权缓存健康状态、可观察到的到期时间或上次刷新时间；当官方登录缓存没有暴露 refresh token 到期时间时，只提示授权缓存建议刷新，不把它误写成固定到期时间。
 - **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 指定账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
@@ -59,7 +59,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 2. 进入「设置」页，确认 **Codex CLI 路径** 已自动填好（默认探测 PATH / `~/.codex/bin`）；缺失时手动指定，状态变绿即可。
 3. 进入「账号」页，点「添加账号」→ 输入账号别名（落地为 `~/.codex/account_backup/<别名>/`）。
 4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，指定账号会打开 Edge；其他账号走普通登录浏览器行为。
-5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 自动回写到账号备份目录。
+5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。
 6. 需要清空 quota cache、重新拉计划或更新授权缓存状态时，点对应账号的「刷新」（≥ 6h 走完整 OAuth rotation，< 6h 复用缓存）。
 
 ## 仓库结构
@@ -151,7 +151,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### 切换账号会改动 skills / sessions / 历史吗
 
-不会。当前原生 runtime 的 profile 切换只管理 `auth.json` 和 `profile.json` 两个账号态文件，并会按 profile 元数据同步当前账号需要的 Base URL 配置。`skills`、插件缓存、`AGENTS.md`、`rules`、`memories`、`vendor_imports`、sqlite 状态和 sessions/jsonl 历史都不会从 profile 目录覆盖到 live `~/.codex/`。如果旧 profile 目录里残留这些全局资产，它们会被切换流程忽略。
+不会。当前原生 runtime 的 profile 切换只管理 `auth.json` 和 `profile.json` 两个账号态文件，并会按 profile 元数据同步当前账号需要的 Base URL 配置。写回当前 root 状态时，`.current_profile` / `.active_profile` 只作为候选提示，实际归属要用 `auth.json` 中可识别的账号身份匹配；如果 root 已经漂移到未管理账号，应用不会把它写进旧槽位。`skills`、插件缓存、`AGENTS.md`、`rules`、`memories`、`vendor_imports`、sqlite 状态和 sessions/jsonl 历史都不会从 profile 目录覆盖到 live `~/.codex/`。如果旧 profile 目录里残留这些全局资产，它们会被切换流程忽略。
 
 ### 「刷新」按钮和「切换」之后会不会消耗 quota
 

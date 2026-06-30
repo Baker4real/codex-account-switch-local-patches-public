@@ -5,11 +5,14 @@ use crate::models::SwitchResponse;
 use crate::platform::hooks::PlatformHooks;
 
 use super::fs_ops::{
-    autosave_auth, backup_root_state_to_profile, overlay_directory_contents, set_active_marker,
+    autosave_auth, backup_root_state_to_profile, clear_active_markers, overlay_directory_contents,
+    set_active_marker,
 };
 use super::paths::{get_backup_root, get_codex_home, is_profile_dir, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
-use super::profiles::resolve_current_profile;
+use super::profiles::{
+    detect_unmanaged_live_account, resolve_backup_target, resolve_current_profile,
+};
 use super::profiles_index::reload_profiles_index_after_mutation;
 
 fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard> {
@@ -54,9 +57,8 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
     }
 
     let app_was_running = hooks.quit_codex_app_if_running()?;
-    let current_profile = resolve_current_profile(&backup_root);
-    if let Some(current_profile) = current_profile.as_deref() {
-        backup_root_state_to_profile(current_profile, &codex_home, &backup_root)?;
+    if let Some(backup_target) = resolve_backup_target(&backup_root, &codex_home) {
+        backup_root_state_to_profile(&backup_target, &codex_home, &backup_root)?;
     }
 
     autosave_auth(&codex_home)?;
@@ -72,6 +74,29 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
         message: format!("Switched to profile: {profile_name}"),
         warnings,
     })
+}
+
+pub fn sync_root_state_to_current_profile_with_home(
+    codex_home: Option<&Path>,
+) -> AppResult<Option<String>> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let backup_root = get_backup_root(Some(&codex_home));
+
+    let Some(target) = resolve_backup_target(&backup_root, &codex_home) else {
+        if detect_unmanaged_live_account(&backup_root, &codex_home).is_some() {
+            clear_active_markers(&backup_root)?;
+        }
+        reload_profiles_index_after_mutation(Some(&codex_home))?;
+        return Ok(None);
+    };
+
+    if resolve_current_profile(&backup_root).as_deref() != Some(target.as_str()) {
+        set_active_marker(&target, &backup_root)?;
+    }
+
+    backup_root_state_to_profile(&target, &codex_home, &backup_root)?;
+    reload_profiles_index_after_mutation(Some(&codex_home))?;
+    Ok(Some(target))
 }
 
 #[cfg(test)]
@@ -147,6 +172,13 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("codex-switch-shared-switch-core-{name}-{unique}"))
+    }
+
+    fn auth_with_account(account_id: &str) -> String {
+        format!(
+            "{{\"tokens\":{{\"account_id\":{}}}}}",
+            serde_json::Value::String(account_id.to_string())
+        )
     }
 
     #[test]
@@ -259,6 +291,98 @@ mod tests {
             fs::read_to_string(live_system_skill_dir.join("SKILL.md")).unwrap(),
             "live system skill\n"
         );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn switch_does_not_contaminate_stale_marker_profile_with_drifted_account() {
+        let codex_home = temp_codex_home("drift-no-contaminate");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_b_dir).unwrap();
+
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_X")).unwrap();
+        fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_Z")).unwrap();
+
+        let hooks = FakeHooks::new(false);
+        let response = switch_profile_with_home(&hooks, "b", Some(&codex_home)).unwrap();
+
+        assert!(response.ok);
+        assert_eq!(
+            fs::read_to_string(profile_a_dir.join("auth.json")).unwrap(),
+            auth_with_account("acct_X"),
+            "stale-marker profile must keep its own account, not the drifted live one"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            auth_with_account("acct_B")
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn bootstrap_sync_heals_marker_and_routes_backup_on_drift_to_managed_profile() {
+        let codex_home = temp_codex_home("bootstrap-heal");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_b_dir).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_X")).unwrap();
+        let b_stale = "{\"tokens\":{\"account_id\":\"acct_B\"},\"last_refresh\":\"old\"}";
+        fs::write(profile_b_dir.join("auth.json"), b_stale).unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+        let b_fresh = "{\"tokens\":{\"account_id\":\"acct_B\"},\"last_refresh\":\"new\"}";
+        fs::write(codex_home.join("auth.json"), b_fresh).unwrap();
+
+        let synced =
+            super::sync_root_state_to_current_profile_with_home(Some(&codex_home)).unwrap();
+
+        assert_eq!(synced.as_deref(), Some("b"));
+        assert_eq!(
+            fs::read_to_string(get_current_profile_file(Some(&codex_home))).unwrap(),
+            "b\n"
+        );
+        assert_eq!(
+            fs::read_to_string(profile_b_dir.join("auth.json")).unwrap(),
+            b_fresh
+        );
+        assert_eq!(
+            fs::read_to_string(profile_a_dir.join("auth.json")).unwrap(),
+            auth_with_account("acct_X"),
+            "the stale-marker profile must be left untouched"
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn bootstrap_sync_clears_marker_and_preserves_slots_when_live_account_unmanaged() {
+        let codex_home = temp_codex_home("bootstrap-clear-unmanaged");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_X")).unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+        fs::write(profile_a_dir.join(".active_profile"), "x\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_Z")).unwrap();
+
+        let synced =
+            super::sync_root_state_to_current_profile_with_home(Some(&codex_home)).unwrap();
+
+        assert_eq!(synced, None);
+        assert_eq!(
+            fs::read_to_string(profile_a_dir.join("auth.json")).unwrap(),
+            auth_with_account("acct_X")
+        );
+        assert!(!get_current_profile_file(Some(&codex_home)).exists());
+        assert!(!profile_a_dir.join(".active_profile").exists());
 
         let _ = fs::remove_dir_all(&codex_home);
     }

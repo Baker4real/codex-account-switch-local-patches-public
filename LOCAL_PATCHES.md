@@ -36,5 +36,9 @@
   profile 目录整棵覆盖 live `skills`、`AGENTS.md`、`rules`、`memories`、
   `vendor_imports`、插件/cache/sqlite 或其它全局运行时资产。即使旧 profile
   目录里残留这些污染条目，切换和反向备份也必须忽略它们。
+- 切换前的 root 写回必须按账号身份路由，不能盲信 `.current_profile` 或
+  `.active_profile`。先用 live `auth.json` 的 `account_id` / `email` 匹配
+  已知 profile；只有身份匹配或目标槽位是真空占位时才写入。若 live root
+  已漂移到未管理账号，必须拒绝写回旧槽位并清理 active marker，防止串号覆盖。
 
 验收目标：已安装的 `D:\Codex\apps\codex_switch\codex_switch.exe` 必须从这份已合并源码树重新构建，不能直接复制纯上游 release。做本地便携 Tauri 替换时，必须把匹配的 x64 `WebView2Loader.dll` 复制到可执行文件同一安装目录；否则桌面端可能在加载 UI 前启动失败。MSVC target 构建中，loader 可能来自目标架构的 `webview2-com-sys` build output，而不是 release 根目录。
