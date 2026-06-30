@@ -70,31 +70,34 @@
 
 ## Preconditions for switching
 
-- The target profile directory must already exist
+- The target profile name must pass `validate_profile_name`
+- The target profile directory must already exist, must pass `is_profile_dir`, and must not be a symlink or Windows reparse point
 - The target profile directory must already contain `auth.json`
+- Profile-managed entries such as `auth.json` and `profile.json` must be regular files when present
 
 The switch script itself does not create profile folders or generate missing auth files.
 
 ## Switching algorithm
 
-1. Validate that the target profile directory exists.
-2. Validate that the target profile contains `auth.json`.
+1. Validate that the target profile name and directory are valid profile state, not runtime folders, symlinks, or reparse points.
+2. Validate that the target profile contains a regular-file `auth.json`.
 3. If the Codex desktop app is running, terminate it before switching.
-4. Resolve current active profile from `.current_profile` or `.active_profile`.
-5. Write current root state from `~/.codex` back into the active profile folder.
+4. Resolve current active profile from `.current_profile` only when it is a valid profile name whose directory passes `is_profile_dir`; otherwise fall back to `.active_profile`.
+5. Write managed root account-state files from `~/.codex` back into the active profile folder.
 6. Save a timestamped snapshot of root `auth.json`.
-7. Copy the target profile files into `~/.codex`.
+7. Overlay managed account-state files from the target profile into `~/.codex`.
 8. Update `.current_profile` and `.active_profile`.
 9. If the app was running before the switch, relaunch it.
 
 ## File sync strategy
 
-- The profile backup step writes managed files from the root state back into the current profile.
-- The root copy step overlays target profile files into `~/.codex`.
+- The native Rust profile backup and root overlay steps manage only `auth.json` and `profile.json`.
+- The root copy step does not whole-tree copy a profile directory into `~/.codex`.
+- Global or runtime assets such as `skills`, plugin caches, `AGENTS.md`, `rules`, `memories`, `vendor_imports`, sqlite state, and sessions/jsonl history are ignored even if they remain in an old profile directory.
+- Managed entries are validated before copy; directories, symlinks, Windows reparse points, and other non-regular files fail with `PROFILE_STATE_INVALID` instead of replacing live root files.
 - Files absent from the target profile are not automatically removed from the root state.
 - `.active_profile` and `.DS_Store` are excluded from copy operations.
-- macOS prefers `rsync` when available; otherwise `cp -R` is used.
-- Windows uses Rust filesystem operations and replaces copied directories so the profile copy matches the current root state.
+- Legacy macOS shell mode still belongs to `macOS-backup/`; the native Rust runtime is the regression target for profile switching.
 
 ## macOS wrapper behavior
 

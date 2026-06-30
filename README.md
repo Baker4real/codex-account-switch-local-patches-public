@@ -15,7 +15,7 @@
   <a href="https://github.com/Cmochance/Codex_Account_Switch/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Cmochance/Codex_Account_Switch/total?label=downloads"></a>
 </p>
 
-**Codex 账号切换工具**（Codex Switch）是一个面向 **OpenAI Codex CLI** 的本地桌面账号管理器。它把多份 `~/.codex/{auth.json,config.toml,sessions/...}` 状态各自打包到独立账号备份目录，一键切换"当前 Codex 账号"，并把每个账号的 plan / 5 小时额度 / 周额度直接渲染在桌面端。
+**Codex 账号切换工具**（Codex Switch）是一个面向 **OpenAI Codex CLI** 的本地桌面账号管理器。它把每个账号的 `auth.json` 与 `profile.json` 元数据保存在独立账号备份目录，一键切换"当前 Codex 账号"，并把每个账号的 plan / 5 小时额度 / 周额度直接渲染在桌面端。切换只同步这些账号态文件；`skills`、插件缓存、sessions、AGENTS.md 等全局或运行时资产不会被 profile 覆盖。
 
 跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，并在 UI 标明额度来源与观测时间；只有没有实时来源时才退回本地 sessions/jsonl 观测。
 
@@ -23,7 +23,7 @@
 
 ## 能做什么
 
-- 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `config.toml` / `sessions/`），切换时把目标账号 swap 进 `~/.codex/`，旧账号自动归档到备份目录。
+- 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `profile.json` 元数据），切换时把目标账号态写入 `~/.codex/`，旧账号的账号态自动回写到备份目录。
 - **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮，并用来源 badge 区分官方 API、app-server fallback、本地观测或未知数据。
 - **授权缓存状态**：账号卡片和当前账号面板会显示 refresh token / 授权缓存健康状态、可观察到的到期时间或上次刷新时间；当官方登录缓存没有暴露 refresh token 到期时间时，只提示授权缓存建议刷新，不把它误写成固定到期时间。
 - **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 指定账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
@@ -59,7 +59,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 2. 进入「设置」页，确认 **Codex CLI 路径** 已自动填好（默认探测 PATH / `~/.codex/bin`）；缺失时手动指定，状态变绿即可。
 3. 进入「账号」页，点「添加账号」→ 输入账号别名（落地为 `~/.codex/account_backup/<别名>/`）。
 4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，指定账号会打开 Edge；其他账号走普通登录浏览器行为。
-5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/`，原账号自动归档。
+5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 自动回写到账号备份目录。
 6. 需要清空 quota cache、重新拉计划或更新授权缓存状态时，点对应账号的「刷新」（≥ 6h 走完整 OAuth rotation，< 6h 复用缓存）。
 
 ## 仓库结构
@@ -149,9 +149,9 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 应用启动后会探测 `codex` 路径；探测失败时设置页会标红「Codex CLI 路径未找到」，可手动指定（写入 `install_state.json` 的 `user_codex_path` 优先级最高）。也可以点设置页「Codex CLI 路径」行的「自动检测」按钮强制重新扫描，并用 `codex --version` 验证候选确实是 Codex CLI——比启动时的自检更主动，适合自动定位出错或不清楚 `codex` 装在哪的情况。Windows 会同时检查 `CODEX_EXE`、`CODEX_INSTALL_DIR` 和官方 OpenAI versioned runtime 目录；缓存路径或手动路径如果不能运行 `codex --version`，或输出的版本行不像 Codex CLI，会被跳过并重新发现。未装 Codex CLI 也能用 plan / quota 查看（走 ChatGPT OAuth token 直接拉 rate-limits），但「登录」按钮和切换后启动 Codex 等动作需要 CLI 存在。
 
-### 切换账号会丢失原账号的 sessions / 历史吗
+### 切换账号会改动 skills / sessions / 历史吗
 
-不会。切换时整个 `~/.codex/` 子集（`auth.json` / `config.toml` / `sessions/`）被原子归档到原账号的备份目录，目标账号的同名内容覆盖回 `~/.codex/`。再切回来时全部恢复。
+不会。当前原生 runtime 的 profile 切换只管理 `auth.json` 和 `profile.json` 两个账号态文件，并会按 profile 元数据同步当前账号需要的 Base URL 配置。`skills`、插件缓存、`AGENTS.md`、`rules`、`memories`、`vendor_imports`、sqlite 状态和 sessions/jsonl 历史都不会从 profile 目录覆盖到 live `~/.codex/`。如果旧 profile 目录里残留这些全局资产，它们会被切换流程忽略。
 
 ### 「刷新」按钮和「切换」之后会不会消耗 quota
 
@@ -179,7 +179,7 @@ App 暂未做 Apple Developer 代码签名 / notarization。第一次启动按�
 
 - 账号备份：`~/.codex/account_backup/<别名>/`（macOS / Linux）/ `%USERPROFILE%\.codex\account_backup\<别名>\`（Windows）
 - 应用运行时状态：Windows 为 `%CODEX_HOME%\account_backup\windows\`（`install_state.json`、`quota_cache.json`、可再生成的 login runtime / refresh runtime）；macOS 为 `~/.codex/account_backup/macos/`
-- Codex 当前账号状态：`~/.codex/auth.json` + `~/.codex/config.toml`
+- Codex 当前账号状态：`~/.codex/auth.json` + `~/.codex/profile.json`；`config.toml` 中的 Base URL 可能由 profile 元数据同步
 
 ## 技术栈
 
