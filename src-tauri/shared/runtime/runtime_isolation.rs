@@ -18,7 +18,8 @@
 //! that shared list so we don't drift between mac and win, or between
 //! refresh and login.
 
-use std::path::Path;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use crate::errors::{AppError, AppResult};
 
@@ -58,7 +59,7 @@ pub const RUNTIME_PROFILE_METADATA_FILENAME: &str = "profile.json";
 /// `mkdir -p` again, but we want any FS error to surface here with a
 /// project-specific code instead of buried inside a child process.
 fn ensure_runtime_home(runtime_home: &Path) -> AppResult<()> {
-    std::fs::create_dir_all(runtime_home).map_err(|error| {
+    fs::create_dir_all(runtime_home).map_err(|error| {
         AppError::new(
             "RUNTIME_HOME_CREATE_FAILED",
             format!(
@@ -69,6 +70,132 @@ fn ensure_runtime_home(runtime_home: &Path) -> AppResult<()> {
     })
 }
 
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
+fn is_symlink_or_reparse(metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink() || is_windows_reparse_point(metadata)
+}
+
+fn validate_runtime_home(runtime_home: &Path) -> AppResult<()> {
+    for ancestor in runtime_home.ancestors() {
+        if ancestor.as_os_str().is_empty() || (!ancestor.exists() && !ancestor.is_symlink()) {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(ancestor).map_err(|error| {
+            AppError::new(
+                "RUNTIME_HOME_INVALID",
+                format!(
+                    "Failed to inspect runtime CODEX_HOME path {}: {error}",
+                    ancestor.display()
+                ),
+            )
+        })?;
+        if is_symlink_or_reparse(&metadata) {
+            return Err(AppError::new(
+                "RUNTIME_HOME_INVALID",
+                format!(
+                    "Runtime CODEX_HOME path must not contain reparse/symlink entries: {}",
+                    ancestor.display()
+                ),
+            ));
+        }
+    }
+
+    let metadata = fs::symlink_metadata(runtime_home).map_err(|error| {
+        AppError::new(
+            "RUNTIME_HOME_INVALID",
+            format!(
+                "Failed to inspect runtime CODEX_HOME {}: {error}",
+                runtime_home.display()
+            ),
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(AppError::new(
+            "RUNTIME_HOME_INVALID",
+            format!(
+                "Runtime CODEX_HOME must be a plain directory: {}",
+                runtime_home.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn runtime_entry_path(runtime_home: &Path, entry_name: &str) -> AppResult<PathBuf> {
+    let relative = Path::new(entry_name);
+    let components = relative.components().collect::<Vec<_>>();
+    if components.is_empty()
+        || components
+            .iter()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(AppError::new(
+            "RUNTIME_PRUNE_UNSAFE_PATH",
+            format!("Runtime prune entry must be relative: {entry_name}"),
+        ));
+    }
+
+    validate_runtime_home(runtime_home)?;
+    let mut current = runtime_home.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(part) = component else {
+            unreachable!();
+        };
+        current.push(part);
+        if !current.exists() && !current.is_symlink() {
+            continue;
+        }
+        let metadata = fs::symlink_metadata(&current).map_err(|error| {
+            AppError::new(
+                "RUNTIME_PRUNE_UNSAFE_PATH",
+                format!(
+                    "Failed to inspect runtime entry {}: {error}",
+                    current.display()
+                ),
+            )
+        })?;
+        if is_symlink_or_reparse(&metadata) {
+            return Err(AppError::new(
+                "RUNTIME_PRUNE_UNSAFE_PATH",
+                format!(
+                    "Refusing to prune reparse/symlink runtime entry: {}",
+                    current.display()
+                ),
+            ));
+        }
+        if index + 1 < components.len() && !metadata.is_dir() {
+            return Err(AppError::new(
+                "RUNTIME_PRUNE_UNSAFE_PATH",
+                format!(
+                    "Runtime prune parent must be a directory: {}",
+                    current.display()
+                ),
+            ));
+        }
+    }
+
+    Ok(current)
+}
+
+fn remove_runtime_entry(runtime_home: &Path, entry_name: &str) -> AppResult<()> {
+    let path = runtime_entry_path(runtime_home, entry_name)?;
+    remove_path(&path)
+}
+
 /// Seed the shared bookkeeping files / dirs from the user's live
 /// CODEX_HOME into a sandboxed runtime home. Idempotent: re-running
 /// against an already-seeded runtime updates the shared files to
@@ -76,6 +203,7 @@ fn ensure_runtime_home(runtime_home: &Path) -> AppResult<()> {
 /// shared dirs.
 pub fn seed_runtime_shared_assets(codex_home: &Path, runtime_home: &Path) -> AppResult<()> {
     ensure_runtime_home(runtime_home)?;
+    validate_runtime_home(runtime_home)?;
 
     for entry_name in RUNTIME_SHARED_FILES {
         let src = codex_home.join(entry_name);
@@ -104,11 +232,11 @@ pub fn seed_runtime_shared_assets(codex_home: &Path, runtime_home: &Path) -> App
 /// behavior could distort a refresh / login flow.
 pub fn prune_runtime_extra_features(runtime_home: &Path) -> AppResult<()> {
     for entry_name in RUNTIME_REMOVED_FILES {
-        remove_path(&runtime_home.join(entry_name))?;
+        remove_runtime_entry(runtime_home, entry_name)?;
     }
 
     for entry_name in RUNTIME_REMOVED_DIRS {
-        remove_path(&runtime_home.join(entry_name))?;
+        remove_runtime_entry(runtime_home, entry_name)?;
     }
 
     Ok(())
@@ -119,8 +247,8 @@ pub fn prune_runtime_extra_features(runtime_home: &Path) -> AppResult<()> {
 /// writes into a guaranteed-empty `auth.json` instead of merging on top
 /// of stale tokens from an aborted prior attempt.
 pub fn clear_runtime_auth_state(runtime_home: &Path) -> AppResult<()> {
-    remove_path(&runtime_home.join(RUNTIME_AUTH_FILENAME))?;
-    remove_path(&runtime_home.join(RUNTIME_PROFILE_METADATA_FILENAME))?;
+    remove_runtime_entry(runtime_home, RUNTIME_AUTH_FILENAME)?;
+    remove_runtime_entry(runtime_home, RUNTIME_PROFILE_METADATA_FILENAME)?;
     Ok(())
 }
 
@@ -155,12 +283,16 @@ mod tests {
         let runtime_home = temp_root("seed-copy-dst");
         write(&codex_home.join("models_cache.json"), "{}");
         write(&codex_home.join("version.json"), "{}");
+        write(&codex_home.join("cache/state.json"), "{}");
+        write(&codex_home.join("sqlite/state.db"), "sqlite");
         write(&codex_home.join("plugins/foo.js"), "// plugin");
 
         seed_runtime_shared_assets(&codex_home, &runtime_home).unwrap();
 
         assert!(runtime_home.join("models_cache.json").is_file());
         assert!(runtime_home.join("version.json").is_file());
+        assert!(runtime_home.join("cache/state.json").is_file());
+        assert!(runtime_home.join("sqlite/state.db").is_file());
         assert!(runtime_home.join("plugins/foo.js").is_file());
     }
 
@@ -180,14 +312,44 @@ mod tests {
         let runtime_home = temp_root("prune");
         write(&runtime_home.join("AGENTS.md"), "# stale");
         write(&runtime_home.join("skills/test.toml"), "[task]");
+        write(
+            &runtime_home.join("plugins/cache/plugin/SKILL.md"),
+            "# stale",
+        );
+        write(
+            &runtime_home.join(".tmp/plugins/cache/plugin/SKILL.md"),
+            "# stale",
+        );
+        write(
+            &runtime_home.join(".tmp/bundled-marketplaces/staging/SKILL.md"),
+            "# stale",
+        );
+        write(&runtime_home.join(".tmp/keep.txt"), "keep");
 
         prune_runtime_extra_features(&runtime_home).unwrap();
 
         assert!(!runtime_home.join("AGENTS.md").exists());
         assert!(!runtime_home.join("skills").exists());
+        assert!(runtime_home.join("plugins/cache/plugin/SKILL.md").is_file());
+        assert!(runtime_home
+            .join(".tmp/plugins/cache/plugin/SKILL.md")
+            .is_file());
+        assert!(runtime_home
+            .join(".tmp/bundled-marketplaces/staging/SKILL.md")
+            .is_file());
+        assert!(runtime_home.join(".tmp/keep.txt").is_file());
 
         // Idempotent.
         prune_runtime_extra_features(&runtime_home).unwrap();
+    }
+
+    #[test]
+    fn runtime_prune_rejects_parent_components() {
+        let runtime_home = temp_root("prune-parent");
+
+        let error = remove_runtime_entry(&runtime_home, "../outside").unwrap_err();
+
+        assert_eq!(error.error_code, "RUNTIME_PRUNE_UNSAFE_PATH");
     }
 
     #[test]

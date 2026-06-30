@@ -314,8 +314,14 @@ mod tests {
 
         let runtime_home = get_refresh_runtime_dir(&codex_home);
         fs::create_dir_all(runtime_home.join("memories")).unwrap();
+        fs::create_dir_all(runtime_home.join(".tmp").join("plugins")).unwrap();
         fs::write(runtime_home.join("AGENTS.md"), "stale-agents").unwrap();
         fs::write(runtime_home.join("config.toml"), "model = \"existing\"\n").unwrap();
+        fs::write(
+            runtime_home.join(".tmp").join("plugins").join("old.txt"),
+            "stale-plugin",
+        )
+        .unwrap();
         fs::write(
             runtime_home.join("memories").join("old.txt"),
             "stale-memory",
@@ -351,6 +357,11 @@ mod tests {
         assert!(!runtime_home.join("AGENTS.md").exists());
         assert!(!runtime_home.join("skills").exists());
         assert!(!runtime_home.join("memories").exists());
+        assert!(runtime_home
+            .join(".tmp")
+            .join("plugins")
+            .join("old.txt")
+            .is_file());
         assert!(!runtime_home.join("notes.txt").exists());
         let _ = fs::remove_dir_all(&codex_home);
     }

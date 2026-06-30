@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::errors::{AppError, AppResult};
 
@@ -242,17 +244,61 @@ pub fn autosave_auth(codex_home: &Path) -> AppResult<()> {
         return Ok(());
     }
 
-    let snapshot_dir = get_auto_save_root(Some(codex_home)).join(autosave_timestamp());
-    fs::create_dir_all(&snapshot_dir).map_err(|error| {
+    let auto_save_root = get_auto_save_root(Some(codex_home));
+    let snapshot_dir = create_autosave_snapshot_dir(&auto_save_root)?;
+    copy_entry(&auth_file, &snapshot_dir.join("auth.json"))
+}
+
+fn create_autosave_snapshot_dir(auto_save_root: &Path) -> AppResult<std::path::PathBuf> {
+    create_autosave_snapshot_dir_with_base(auto_save_root, &autosave_timestamp())
+}
+
+fn create_autosave_snapshot_dir_with_base(
+    auto_save_root: &Path,
+    base: &str,
+) -> AppResult<std::path::PathBuf> {
+    fs::create_dir_all(auto_save_root).map_err(|error| {
         AppError::new(
             "FS_CREATE_FAILED",
             format!(
-                "Failed to create autosave directory {}: {error}",
-                snapshot_dir.display()
+                "Failed to create autosave root {}: {error}",
+                auto_save_root.display()
             ),
         )
     })?;
-    copy_entry(&auth_file, &snapshot_dir.join("auth.json"))
+
+    for attempt in 0..32 {
+        let candidate = if attempt == 0 {
+            auto_save_root.join(base)
+        } else {
+            let suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|value| value.as_nanos())
+                .unwrap_or(0);
+            auto_save_root.join(format!("{base}-{suffix}-{attempt}"))
+        };
+        match fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(AppError::new(
+                    "FS_CREATE_FAILED",
+                    format!(
+                        "Failed to create autosave directory {}: {error}",
+                        candidate.display()
+                    ),
+                ));
+            }
+        }
+    }
+
+    Err(AppError::new(
+        "FS_CREATE_FAILED",
+        format!(
+            "Failed to create a unique autosave directory under {}",
+            auto_save_root.display()
+        ),
+    ))
 }
 
 pub fn set_active_marker(profile: &str, backup_root: &Path) -> AppResult<()> {
@@ -290,4 +336,76 @@ pub fn clear_active_markers(backup_root: &Path) -> AppResult<()> {
         remove_path(&profile_dir.join(ACTIVE_MARKER_FILE))?;
     }
     remove_path(&get_current_profile_file(backup_root.parent()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("codex-switch-fs-ops-{name}-{unique}"));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn write(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, contents).unwrap();
+    }
+
+    #[test]
+    fn autosave_auth_keeps_existing_snapshots() {
+        let codex_home = temp_root("autosave-keep-existing");
+        write(&codex_home.join("auth.json"), "{}");
+        let auto_save_root = get_auto_save_root(Some(&codex_home));
+        for index in 1..=6 {
+            let name = format!("2026010{index}-000000");
+            write(&auto_save_root.join(name).join("auth.json"), "{}");
+        }
+
+        autosave_auth(&codex_home).unwrap();
+
+        let snapshots = fs::read_dir(&auto_save_root)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().is_dir())
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 7);
+        for index in 1..=6 {
+            let name = format!("2026010{index}-000000");
+            assert!(auto_save_root.join(name).join("auth.json").is_file());
+        }
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn autosave_auth_uses_unique_directory_when_timestamp_exists() {
+        let codex_home = temp_root("autosave-unique");
+        let auto_save_root = get_auto_save_root(Some(&codex_home));
+        let existing = auto_save_root.join("20260101-000000");
+        write(&existing.join("auth.json"), "old");
+
+        let created =
+            create_autosave_snapshot_dir_with_base(&auto_save_root, "20260101-000000").unwrap();
+
+        let snapshots = fs::read_dir(&auto_save_root)
+            .unwrap()
+            .filter(|entry| entry.as_ref().unwrap().path().is_dir())
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 2);
+        assert_ne!(created, existing);
+        assert_eq!(
+            fs::read_to_string(existing.join("auth.json")).unwrap(),
+            "old"
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
 }
