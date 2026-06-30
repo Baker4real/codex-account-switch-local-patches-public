@@ -296,6 +296,19 @@ function formatTokenDate(timestamp: number | null): string | null {
   }).format(new Date(timestamp));
 }
 
+function formatTokenCompactDate(timestamp: number | null): string | null {
+  if (timestamp == null) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat(state.locale, {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(timestamp));
+}
+
 function tokenHealthLabel(health: RefreshTokenHealth): string {
   switch (health) {
     case "healthy":
@@ -350,24 +363,6 @@ function tokenActionText(status: RefreshTokenStatus): string {
   }
 }
 
-function tokenInlineAction(status: RefreshTokenStatus): string {
-  switch (status.health) {
-    case "healthy":
-      return t(state.locale, "tokenInlineNoAction");
-    case "needs_login":
-    case "missing_auth":
-      return t(state.locale, "tokenInlineLogin");
-    case "not_refreshable":
-      return t(state.locale, "tokenInlineNoAction");
-    case "refresh_due":
-    case "unknown_expiry":
-    default:
-      return status.can_refresh
-        ? t(state.locale, "tokenInlineRefresh")
-        : t(state.locale, "tokenInlineLogin");
-  }
-}
-
 function buildTokenStatusMarkup(
   status: RefreshTokenStatus,
   layout: "profile" | "current",
@@ -375,15 +370,15 @@ function buildTokenStatusMarkup(
   const label = tokenHealthLabel(status.health);
   const updated = formatTokenObservedAge(status.last_refresh_at_ms ?? status.auth_updated_at_ms);
   const refreshExpiry = formatTokenDate(status.refresh_token_expires_at_ms);
+  const compactRefreshExpiry = formatTokenCompactDate(status.refresh_token_expires_at_ms);
   const authCacheAge = t(state.locale, "tokenAuthCacheUpdated", { value: updated });
   const expiryLine = refreshExpiry
     ? t(state.locale, "tokenRefreshExpiresAt", { value: refreshExpiry })
     : t(state.locale, "tokenRefreshExpiryUnknown");
-  const inlineExpiry = refreshExpiry
-    ? t(state.locale, "tokenRefreshExpiresShort", { value: refreshExpiry })
-    : authCacheAge;
+  const inlineExpiry = compactRefreshExpiry
+    ? t(state.locale, "tokenRefreshExpiresShort", { value: compactRefreshExpiry })
+    : updated;
   const action = tokenActionText(status);
-  const inlineAction = tokenInlineAction(status);
   const title = `${label}. ${authCacheAge}. ${expiryLine}. ${action}`;
 
   return `
@@ -395,7 +390,6 @@ function buildTokenStatusMarkup(
       <span class="token-status-dot" aria-hidden="true"></span>
       <span class="token-status-label">${escapeHtml(label)}</span>
       <span class="token-status-age">${escapeHtml(inlineExpiry)}</span>
-      <span class="token-status-action">${escapeHtml(inlineAction)}</span>
     </div>
   `;
 }
@@ -761,6 +755,7 @@ export function renderShellRoute(): void {
 export function renderShellOverview(dashboard: DashboardViewModel | null): void {
   if (!dashboard || !state.snapshot) {
     elements.dashboardActiveProfile.textContent = "--";
+    elements.dashboardActiveProfile.title = "";
     elements.dashboardProfileCount.textContent = "--";
     elements.dashboardReadyCount.textContent = "--";
     elements.dashboardMissingCount.textContent = "--";
@@ -772,10 +767,12 @@ export function renderShellOverview(dashboard: DashboardViewModel | null): void 
     profile.auth_present && profile.has_account_identity && profile.status !== "missing_auth"
   )).length;
   const missingCount = profiles.length - readyCount;
-
-  elements.dashboardActiveProfile.textContent = dashboard.current_card
+  const activeProfileTitle = dashboard.current_card
     ? currentDisplayTitle(dashboard.current_card)
     : t(state.locale, "noActiveProfile");
+
+  elements.dashboardActiveProfile.textContent = activeProfileTitle;
+  elements.dashboardActiveProfile.title = activeProfileTitle;
   elements.dashboardProfileCount.textContent = String(profiles.length);
   elements.dashboardReadyCount.textContent = String(readyCount);
   elements.dashboardMissingCount.textContent = String(Math.max(0, missingCount));
@@ -784,7 +781,9 @@ export function renderShellOverview(dashboard: DashboardViewModel | null): void 
 export function renderCurrentCard(dashboard: DashboardViewModel): void {
   const current = dashboard.current_card;
   if (!current) {
-    elements.currentTitle.textContent = t(state.locale, "noActiveProfile");
+    const noActiveTitle = t(state.locale, "noActiveProfile");
+    elements.currentTitle.textContent = noActiveTitle;
+    elements.currentTitle.title = noActiveTitle;
     elements.currentPlan.textContent = t(state.locale, "switchToStart");
     elements.currentLoginButton.disabled = true;
     elements.openCurrentFolderButton.disabled = true;
@@ -795,7 +794,9 @@ export function renderCurrentCard(dashboard: DashboardViewModel): void {
   }
 
   state.currentProfile = current.folder_name;
-  elements.currentTitle.textContent = currentDisplayTitle(current);
+  const currentTitle = currentDisplayTitle(current);
+  elements.currentTitle.textContent = currentTitle;
+  elements.currentTitle.title = currentTitle;
   elements.currentPlan.textContent = planLine(current.plan_name, current.subscription_days_left);
   const currentPlanTitle = planFreshnessTitle(current.plan_name, current.last_plan_check_ms);
   if (currentPlanTitle) {
@@ -873,11 +874,12 @@ export function renderProfiles(
       ]
         .filter((value): value is string => value != null)
         .join(" ");
+      const profileTitle = profileDisplayTitle(profile);
 
       return `
         <article class="profile-card status-${profile.status}${unavailable ? " is-unavailable-card" : ""}">
           <div class="profile-title-wrap">
-            <p class="profile-title-account">${escapeHtml(profileDisplayTitle(profile))}</p>
+            <p class="profile-title-account" title="${escapeHtml(profileTitle)}">${escapeHtml(profileTitle)}</p>
             <p class="${planClasses}"${planTooltip ? ` title="${escapeHtml(planTooltip)}"` : ""}>${escapeHtml(planLine(profile.plan_name, profile.subscription_days_left))}</p>
           </div>
 
