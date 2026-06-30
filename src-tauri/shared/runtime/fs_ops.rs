@@ -5,8 +5,8 @@ use std::path::Path;
 use crate::errors::{AppError, AppResult};
 
 use super::paths::{
-    autosave_timestamp, get_auto_save_root, get_current_profile_file, list_profile_dirs,
-    utc_timestamp, ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
+    autosave_timestamp, get_auto_save_root, get_current_profile_file, is_profile_dir,
+    list_profile_dirs, utc_timestamp, ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
 };
 
 const PROFILE_MANAGED_FILES: [&str; 2] = ["auth.json", PROFILE_METADATA_FILENAME];
@@ -17,6 +17,52 @@ fn should_ignore_entry(name: &str) -> bool {
 
 fn is_profile_managed_entry(name: &str) -> bool {
     PROFILE_MANAGED_FILES.contains(&name)
+}
+
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
+}
+
+fn validate_profile_managed_file(path: &Path, name: &str) -> AppResult<bool> {
+    if !path.exists() && !path.is_symlink() {
+        return Ok(false);
+    }
+
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        AppError::new(
+            "PROFILE_STATE_INVALID",
+            format!(
+                "Failed to inspect profile-managed entry {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+
+    if metadata.file_type().is_symlink()
+        || is_windows_reparse_point(&metadata)
+        || !metadata.is_file()
+    {
+        return Err(AppError::new(
+            "PROFILE_STATE_INVALID",
+            format!(
+                "Profile-managed entry {name} must be a regular file: {}",
+                path.display()
+            ),
+        ));
+    }
+
+    Ok(true)
 }
 
 pub fn read_text_stripped(path: &Path) -> String {
@@ -118,6 +164,8 @@ pub fn overlay_directory_contents(source_dir: &Path, target_dir: &Path) -> AppRe
         )
     })?;
 
+    let mut managed_entries = Vec::new();
+
     for entry in fs::read_dir(source_dir).map_err(|error| {
         AppError::new(
             "FS_READ_FAILED",
@@ -144,7 +192,14 @@ pub fn overlay_directory_contents(source_dir: &Path, target_dir: &Path) -> AppRe
             continue;
         }
 
-        copy_entry(&entry.path(), &target_dir.join(name))?;
+        let source_path = entry.path();
+        if validate_profile_managed_file(&source_path, name)? {
+            managed_entries.push((name.to_string(), source_path));
+        }
+    }
+
+    for (name, source_path) in managed_entries {
+        copy_entry(&source_path, &target_dir.join(name))?;
     }
 
     Ok(())
@@ -156,16 +211,22 @@ pub fn backup_root_state_to_profile(
     backup_root: &Path,
 ) -> AppResult<()> {
     let profile_dir = backup_root.join(profile);
-    if !profile_dir.is_dir() {
+    if !is_profile_dir(&profile_dir) {
         return Ok(());
     }
 
     let managed_names = BTreeSet::from(PROFILE_MANAGED_FILES.map(str::to_string));
+    let mut managed_sources = Vec::new();
 
     for name in managed_names {
         let src = codex_home.join(&name);
+        let exists = validate_profile_managed_file(&src, &name)?;
+        managed_sources.push((name, src, exists));
+    }
+
+    for (name, src, exists) in managed_sources {
         let dst = profile_dir.join(&name);
-        if src.is_dir() || src.is_file() {
+        if exists {
             copy_entry(&src, &dst)?;
         } else {
             remove_path(&dst)?;

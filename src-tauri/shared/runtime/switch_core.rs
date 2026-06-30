@@ -7,7 +7,7 @@ use crate::platform::hooks::PlatformHooks;
 use super::fs_ops::{
     autosave_auth, backup_root_state_to_profile, overlay_directory_contents, set_active_marker,
 };
-use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
+use super::paths::{get_backup_root, get_codex_home, is_profile_dir, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
 use super::profiles_index::reload_profiles_index_after_mutation;
@@ -37,7 +37,7 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
     let profile_name = validate_profile_name(profile_name)?;
     let _guard = acquire_switch_lock(Some(&codex_home))?;
     let profile_dir = backup_root.join(&profile_name);
-    if !profile_dir.is_dir() {
+    if !is_profile_dir(&profile_dir) {
         return Err(AppError::new(
             "PROFILE_NOT_FOUND",
             format!("Profile not found: {profile_name}"),
@@ -259,6 +259,82 @@ mod tests {
             fs::read_to_string(live_system_skill_dir.join("SKILL.md")).unwrap(),
             "live system skill\n"
         );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn switch_profile_rejects_current_profile_marker_path_traversal() {
+        let codex_home = temp_codex_home("current-profile-traversal");
+        let backup_root = codex_home.join("account_backup");
+        let profile_b_dir = backup_root.join("b");
+        let skills_dir = codex_home.join("skills");
+
+        fs::create_dir_all(&profile_b_dir).unwrap();
+        fs::create_dir_all(&skills_dir).unwrap();
+        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(
+            codex_home.join("profile.json"),
+            "root-profile-before-switch\n",
+        )
+        .unwrap();
+        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(profile_b_dir.join("profile.json"), "profile-b-profile\n").unwrap();
+        fs::write(
+            get_current_profile_file(Some(&codex_home)),
+            format!("..{}skills\n", std::path::MAIN_SEPARATOR),
+        )
+        .unwrap();
+
+        let hooks = FakeHooks::new(false);
+        let response = switch_profile_with_home(&hooks, "b", Some(&codex_home)).unwrap();
+
+        assert!(response.ok);
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "profile-b-auth\n"
+        );
+        assert!(!skills_dir.join("auth.json").exists());
+        assert!(!skills_dir.join("profile.json").exists());
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn switch_profile_rejects_directory_profile_metadata_overlay() {
+        let codex_home = temp_codex_home("directory-profile-metadata");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        let profile_b_metadata_dir = profile_b_dir.join("profile.json");
+
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_b_metadata_dir).unwrap();
+        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(
+            codex_home.join("profile.json"),
+            "root-profile-before-switch\n",
+        )
+        .unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(profile_a_dir.join("profile.json"), "profile-a-profile\n").unwrap();
+        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(profile_b_metadata_dir.join("payload"), "not metadata\n").unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+
+        let hooks = FakeHooks::new(false);
+        let error = switch_profile_with_home(&hooks, "b", Some(&codex_home)).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_STATE_INVALID");
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "root-auth-before-switch\n"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("profile.json")).unwrap(),
+            "root-profile-before-switch\n"
+        );
+        assert!(codex_home.join("profile.json").is_file());
 
         let _ = fs::remove_dir_all(&codex_home);
     }

@@ -1,5 +1,5 @@
-use std::env;
 use std::path::{Path, PathBuf};
+use std::{env, fs};
 
 use chrono::{Local, Utc};
 
@@ -120,14 +120,39 @@ pub fn list_profile_dirs(backup_root: &Path) -> Vec<PathBuf> {
 }
 
 pub fn is_profile_dir(path: &Path) -> bool {
-    if !path.is_dir() {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink() || is_windows_reparse_point(&metadata) {
+        return false;
+    }
+    if !metadata.is_dir() {
         return false;
     }
 
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
     !matches!(
-        path.file_name().and_then(|name| name.to_str()),
-        Some("_autosave") | Some(WINDOWS_RUNTIME_DIRNAME) | Some(MACOS_RUNTIME_DIRNAME)
-    )
+        name,
+        "_autosave" | WINDOWS_RUNTIME_DIRNAME | MACOS_RUNTIME_DIRNAME
+    ) && validate_profile_name(name).is_ok()
+}
+
+fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = metadata;
+        false
+    }
 }
 
 pub fn validate_profile_name(profile_name: &str) -> AppResult<String> {
@@ -183,6 +208,24 @@ mod tests {
         assert!(is_profile_dir(&profile_dir));
         assert!(!is_profile_dir(&windows_runtime_dir));
         assert!(!is_profile_dir(&macos_runtime_dir));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn is_profile_dir_requires_valid_profile_name() {
+        let root = temp_dir("name-filter");
+        let profile_dir = root.join("profile-1");
+        let dotted_dir = root.join("profile.1");
+        let spaced_dir = root.join("profile 1");
+
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::create_dir_all(&dotted_dir).unwrap();
+        fs::create_dir_all(&spaced_dir).unwrap();
+
+        assert!(is_profile_dir(&profile_dir));
+        assert!(!is_profile_dir(&dotted_dir));
+        assert!(!is_profile_dir(&spaced_dir));
 
         let _ = fs::remove_dir_all(&root);
     }

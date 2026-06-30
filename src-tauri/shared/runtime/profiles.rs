@@ -3,7 +3,10 @@ use std::path::Path;
 use chrono::{DateTime, Local, NaiveDate};
 
 use super::fs_ops::read_text_stripped;
-use super::paths::{get_current_profile_file, list_profile_dirs, ACTIVE_MARKER_FILE};
+use super::paths::{
+    get_current_profile_file, is_profile_dir, list_profile_dirs, validate_profile_name,
+    ACTIVE_MARKER_FILE,
+};
 
 pub fn build_display_title(profile_name: &str, account_label: Option<&str>) -> String {
     let account_label = account_label
@@ -31,8 +34,11 @@ pub fn compute_subscription_days_left(subscription_expires_at: Option<&str>) -> 
 pub fn resolve_current_profile(backup_root: &Path) -> Option<String> {
     let current_profile_file = get_current_profile_file(backup_root.parent());
     let profile = read_text_stripped(&current_profile_file);
-    if !profile.is_empty() && backup_root.join(&profile).is_dir() {
-        return Some(profile);
+    if let Ok(profile) = validate_profile_name(&profile) {
+        let profile_dir = backup_root.join(&profile);
+        if is_profile_dir(&profile_dir) {
+            return Some(profile);
+        }
     }
 
     for profile_dir in list_profile_dirs(backup_root) {
