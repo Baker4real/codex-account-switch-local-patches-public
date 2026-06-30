@@ -124,9 +124,9 @@ dist/
     ...
 ```
 
-Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`；本地 GNU 补丁验证可用 `npm run tauri:build:portable` 生成 `src-tauri/target/release/codex_switch.exe`。替换本机安装版时，必须同时把同目标架构的 `WebView2Loader.dll` 放到 `D:\Codex\apps\codex_switch\`，否则桌面端会因为找不到 WebView loader 而启动失败。
+Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`。本机替换已安装的本地补丁版时，优先使用 `LOCAL_PATCHES.md` 里的“已验证 Windows 编译路径”：先跑 `npm run build -- --mode windows` 做前端 Windows mode 预检，再跑 `npm run tauri:build:windows:portable` 生成 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该 wrapper 会优先使用 `D:\Codex\.cargo\bin` 里的 rustup shim，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`，避免独立安装的 GNU Rust 抢先进入 PATH。
 
-Windows 本地 MSVC 便携构建可用 `npm run tauri:build:windows:portable`，产物为 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该命令会优先使用 `D:\Codex\.cargo\bin` 里的 rustup shim，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`，避免独立安装的 GNU Rust 抢先进入 PATH。该命令仍需要 Rust 的 `x86_64-pc-windows-msvc` target，以及 Visual Studio Build Tools 的 C++ 工具链和 Windows SDK；如果 Git for Windows 的 `link.exe` 抢先进入 PATH，请从 VS developer shell 运行，或确保 MSVC `link.exe` 优先。
+替换 `D:\Codex\apps\codex_switch\` 时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
 
 ## 版本与发布
 

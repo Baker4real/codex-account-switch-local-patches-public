@@ -4,6 +4,51 @@
 
 先把上游 tag 合并进这份源码树，保留下面的本地补丁，再重新构建并替换已安装的可执行文件：
 
+## 已验证 Windows 编译路径（优先使用）
+
+已在 2026-06-30 于本仓库验证通过。下次需要本机补丁构建或替换
+`D:\Codex\apps\codex_switch\` 时，优先从这条路径开始；除非任务明确要求
+CI release、GNU/MinGW 诊断或上游对比，不要先试裸 `tauri build`、
+`npm run tauri:build:portable` 或其它临时路径。
+
+```powershell
+Set-Location -LiteralPath 'D:\Codex\projects\codex-account-switch'
+npm run build -- --mode windows
+npm run tauri:build:windows:portable
+```
+
+- 前提是 Rust 已安装 `x86_64-pc-windows-msvc` target，且 Visual Studio Build
+  Tools 的 C++ 工具链和 Windows SDK 可用；如果 Git for Windows 的 `link.exe`
+  抢先进入 `PATH`，从 VS developer shell 运行，或确保 MSVC `link.exe` 优先。
+- `npm run build -- --mode windows` 是前端 Windows mode 预检，输出到 ignored
+  的 `dist\web\`。
+- `npm run tauri:build:windows:portable` 是本机替换安装版的主路径。该 wrapper
+  会优先把 `D:\Codex\.cargo\bin` 放到 `PATH` 前面，并在 `rustc -vV` 未报告
+  `host: x86_64-pc-windows-msvc` 时拒绝构建。
+- 已验证的 exe 产物路径：
+  `src-tauri\target\x86_64-pc-windows-msvc\release\codex_switch.exe`。
+- MSVC `--no-bundle` 输出目录下通常没有相邻的根级 `WebView2Loader.dll`；
+  复制安装版时，从
+  `src-tauri\target\x86_64-pc-windows-msvc\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll`
+  取匹配的 x64 loader。
+
+替换本机安装版时，只复制这两个文件到安装目录：
+
+```powershell
+$release = 'D:\Codex\projects\codex-account-switch\src-tauri\target\x86_64-pc-windows-msvc\release'
+$install = 'D:\Codex\apps\codex_switch'
+Copy-Item -LiteralPath "$release\codex_switch.exe" -Destination "$install\codex_switch.exe" -Force
+$loader = Get-ChildItem -LiteralPath "$release\build" -Recurse -Filter 'WebView2Loader.dll' |
+  Where-Object { $_.FullName -like '*\out\x64\WebView2Loader.dll' } |
+  Select-Object -First 1
+Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dll" -Force
+```
+
+`npm run test:rust:windows-gnu` 只用于当前 `rustc` host 是
+`x86_64-pc-windows-gnu` 的 GNU/MinGW 链接路径诊断；它不是替换安装版的主构建路径。
+
+## 必须保留的本地补丁
+
 - Windows 定向浏览器登录不再按 profile `b` / `c` 槽位选浏览器。仅当目标
   profile 已有账号标签匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 时，登录使用
   `codex app-server`，并用用户正常 Edge 状态打开返回的 auth URL。
