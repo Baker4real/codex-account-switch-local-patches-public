@@ -105,6 +105,13 @@ The switch script itself does not create profile folders or generate missing aut
 - `.active_profile` and `.DS_Store` are excluded from copy operations.
 - Legacy macOS shell mode still belongs to `macOS-backup/`; the native Rust runtime is the regression target for profile switching.
 
+## Login / refresh runtime 隔离
+
+- Login / refresh runtime home 仍会播种上游共享运行态资产：`plugins`、`cache`、`sqlite`。
+- Runtime prune 只移除可能干扰 login / refresh 行为的隔离状态：`AGENTS.md`、`rules`、`skills`、`vendor_imports`、`memories`。
+- Runtime prune 不得删除 `plugins`、`.tmp`、`cache`、`sqlite` 或 `_autosave`；插件和 connector 行为依赖这些上游共享资产继续可用。
+- `auth.json` autosave 只创建 timestamp 快照，并在 timestamp 冲突时选择唯一目录。它不执行保留策略；备份保留必须放在显式 dry-run / apply 清理工具里，不能藏进 login、refresh、switch 或 autosave 流程。
+
 ## macOS wrapper behavior
 
 - In desktop mode, the macOS compatibility installer injects a PATH hook into `~/.zshrc` so `~/.codex/bin/codex` is resolved before the existing CLI

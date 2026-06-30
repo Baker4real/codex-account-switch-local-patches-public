@@ -81,6 +81,11 @@ Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dl
   profile 目录整棵覆盖 live `skills`、`AGENTS.md`、`rules`、`memories`、
   `vendor_imports`、插件/cache/sqlite 或其它全局运行时资产。即使旧 profile
   目录里残留这些污染条目，切换和反向备份也必须忽略它们。
+- login / refresh runtime 目录是可再生运行态，但运行期间必须保持上游共享资产
+  `plugins`、`cache`、`sqlite` 可用；runtime prune 只清理 `AGENTS.md`、
+  `rules`、`skills`、`vendor_imports`、`memories` 等隔离状态。不要把
+  `plugins`、`.tmp`、`cache`、`sqlite` 或 `_autosave` 加入自动删除范围；
+  备份保留策略必须走显式 dry-run / apply 清理流程。
 - 切换前的 root 写回必须按账号身份路由，不能盲信 `.current_profile` 或
   `.active_profile`。先用 live `auth.json` 的 `account_id` / `email` 匹配
   已知 profile；只有身份匹配或目标槽位是真空占位时才写入。若 live root
