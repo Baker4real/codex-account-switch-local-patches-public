@@ -6,11 +6,17 @@ use crate::errors::{AppError, AppResult};
 
 use super::paths::{
     autosave_timestamp, get_auto_save_root, get_current_profile_file, list_profile_dirs,
-    utc_timestamp, ACTIVE_MARKER_FILE,
+    utc_timestamp, ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
 };
+
+const PROFILE_MANAGED_FILES: [&str; 2] = ["auth.json", PROFILE_METADATA_FILENAME];
 
 fn should_ignore_entry(name: &str) -> bool {
     matches!(name, ".DS_Store" | ACTIVE_MARKER_FILE)
+}
+
+fn is_profile_managed_entry(name: &str) -> bool {
+    PROFILE_MANAGED_FILES.contains(&name)
 }
 
 pub fn read_text_stripped(path: &Path) -> String {
@@ -134,6 +140,9 @@ pub fn overlay_directory_contents(source_dir: &Path, target_dir: &Path) -> AppRe
         if should_ignore_entry(name) {
             continue;
         }
+        if !is_profile_managed_entry(name) {
+            continue;
+        }
 
         copy_entry(&entry.path(), &target_dir.join(name))?;
     }
@@ -151,34 +160,7 @@ pub fn backup_root_state_to_profile(
         return Ok(());
     }
 
-    let mut managed_names = BTreeSet::from(["auth.json".to_string()]);
-    for entry in fs::read_dir(&profile_dir).map_err(|error| {
-        AppError::new(
-            "FS_READ_FAILED",
-            format!(
-                "Failed to read directory {}: {error}",
-                profile_dir.display()
-            ),
-        )
-    })? {
-        let entry = entry.map_err(|error| {
-            AppError::new(
-                "FS_READ_FAILED",
-                format!(
-                    "Failed to read directory entry {}: {error}",
-                    profile_dir.display()
-                ),
-            )
-        })?;
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        if should_ignore_entry(name) {
-            continue;
-        }
-        managed_names.insert(name.to_string());
-    }
+    let managed_names = BTreeSet::from(PROFILE_MANAGED_FILES.map(str::to_string));
 
     for name in managed_names {
         let src = codex_home.join(&name);

@@ -188,6 +188,82 @@ mod tests {
     }
 
     #[test]
+    fn switch_profile_does_not_overlay_profile_skills_into_live_home() {
+        let codex_home = temp_codex_home("preserve-live-skills");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        let profile_a_skill_dir = profile_a_dir.join("skills").join("old-skill");
+        let live_skill_dir = codex_home.join("skills").join("local-skill");
+        let live_system_skill_dir = codex_home.join("skills").join(".system");
+        let profile_system_skill_dir = profile_b_dir.join("skills").join(".system");
+
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_a_skill_dir).unwrap();
+        fs::create_dir_all(&profile_system_skill_dir).unwrap();
+        fs::create_dir_all(&live_skill_dir).unwrap();
+        fs::create_dir_all(&live_system_skill_dir).unwrap();
+        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(
+            codex_home.join("profile.json"),
+            "root-profile-before-switch\n",
+        )
+        .unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(profile_a_dir.join("profile.json"), "profile-a-profile\n").unwrap();
+        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(profile_b_dir.join("profile.json"), "profile-b-profile\n").unwrap();
+        fs::write(
+            profile_a_skill_dir.join("SKILL.md"),
+            "stale profile skill\n",
+        )
+        .unwrap();
+        fs::write(live_skill_dir.join("SKILL.md"), "live local skill\n").unwrap();
+        fs::write(
+            live_system_skill_dir.join("SKILL.md"),
+            "live system skill\n",
+        )
+        .unwrap();
+        fs::write(
+            profile_system_skill_dir.join("SKILL.md"),
+            "profile system skill\n",
+        )
+        .unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+
+        let hooks = FakeHooks::new(false);
+        let response = switch_profile_with_home(&hooks, "b", Some(&codex_home)).unwrap();
+
+        assert!(response.ok);
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "profile-b-auth\n"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("profile.json")).unwrap(),
+            "profile-b-profile\n"
+        );
+        assert_eq!(
+            fs::read_to_string(profile_a_dir.join("profile.json")).unwrap(),
+            "root-profile-before-switch\n"
+        );
+        assert_eq!(
+            fs::read_to_string(profile_a_skill_dir.join("SKILL.md")).unwrap(),
+            "stale profile skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(live_skill_dir.join("SKILL.md")).unwrap(),
+            "live local skill\n"
+        );
+        assert_eq!(
+            fs::read_to_string(live_system_skill_dir.join("SKILL.md")).unwrap(),
+            "live system skill\n"
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn switch_profile_rejects_missing_profile_auth_before_running_hooks() {
         let codex_home = temp_codex_home("missing-auth");
         let backup_root = codex_home.join("account_backup");

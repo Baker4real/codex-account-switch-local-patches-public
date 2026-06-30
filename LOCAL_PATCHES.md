@@ -32,5 +32,9 @@
   auth 和 metadata。一次性的 `login_runtime`、`refresh_runtime`、stale
   `.switch.lock` 可以删除，因为应用会重新生成。旧本地构建留下的
   `login_browser_profiles` 目录也可以删除；当前构建不再创建它们。
+- profile 切换只能同步账号态文件 `auth.json` 和 `profile.json`；不得从
+  profile 目录整棵覆盖 live `skills`、`AGENTS.md`、`rules`、`memories`、
+  `vendor_imports`、插件/cache/sqlite 或其它全局运行时资产。即使旧 profile
+  目录里残留这些污染条目，切换和反向备份也必须忽略它们。
 
 验收目标：已安装的 `D:\Codex\apps\codex_switch\codex_switch.exe` 必须从这份已合并源码树重新构建，不能直接复制纯上游 release。做本地便携 Tauri 替换时，必须把匹配的 x64 `WebView2Loader.dll` 复制到可执行文件同一安装目录；否则桌面端可能在加载 UI 前启动失败。MSVC target 构建中，loader 可能来自目标架构的 `webview2-com-sys` build output，而不是 release 根目录。
