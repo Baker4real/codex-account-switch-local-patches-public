@@ -40,7 +40,12 @@ import {
   switchProfile,
   updateProfileBaseUrl,
 } from "@front-shared/tauri";
-import type { CodexCliCandidate, CodexCliRedetectResult, CodexCliStatus } from "@front-shared/types";
+import type {
+  CodexCliCandidate,
+  CodexCliRedetectResult,
+  CodexCliStatus,
+  CurrentQuotaResponse,
+} from "@front-shared/types";
 import {
   applyLocale,
   elements,
@@ -95,6 +100,7 @@ let pendingLoginRetry: (() => Promise<void>) | null = null;
 let cancelledLoginProfile: string | null = null;
 const LOGIN_CANCEL_RETRY_DELAY_MS = 250;
 const LOGIN_CANCEL_RETRY_LIMIT = 6;
+let lastUnmanagedAccountPrompt: string | null = null;
 
 function isRefreshPending(profile: string): boolean {
   return state.refreshActiveProfiles.includes(profile);
@@ -176,8 +182,11 @@ async function refreshCurrentQuota(showError = false): Promise<void> {
   }
 
   try {
-    applyCurrentQuota(await getCurrentLiveQuota());
+    const currentQuota = await getCurrentLiveQuota();
+    applyCurrentQuota(currentQuota);
+    await reconcileSnapshotAfterCurrentQuota(currentQuota);
     rerenderDashboard();
+    maybePromptUnmanagedAccount(state.snapshot?.unmanaged_live_account ?? null);
   } catch (error) {
     if (showError) {
       showToast(error instanceof Error ? error.message : "Failed to refresh quota.", true);
@@ -199,7 +208,9 @@ async function refreshActiveQuotaSilently(): Promise<void> {
       applySnapshot(await getProfilesSnapshot());
     }
     applyCurrentQuota(currentQuota);
+    await reconcileSnapshotAfterCurrentQuota(currentQuota);
     rerenderDashboard();
+    maybePromptUnmanagedAccount(state.snapshot?.unmanaged_live_account ?? null);
   } catch {
     // Intentional: silent ticker, never surface errors to the user.
   }
@@ -212,6 +223,25 @@ async function refreshAllOauthProfilePlansThenSnapshot(): Promise<void> {
   }
 }
 
+function maybePromptUnmanagedAccount(account: string | null): void {
+  if (!account) {
+    lastUnmanagedAccountPrompt = null;
+    return;
+  }
+  if (account === lastUnmanagedAccountPrompt) {
+    return;
+  }
+  lastUnmanagedAccountPrompt = account;
+  showToast(t(state.locale, "unmanagedAccountToast", { account }), true);
+}
+
+async function reconcileSnapshotAfterCurrentQuota(currentQuota: CurrentQuotaResponse): Promise<void> {
+  if (currentQuota.profile || !state.snapshot?.current_card) {
+    return;
+  }
+  applySnapshot(await getProfilesSnapshot());
+}
+
 async function refreshAllData(showError = true): Promise<void> {
   try {
     const [snapshot, currentQuota] = await Promise.all([
@@ -221,7 +251,9 @@ async function refreshAllData(showError = true): Promise<void> {
 
     applySnapshot(snapshot);
     applyCurrentQuota(currentQuota);
+    await reconcileSnapshotAfterCurrentQuota(currentQuota);
     rerenderDashboard();
+    maybePromptUnmanagedAccount(state.snapshot?.unmanaged_live_account ?? null);
   } catch (error) {
     if (showError) {
       showToast(error instanceof Error ? error.message : "Failed to load dashboard.", true);

@@ -89,6 +89,7 @@ export interface ProfilesSnapshotResponse {
   profiles: ProfileCard[];
   current_card: CurrentCard | null;
   current_quota_card: QuotaSummary | null;
+  unmanaged_live_account: string | null;
 }
 
 export interface CurrentQuotaResponse {

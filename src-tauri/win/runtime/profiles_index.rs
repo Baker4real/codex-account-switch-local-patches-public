@@ -2,6 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::AppResult;
 use crate::models::{CurrentQuotaResponse, ProfileIndexEntry, ProfilesIndex};
+use crate::shared::paths::get_backup_root;
+use crate::shared::profiles::detect_unmanaged_live_account;
 
 use super::paths::get_codex_home;
 use super::session_usage::{
@@ -29,6 +31,12 @@ fn select_current_quota(
 pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQuotaResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index: ProfilesIndex = load_profiles_index(Some(&codex_home))?;
+    if detect_unmanaged_live_account(&get_backup_root(Some(&codex_home)), &codex_home).is_some() {
+        return Ok(CurrentQuotaResponse {
+            profile: None,
+            quota: None,
+        });
+    }
     let Some(current_profile) = index.current_profile.clone() else {
         return Ok(CurrentQuotaResponse {
             profile: None,
@@ -84,6 +92,13 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, format!("{line}\n")).unwrap();
+    }
+
+    fn auth_with_account(account_id: &str) -> String {
+        format!(
+            "{{\"tokens\":{{\"account_id\":{}}}}}",
+            serde_json::Value::String(account_id.to_string())
+        )
     }
 
     #[test]
@@ -148,6 +163,30 @@ mod tests {
         let quota = response.quota.expect("expected quota");
         assert_eq!(quota.five_hour.remaining_percent, Some(89));
         assert_eq!(quota.weekly.remaining_percent, Some(88));
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn current_live_quota_is_empty_when_live_account_is_unmanaged() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("unmanaged-empty-quota");
+        let backup_root = codex_home.join("account_backup");
+        let profile_dir = backup_root.join("a");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
+        fs::write(profile_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"a@example.com","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}},"quota_updated_at_ms":9999999999999}"#,
+        )
+        .unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_Z")).unwrap();
+
+        let response = load_current_live_quota(Some(&codex_home)).unwrap();
+
+        assert_eq!(response.profile, None);
+        assert!(response.quota.is_none());
 
         let _ = fs::remove_dir_all(&codex_home);
     }

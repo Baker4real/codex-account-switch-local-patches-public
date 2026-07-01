@@ -249,6 +249,7 @@ pub struct ProfilesSnapshotResponse {
     pub profiles: Vec<ProfileCard>,
     pub current_card: Option<CurrentCard>,
     pub current_quota_card: Option<QuotaSummary>,
+    pub unmanaged_live_account: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

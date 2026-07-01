@@ -127,6 +127,8 @@ const enMessages = {
   refreshedProfile: "Refreshed {profile}",
   failedToRefreshProfile: "Failed to refresh profile.",
   profileRefreshRequiresLogin: "This account session has expired. Please log in again.",
+  unmanagedAccountToast:
+    "Current Codex login ({account}) is not saved to any profile. Save or switch before trusting the active card.",
   switchedTo: "Switched to {profile}",
   failedToSwitchProfile: "Failed to switch profile.",
   openedProfileFolder: "Opened profile folder",
@@ -438,6 +440,8 @@ const messages: Record<Locale, Messages> = {
     refreshedProfile: "已刷新 {profile}",
     failedToRefreshProfile: "刷新账号失败。",
     profileRefreshRequiresLogin: "该账号授权已失效，请重新登录。",
+    unmanagedAccountToast:
+      "当前 Codex 登录账号（{account}）不属于任何已保存 profile。请先保存或切换账号，再信任当前卡片。",
     switchedTo: "已切换到 {profile}",
     failedToSwitchProfile: "切换账号失败。",
     openedProfileFolder: "已打开账号文件夹",

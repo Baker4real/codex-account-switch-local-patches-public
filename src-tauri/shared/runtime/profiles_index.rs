@@ -16,7 +16,8 @@ use super::paths::{
     DEFAULT_PAGE_SIZE,
 };
 use super::profiles::{
-    build_display_title, compute_subscription_days_left, resolve_current_profile,
+    build_display_title, compute_subscription_days_left, detect_unmanaged_live_account,
+    resolve_current_profile,
 };
 use super::session_usage::{load_latest_local_quota_snapshot, normalize_quota_summary};
 
@@ -373,7 +374,13 @@ fn select_current_quota(
 pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSnapshotResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index = load_profiles_index(Some(&codex_home))?;
-    let current_profile = index.current_profile.as_deref();
+    let unmanaged_live_account =
+        detect_unmanaged_live_account(&get_backup_root(Some(&codex_home)), &codex_home);
+    let current_profile = if unmanaged_live_account.is_some() {
+        None
+    } else {
+        index.current_profile.as_deref()
+    };
     let current_entry = current_profile.and_then(|profile_name| {
         index
             .profiles
@@ -396,6 +403,7 @@ pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSn
                 entry.has_account_identity,
             )
         }),
+        unmanaged_live_account,
     })
 }
 
@@ -403,6 +411,12 @@ pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSn
 pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQuotaResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index = load_profiles_index(Some(&codex_home))?;
+    if detect_unmanaged_live_account(&get_backup_root(Some(&codex_home)), &codex_home).is_some() {
+        return Ok(CurrentQuotaResponse {
+            profile: None,
+            quota: None,
+        });
+    }
     let Some(current_profile) = index.current_profile.clone() else {
         return Ok(CurrentQuotaResponse {
             profile: None,
@@ -462,6 +476,13 @@ mod tests {
         std::env::temp_dir().join(format!("codex-switch-profiles-index-{name}-{unique}"))
     }
 
+    fn auth_with_account(account_id: &str) -> String {
+        format!(
+            "{{\"tokens\":{{\"account_id\":{}}}}}",
+            serde_json::Value::String(account_id.to_string())
+        )
+    }
+
     fn write_profile_auth(codex_home: &Path, profile: &str, refresh_expiry_ms: u64) {
         let profile_dir = get_backup_root(Some(codex_home)).join(profile);
         fs::create_dir_all(&profile_dir).unwrap();
@@ -511,6 +532,40 @@ mod tests {
             only_profile_health(&reloaded),
             RefreshTokenHealth::NeedsLogin
         );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn snapshot_and_live_quota_hide_stale_current_profile_when_live_account_unmanaged() {
+        let codex_home = temp_codex_home("snapshot-unmanaged");
+        let backup_root = get_backup_root(Some(&codex_home));
+        let profile_a_dir = backup_root.join("a");
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            profile_a_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"a@example.com","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}}}"#,
+        )
+        .unwrap();
+        fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_Z")).unwrap();
+
+        let snapshot = load_profiles_snapshot(Some(&codex_home)).unwrap();
+        let current_quota = load_current_live_quota(Some(&codex_home)).unwrap();
+
+        assert_eq!(snapshot.unmanaged_live_account.as_deref(), Some("acct_Z"));
+        assert!(snapshot.current_card.is_none());
+        assert!(snapshot.current_quota_card.is_none());
+        assert!(
+            snapshot
+                .profiles
+                .iter()
+                .all(|card| card.status != "current"),
+            "no stale profile card should be displayed as current"
+        );
+        assert_eq!(current_quota.profile, None);
+        assert!(current_quota.quota.is_none());
 
         let _ = fs::remove_dir_all(&codex_home);
     }
