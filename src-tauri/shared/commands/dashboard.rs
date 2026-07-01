@@ -113,11 +113,10 @@ fn refresh_active_profile_quota_silent_inner() -> Result<CurrentQuotaResponse, C
     platform_runtime::profiles_index::load_current_live_quota(None).map_err(Into::into)
 }
 
-/// Daily / startup background pass: serially refresh every OAuth profile
-/// with `force_token_rotation = true` so the cached id_token claims
-/// (plan tier, subscription expiry) move forward even for inactive
-/// profiles that the 5-min ticker never visits. Runs serially to avoid
-/// hammering OpenAI's auth endpoint with N parallel refresh requests.
+/// Daily / startup background pass: serially refresh every OAuth profile's
+/// plan and quota through the usage API without forcing OAuth rotation.
+/// `chatgpt_api` still refreshes tokens when the access_token is expired or
+/// rejected, but a stale plan cache alone must not make a user re-login.
 ///
 /// Failures per-profile are silent — this is best-effort, never blocks
 /// the user, and the dashboard's other refresh paths remain the
@@ -158,12 +157,10 @@ fn refresh_all_oauth_profile_plans_silent_inner() -> Result<u32, CommandError> {
 
         // Skip profiles whose plan info was confirmed within the
         // last 6 hours. Without this gate, every app launch and
-        // every day rollover paid for N × (OAuth POST + usage GET)
-        // back-to-back regardless of whether anything could have
-        // changed; on a 5-account workspace that's 10–25 s of
-        // background work the user could see "trickling" into the
-        // cards. With it, repeat launches within a working day are
-        // free.
+        // every day rollover would pay for N usage requests regardless
+        // of whether anything could have changed; on a 5-account
+        // workspace that's visible background work after each launch.
+        // With it, repeat launches within a working day are free.
         if let Some(last_check) = entry.last_plan_check_ms {
             if now_ms.saturating_sub(last_check) < crate::shared::chatgpt_api::PLAN_FRESHNESS_TTL_MS
             {
@@ -175,7 +172,7 @@ fn refresh_all_oauth_profile_plans_silent_inner() -> Result<u32, CommandError> {
             &entry.folder_name,
             &codex_home,
             crate::shared::chatgpt_api::RefreshOptions {
-                force_token_rotation: true,
+                force_token_rotation: false,
             },
         ) {
             Ok(value) => value,

@@ -108,11 +108,9 @@ const ACCOUNTS_CHECK_PATH: &str = "/accounts/check/v4-2023-04-27";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
 const HTTP_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How old the cached `last_plan_check_ms` can get before a refresh
-/// path escalates to a full OAuth token rotation. Single source of
-/// truth for the per-card Refresh button (`mac/win refresh_runtime`)
-/// and for the bulk plan refresh (`commands/dashboard`) so a future
-/// tuning change moves all three in lock-step.
+/// How old the cached `last_plan_check_ms` can get before the background
+/// dashboard pass queries the usage API again. This does not force OAuth
+/// token rotation; rotation remains driven by access_token expiry or a 401.
 pub const PLAN_FRESHNESS_TTL_MS: u64 = 6 * 60 * 60 * 1000;
 
 /// Predicate for "this refresh failure means the user has to log in
@@ -241,19 +239,16 @@ pub fn refresh_profile_via_api(
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RefreshOptions {
     /// When `true`, always run the OAuth refresh round-trip before the
-    /// usage call, even if the cached access_token is still valid. This
-    /// is what user-initiated card refreshes want: the id_token claims
-    /// (plan tier, subscription expiry) only rotate as a side-effect of
-    /// the refresh endpoint, so without forcing one a quiet account can
-    /// stay stale for hours.
+    /// usage call, even if the cached access_token is still valid. Normal
+    /// dashboard/card refreshes keep this `false` so a stale plan cache
+    /// does not spend refresh_token or force a re-login.
     pub force_token_rotation: bool,
 }
 
 /// Like [`refresh_profile_via_api`] but lets the caller force an OAuth
-/// refresh (rotating the id_token claims) regardless of access_token
-/// expiry. User-initiated card refreshes use this so plan / subscription
-/// fields move within a single click instead of waiting for the cached
-/// access_token to actually expire.
+/// refresh regardless of access_token expiry. Most callers should leave
+/// that disabled and let `fetch_usage_with_retry` refresh only when the
+/// access_token is expired or rejected.
 pub fn refresh_profile_via_api_with_options(
     profile_name: &str,
     codex_home: &Path,
@@ -417,7 +412,7 @@ fn fetch_usage_with_retry(
     //    of the OAuth refresh endpoint, so user-initiated refreshes
     //    must take this path even when the access_token is still valid.
     let mut working_auth = auth.clone();
-    if force_token_rotation || access_token_expired(&working_auth.access_token) {
+    if should_refresh_oauth_before_usage(&working_auth.access_token, force_token_rotation) {
         working_auth = refresh_oauth_tokens(client, profile_dir, &working_auth)?;
     }
 
@@ -659,6 +654,10 @@ fn access_token_expired(access_token: &str) -> bool {
     }
 }
 
+fn should_refresh_oauth_before_usage(access_token: &str, force_token_rotation: bool) -> bool {
+    force_token_rotation || access_token_expired(access_token)
+}
+
 fn parse_jwt_payload(token: &str) -> Option<Value> {
     let mut parts = token.split('.');
     let _header = parts.next()?;
@@ -824,5 +823,32 @@ mod tests {
         // An opaque (non-JWT) token can't be parsed, so we conservatively
         // assume it is *not* expired and let the server tell us via 401.
         assert!(!access_token_expired("not-a-jwt"));
+    }
+
+    #[test]
+    fn oauth_refresh_waits_for_access_token_expiry_without_force() {
+        let token = make_jwt(&serde_json::json!({
+            "exp": Utc::now().timestamp() + 60 * 60
+        }));
+
+        assert!(!should_refresh_oauth_before_usage(&token, false));
+    }
+
+    #[test]
+    fn oauth_refresh_runs_for_expired_access_token_without_force() {
+        let token = make_jwt(&serde_json::json!({
+            "exp": Utc::now().timestamp() - 60 * 60
+        }));
+
+        assert!(should_refresh_oauth_before_usage(&token, false));
+    }
+
+    #[test]
+    fn oauth_refresh_runs_when_explicitly_forced() {
+        let token = make_jwt(&serde_json::json!({
+            "exp": Utc::now().timestamp() + 60 * 60
+        }));
+
+        assert!(should_refresh_oauth_before_usage(&token, true));
     }
 }

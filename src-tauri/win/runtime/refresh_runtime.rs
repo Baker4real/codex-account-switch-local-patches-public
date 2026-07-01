@@ -8,7 +8,7 @@ use crate::platform;
 
 use super::fs_ops::{copy_entry, remove_path};
 use super::metadata::{
-    load_profile_metadata, sync_profile_metadata_from_auth, sync_profile_quota_with_provenance,
+    sync_profile_metadata_from_auth, sync_profile_quota_with_provenance,
     sync_root_metadata_if_current_profile,
 };
 use super::paths::{
@@ -22,23 +22,6 @@ use super::runtime_isolation::{
 
 const REFRESH_RUNTIME_PROFILE_FILES: [&str; 2] =
     [RUNTIME_AUTH_FILENAME, RUNTIME_PROFILE_METADATA_FILENAME];
-
-fn should_force_oauth_rotation(profile_name: &str, codex_home: &Path) -> bool {
-    let metadata = load_profile_metadata(profile_name, Some(codex_home));
-    let Some(last_check) = metadata.last_plan_check_ms else {
-        return true;
-    };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|value| u64::try_from(value.as_millis()).ok());
-    match now_ms {
-        Some(now) => {
-            now.saturating_sub(last_check) >= crate::shared::chatgpt_api::PLAN_FRESHNESS_TTL_MS
-        }
-        None => true,
-    }
-}
 
 fn ensure_refreshable_auth(auth_path: &Path) -> AppResult<()> {
     let raw = fs::read_to_string(auth_path).map_err(|error| {
@@ -124,16 +107,14 @@ fn try_refresh_via_chatgpt_api(
     codex_home: &Path,
     profile_dir: &Path,
 ) -> AppResult<Option<String>> {
-    // Force OAuth token rotation only when the cached plan info has
-    // gone stale (older than `STALE_PLAN_THRESHOLD_MS`). See
-    // `mac/runtime/refresh_runtime.rs` for the same logic — this
-    // module mirrors it pending the planned mac/win merge.
-    let force_rotation = should_force_oauth_rotation(profile_name, codex_home);
+    // Do not force OAuth token rotation just because cached plan info
+    // is stale. See `mac/runtime/refresh_runtime.rs` for the same
+    // policy — this module mirrors it pending the planned mac/win merge.
     let snapshot = match crate::shared::chatgpt_api::refresh_profile_via_api_with_options(
         profile_name,
         codex_home,
         crate::shared::chatgpt_api::RefreshOptions {
-            force_token_rotation: force_rotation,
+            force_token_rotation: false,
         },
     ) {
         Ok(value) => value,
@@ -361,76 +342,5 @@ mod tests {
             .is_file());
         assert!(!runtime_home.join("notes.txt").exists());
         let _ = fs::remove_dir_all(&codex_home);
-    }
-
-    mod force_oauth_rotation {
-        use super::super::should_force_oauth_rotation;
-        use crate::models::ProfileMetadata;
-        use crate::shared::chatgpt_api::PLAN_FRESHNESS_TTL_MS;
-        use crate::shared::metadata::save_profile_metadata;
-        use std::fs;
-        use std::path::PathBuf;
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        fn temp_codex_home(name: &str) -> PathBuf {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let pid = std::process::id();
-            let path = std::env::temp_dir().join(format!(
-                "codex-switch-win-force-rotate-{name}-{pid}-{unique}"
-            ));
-            fs::create_dir_all(path.join("account_backup").join("a")).unwrap();
-            path
-        }
-
-        fn now_ms() -> u64 {
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64
-        }
-
-        fn write_metadata(codex_home: &PathBuf, last_plan_check_ms: Option<u64>) {
-            let mut metadata = ProfileMetadata::with_folder_name("a");
-            metadata.last_plan_check_ms = last_plan_check_ms;
-            save_profile_metadata("a", &metadata, Some(codex_home)).unwrap();
-        }
-
-        #[test]
-        fn missing_last_plan_check_forces_rotation() {
-            let codex_home = temp_codex_home("missing");
-            write_metadata(&codex_home, None);
-            assert!(should_force_oauth_rotation("a", &codex_home));
-            let _ = fs::remove_dir_all(&codex_home);
-        }
-
-        #[test]
-        fn recent_last_plan_check_skips_rotation() {
-            let codex_home = temp_codex_home("recent");
-            write_metadata(&codex_home, Some(now_ms().saturating_sub(60 * 60 * 1000)));
-            assert!(!should_force_oauth_rotation("a", &codex_home));
-            let _ = fs::remove_dir_all(&codex_home);
-        }
-
-        #[test]
-        fn stale_last_plan_check_forces_rotation() {
-            let codex_home = temp_codex_home("stale");
-            write_metadata(
-                &codex_home,
-                Some(now_ms().saturating_sub(PLAN_FRESHNESS_TTL_MS + 1_000)),
-            );
-            assert!(should_force_oauth_rotation("a", &codex_home));
-            let _ = fs::remove_dir_all(&codex_home);
-        }
-
-        #[test]
-        fn future_dated_last_plan_check_does_not_force_rotation() {
-            let codex_home = temp_codex_home("future");
-            write_metadata(&codex_home, Some(now_ms() + 24 * 60 * 60 * 1000));
-            assert!(!should_force_oauth_rotation("a", &codex_home));
-            let _ = fs::remove_dir_all(&codex_home);
-        }
     }
 }
