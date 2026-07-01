@@ -9,7 +9,8 @@ use crate::{platform, shared::switch_core};
 use super::fs_ops::atomic_write_file;
 use super::metadata::{load_profile_metadata, sync_profile_quota_with_provenance};
 use super::paths::{
-    get_backup_root, get_codex_home, validate_profile_name, PROFILE_METADATA_FILENAME,
+    get_backup_root, get_codex_home, is_profile_dir, validate_profile_name,
+    PROFILE_METADATA_FILENAME,
 };
 use super::profiles::resolve_current_profile;
 use super::session_usage::load_latest_local_quota_snapshot;
@@ -88,6 +89,35 @@ fn prime_target_profile_quota_before_switch(
     Ok(())
 }
 
+fn ensure_target_profile_ready(profile_name: &str, codex_home: &Path) -> AppResult<()> {
+    let backup_root = get_backup_root(Some(codex_home));
+    if !backup_root.is_dir() {
+        return Err(AppError::new(
+            "BACKUP_ROOT_MISSING",
+            format!("Backup folder not found: {}", backup_root.display()),
+        ));
+    }
+
+    let profile_dir = backup_root.join(profile_name);
+    if !is_profile_dir(&profile_dir) {
+        return Err(AppError::new(
+            "PROFILE_NOT_FOUND",
+            format!("Profile not found: {profile_name}"),
+        ));
+    }
+    if !profile_dir.join("auth.json").is_file() {
+        return Err(AppError::new(
+            "PROFILE_AUTH_MISSING",
+            format!(
+                "Missing auth file: {}",
+                profile_dir.join("auth.json").display()
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 fn switch_profile_with_home_and_hooks<H: PlatformHooks + ?Sized>(
     hooks: &H,
     profile_name: &str,
@@ -95,9 +125,11 @@ fn switch_profile_with_home_and_hooks<H: PlatformHooks + ?Sized>(
 ) -> AppResult<SwitchResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let profile_name = validate_profile_name(profile_name)?;
+    let _guard = switch_core::acquire_switch_lock(Some(&codex_home))?;
+    ensure_target_profile_ready(&profile_name, &codex_home)?;
     sync_current_profile_quota_before_switch(&codex_home)?;
     prime_target_profile_quota_before_switch(&profile_name, &codex_home)?;
-    switch_core::switch_profile_with_home(hooks, &profile_name, Some(&codex_home))
+    switch_core::switch_profile_with_home_locked(hooks, &profile_name, &codex_home)
 }
 
 pub fn switch_profile_with_home(
@@ -121,6 +153,7 @@ mod tests {
     use crate::errors::AppResult;
     use crate::platform::hooks::PlatformHooks;
     use crate::shared::paths::{get_current_profile_file, get_profiles_index_path};
+    use crate::shared::process_lock::acquire_process_lock;
 
     use super::switch_profile_with_home_and_hooks;
 
@@ -306,6 +339,100 @@ mod tests {
             .and_then(|value| value.as_u64())
             .unwrap();
         assert!(stored_updated_at_ms >= live_mtime_ms);
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn switch_profile_missing_target_does_not_create_target_metadata() {
+        let codex_home = temp_codex_home("missing-target-no-prewrite");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(profile_a_dir.join("profile.json"), r#"{"folder_name":"a"}"#).unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+        write_quota_session(&codex_home.join("sessions").join("session-001.jsonl"));
+
+        let hooks = FakeHooks::new(false);
+        let error = switch_profile_with_home_and_hooks(&hooks, "b", Some(&codex_home)).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_NOT_FOUND");
+        assert!(!backup_root.join("b").exists());
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn switch_profile_missing_target_auth_does_not_rewrite_target_metadata() {
+        let codex_home = temp_codex_home("missing-auth-no-prewrite");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        let target_metadata = r#"{"folder_name":"b"}"#;
+
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_b_dir).unwrap();
+        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(profile_a_dir.join("profile.json"), r#"{"folder_name":"a"}"#).unwrap();
+        fs::write(profile_b_dir.join("profile.json"), target_metadata).unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+        write_quota_session(&codex_home.join("sessions").join("session-001.jsonl"));
+
+        let hooks = FakeHooks::new(false);
+        let error = switch_profile_with_home_and_hooks(&hooks, "b", Some(&codex_home)).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_AUTH_MISSING");
+        assert_eq!(
+            fs::read_to_string(profile_b_dir.join("profile.json")).unwrap(),
+            target_metadata
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn switch_profile_returns_busy_without_quota_prework_when_refresh_lock_is_held() {
+        let codex_home = temp_codex_home("switch-busy-no-prework");
+        let backup_root = codex_home.join("account_backup");
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        let current_metadata = r#"{"folder_name":"a","quota":{"five_hour":{"remaining_percent":7},"weekly":{"remaining_percent":8}},"quota_updated_at_ms":1}"#;
+        let root_metadata = r#"{"folder_name":"a","quota":{"five_hour":{"remaining_percent":9},"weekly":{"remaining_percent":10}},"quota_updated_at_ms":1}"#;
+        let target_metadata = r#"{"folder_name":"b"}"#;
+
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_b_dir).unwrap();
+        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(profile_a_dir.join("profile.json"), current_metadata).unwrap();
+        fs::write(codex_home.join("profile.json"), root_metadata).unwrap();
+        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(profile_b_dir.join("profile.json"), target_metadata).unwrap();
+        fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
+        write_quota_session(&codex_home.join("sessions").join("session-001.jsonl"));
+        let _lock = acquire_process_lock(Some(&codex_home), "REFRESH_BUSY", "busy").unwrap();
+
+        let hooks = FakeHooks::new(false);
+        let error = switch_profile_with_home_and_hooks(&hooks, "b", Some(&codex_home)).unwrap_err();
+
+        assert_eq!(error.error_code, "SWITCH_IN_PROGRESS");
+        assert_eq!(
+            fs::read_to_string(profile_a_dir.join("profile.json")).unwrap(),
+            current_metadata
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("profile.json")).unwrap(),
+            root_metadata
+        );
+        assert_eq!(
+            fs::read_to_string(profile_b_dir.join("profile.json")).unwrap(),
+            target_metadata
+        );
+        assert!(!get_profiles_index_path(Some(&codex_home)).exists());
 
         let _ = fs::remove_dir_all(&codex_home);
     }

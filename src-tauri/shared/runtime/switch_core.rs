@@ -15,7 +15,7 @@ use super::profiles::{
 };
 use super::profiles_index::reload_profiles_index_after_mutation;
 
-fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard> {
+pub(crate) fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard> {
     acquire_process_lock(
         codex_home,
         "SWITCH_IN_PROGRESS",
@@ -23,13 +23,12 @@ fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard>
     )
 }
 
-pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
+pub(crate) fn switch_profile_with_home_locked<H: PlatformHooks + ?Sized>(
     hooks: &H,
     profile_name: &str,
-    codex_home: Option<&Path>,
+    codex_home: &Path,
 ) -> AppResult<SwitchResponse> {
-    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
-    let backup_root = get_backup_root(Some(&codex_home));
+    let backup_root = get_backup_root(Some(codex_home));
     if !backup_root.is_dir() {
         return Err(AppError::new(
             "BACKUP_ROOT_MISSING",
@@ -38,7 +37,6 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
     }
 
     let profile_name = validate_profile_name(profile_name)?;
-    let _guard = acquire_switch_lock(Some(&codex_home))?;
     let profile_dir = backup_root.join(&profile_name);
     if !is_profile_dir(&profile_dir) {
         return Err(AppError::new(
@@ -57,16 +55,16 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
     }
 
     let app_was_running = hooks.quit_codex_app_if_running()?;
-    if let Some(backup_target) = resolve_backup_target(&backup_root, &codex_home) {
-        backup_root_state_to_profile(&backup_target, &codex_home, &backup_root)?;
+    if let Some(backup_target) = resolve_backup_target(&backup_root, codex_home) {
+        backup_root_state_to_profile(&backup_target, codex_home, &backup_root)?;
     }
 
-    autosave_auth(&codex_home)?;
-    overlay_directory_contents(&profile_dir, &codex_home)?;
-    hooks.sync_root_openai_base_url_for_profile(&profile_name, Some(&codex_home))?;
+    autosave_auth(codex_home)?;
+    overlay_directory_contents(&profile_dir, codex_home)?;
+    hooks.sync_root_openai_base_url_for_profile(&profile_name, Some(codex_home))?;
     set_active_marker(&profile_name, &backup_root)?;
-    reload_profiles_index_after_mutation(Some(&codex_home))?;
-    let warnings = hooks.reopen_codex_app_if_needed(app_was_running, Some(&codex_home));
+    reload_profiles_index_after_mutation(Some(codex_home))?;
+    let warnings = hooks.reopen_codex_app_if_needed(app_was_running, Some(codex_home));
 
     Ok(SwitchResponse {
         ok: true,
@@ -74,6 +72,17 @@ pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
         message: format!("Switched to profile: {profile_name}"),
         warnings,
     })
+}
+
+pub fn switch_profile_with_home<H: PlatformHooks + ?Sized>(
+    hooks: &H,
+    profile_name: &str,
+    codex_home: Option<&Path>,
+) -> AppResult<SwitchResponse> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let profile_name = validate_profile_name(profile_name)?;
+    let _guard = acquire_switch_lock(Some(&codex_home))?;
+    switch_profile_with_home_locked(hooks, &profile_name, &codex_home)
 }
 
 pub fn sync_root_state_to_current_profile_with_home(

@@ -5,6 +5,7 @@ use std::time::UNIX_EPOCH;
 use crate::errors::{AppError, AppResult};
 use crate::models::{QuotaProvenance, QuotaSummary};
 use crate::platform;
+use crate::shared::process_lock::{acquire_process_lock, ProcessLockGuard};
 
 use super::fs_ops::{copy_entry, remove_path};
 use super::metadata::{
@@ -22,6 +23,14 @@ use super::runtime_isolation::{
 
 const REFRESH_RUNTIME_PROFILE_FILES: [&str; 2] =
     [RUNTIME_AUTH_FILENAME, RUNTIME_PROFILE_METADATA_FILENAME];
+
+fn acquire_refresh_lock(codex_home: &Path) -> AppResult<ProcessLockGuard> {
+    acquire_process_lock(
+        Some(codex_home),
+        "REFRESH_BUSY",
+        "A profile switch, login, or refresh is already in progress.",
+    )
+}
 
 fn ensure_refreshable_auth(auth_path: &Path) -> AppResult<()> {
     let raw = fs::read_to_string(auth_path).map_err(|error| {
@@ -185,6 +194,7 @@ pub fn refresh_profile(profile_name: &str) -> AppResult<String> {
         ));
     }
     ensure_refreshable_auth(&auth_path)?;
+    let _guard = acquire_refresh_lock(&codex_home)?;
 
     // Fast path for ChatGPT/OAuth profiles: read live quota from the same
     // private backend endpoint the Codex CLI uses, instead of paying for
@@ -246,8 +256,11 @@ fn refresh_via_app_server(
 
 #[cfg(test)]
 mod tests {
-    use super::prepare_refresh_runtime_home;
+    use super::{prepare_refresh_runtime_home, refresh_profile};
+    use crate::shared::paths::get_profiles_index_path;
+    use crate::shared::process_lock::acquire_process_lock;
     use crate::windows::paths::get_refresh_runtime_dir;
+    use crate::windows::{env_guard, EnvVarGuard};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -342,5 +355,61 @@ mod tests {
             .is_file());
         assert!(!runtime_home.join("notes.txt").exists());
         let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    fn assert_refresh_busy_preserves_account_state(busy_code: &'static str) {
+        let _guard = env_guard();
+        let _env = EnvVarGuard::capture(&["CODEX_HOME"]);
+        let codex_home = temp_codex_home(busy_code);
+        std::env::set_var("CODEX_HOME", &codex_home);
+        let profile_dir = codex_home.join("account_backup").join("a");
+        fs::create_dir_all(&profile_dir).unwrap();
+        let auth = r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"refresh-token"}}"#;
+        let metadata = r#"{"folder_name":"a"}"#;
+        let live_auth = r#"{"auth_mode":"chatgpt","tokens":{"refresh_token":"live-token"}}"#;
+        let root_metadata = r#"{"folder_name":"a","account_label":"live@example.com"}"#;
+        fs::write(profile_dir.join("auth.json"), auth).unwrap();
+        fs::write(profile_dir.join("profile.json"), metadata).unwrap();
+        fs::write(codex_home.join("auth.json"), live_auth).unwrap();
+        fs::write(codex_home.join("profile.json"), root_metadata).unwrap();
+        fs::write(
+            codex_home.join("account_backup").join(".current_profile"),
+            "a\n",
+        )
+        .unwrap();
+        let _lock = acquire_process_lock(Some(&codex_home), busy_code, "busy").unwrap();
+
+        let error = refresh_profile("a").unwrap_err();
+
+        assert_eq!(error.error_code, "REFRESH_BUSY");
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            auth
+        );
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("profile.json")).unwrap(),
+            metadata
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            live_auth
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("profile.json")).unwrap(),
+            root_metadata
+        );
+        assert!(!get_profiles_index_path(Some(&codex_home)).exists());
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn refresh_profile_returns_busy_without_writing_when_switch_lock_is_held() {
+        assert_refresh_busy_preserves_account_state("SWITCH_IN_PROGRESS");
+    }
+
+    #[test]
+    fn refresh_profile_returns_busy_without_writing_when_login_lock_is_held() {
+        assert_refresh_busy_preserves_account_state("LOGIN_BUSY");
     }
 }
