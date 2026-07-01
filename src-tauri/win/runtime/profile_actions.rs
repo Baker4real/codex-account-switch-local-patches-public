@@ -8,7 +8,7 @@ use crate::errors::{AppError, AppResult};
 use crate::models::ProfileMetadata;
 use crate::platform;
 
-use super::config::sync_root_openai_base_url_from_profile_metadata;
+use super::config::sync_root_openai_base_url_for_profile;
 use super::fs_ops::{atomic_write_file, remove_path};
 use super::login_runtime::login_profile_with_home;
 use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile_openai_base_url};
@@ -87,7 +87,7 @@ pub fn update_profile_base_url(profile_name: &str, openai_base_url: &str) -> App
     let normalized_base_url = normalize_openai_base_url(openai_base_url)?;
     sync_profile_openai_base_url(&profile_name, normalized_base_url, Some(&codex_home))?;
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
-        sync_root_openai_base_url_from_profile_metadata(&profile_name, Some(&codex_home))?;
+        sync_root_openai_base_url_for_profile(&profile_name, Some(&codex_home))?;
     }
     super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn update_profile_base_url_allows_non_api_key_profiles_and_restores_when_cleared() {
+    fn update_profile_base_url_records_non_api_key_metadata_without_root_config() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("base-url-chatgpt");
         let original_codex_home = std::env::var_os("CODEX_HOME");
@@ -513,7 +513,11 @@ mod tests {
         )
         .unwrap();
         fs::write(get_current_profile_file(Some(&codex_home)), "chat\n").unwrap();
-        fs::write(codex_home.join("config.toml"), "model = \"gpt-5.4\"\n").unwrap();
+        fs::write(
+            codex_home.join("config.toml"),
+            "openai_base_url = \"https://stale.example/v1\"\nmodel = \"gpt-5.4\"\n",
+        )
+        .unwrap();
         std::env::set_var("CODEX_HOME", &codex_home);
 
         update_profile_base_url("chat", "https://example.com/v1").unwrap();
@@ -524,7 +528,8 @@ mod tests {
             Some("https://example.com/v1")
         );
         let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
-        assert!(config.contains("openai_base_url = \"https://example.com/v1\""));
+        assert!(!config.contains("openai_base_url"));
+        assert!(config.contains("model = \"gpt-5.4\""));
 
         update_profile_base_url("chat", "  ").unwrap();
 
@@ -563,6 +568,14 @@ mod tests {
         );
         let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
         assert!(config.contains("openai_base_url = \"https://example.com/v1\""));
+
+        update_profile_base_url("api", "  ").unwrap();
+
+        let metadata = load_profile_metadata("api", Some(&codex_home));
+        assert_eq!(metadata.openai_base_url, None);
+        let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert!(!config.contains("openai_base_url"));
+        assert!(config.contains("model = \"gpt-5.4\""));
         let _ = fs::remove_dir_all(&codex_home);
         if let Some(path) = original_codex_home {
             std::env::set_var("CODEX_HOME", path);

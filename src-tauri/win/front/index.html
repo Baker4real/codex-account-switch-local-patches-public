@@ -262,7 +262,7 @@
             </aside>
             <aside class="guide-callout guide-callout--warn">
               <strong data-i18n-key="guideTipBaseUrlTitle">TODO: Base URL warning headline</strong>
-              <p data-i18n-key="guideTipBaseUrlText">TODO: explain why a custom Base URL on a ChatGPT/OAuth account breaks login.</p>
+              <p data-i18n-key="guideTipBaseUrlText">ChatGPT/OAuth profiles may keep a Base URL note, but Windows clears root config before using them.</p>
             </aside>
             <aside class="guide-callout guide-callout--success">
               <strong data-i18n-key="guideTipMultiAccountTitle">TODO: Multi-account headline</strong>
@@ -316,7 +316,7 @@
             autocomplete="off"
             placeholder="https://example.com/v1"
           />
-          <span id="add-base-url-copy" class="field-copy warning-copy">非 API 账号添加 Base Url 会导致账号失效，清空后可恢复。</span>
+          <span id="add-base-url-copy" class="field-copy warning-copy">ChatGPT/OAuth profiles keep this as a note only; Windows clears root config when they are active.</span>
         </label>
 
         <p id="dialog-error" class="dialog-error" hidden></p>
@@ -370,7 +370,7 @@
       <form id="base-url-form" class="dialog-form" method="dialog">
         <div class="dialog-copy">
           <h3 id="base-url-dialog-title">Custom Base Url</h3>
-          <p id="base-url-dialog-copy" class="warning-copy">非 API 账号添加 Base Url 会导致账号失效，清空后可恢复。</p>
+          <p id="base-url-dialog-copy" class="warning-copy">ChatGPT/OAuth profiles keep this as a note only; Windows clears root config when they are active.</p>
         </div>
 
         <label class="field">

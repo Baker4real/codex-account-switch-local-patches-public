@@ -955,10 +955,7 @@ impl PlatformHooks for WindowsPlatformHooks {
         profile_name: &str,
         codex_home: Option<&Path>,
     ) -> AppResult<()> {
-        crate::shared::config::sync_root_openai_base_url_from_profile_metadata(
-            profile_name,
-            codex_home,
-        )
+        crate::shared::config::sync_root_openai_base_url_for_profile(profile_name, codex_home)
     }
 
     fn sync_on_window_close(&self) -> AppResult<()> {
@@ -975,8 +972,10 @@ mod tests {
         resolve_login_browser_app_server_launch, resolve_real_codex_cli,
         resolve_windows_app_target, where_codex_candidate_paths_with_timeout,
         windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
-        LoginBrowserLaunch, FORCED_EDGE_LOGIN_ACCOUNT_LABEL, WINDOWS_STORE_APP_ID,
+        LoginBrowserLaunch, WindowsPlatformHooks, FORCED_EDGE_LOGIN_ACCOUNT_LABEL,
+        WINDOWS_STORE_APP_ID,
     };
+    use crate::platform::hooks::PlatformHooks;
     use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
     use std::fs;
@@ -1333,6 +1332,49 @@ mod tests {
         let resolved = discover_real_codex_cli_path(Some(&managed_bin.join("codex.cmd")));
 
         assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn windows_hook_syncs_root_base_url_only_for_api_key_profiles() {
+        let codex_home = temp_codex_home("hook-base-url-auth-mode");
+        let backup_root = codex_home.join("account_backup");
+        let chat_dir = backup_root.join("chat");
+        let api_dir = backup_root.join("api");
+        fs::create_dir_all(&chat_dir).unwrap();
+        fs::create_dir_all(&api_dir).unwrap();
+        fs::write(chat_dir.join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).unwrap();
+        fs::write(
+            chat_dir.join("profile.json"),
+            r#"{"folder_name":"chat","openai_base_url":"https://chat.example/v1"}"#,
+        )
+        .unwrap();
+        fs::write(api_dir.join("auth.json"), r#"{"auth_mode":"apikey"}"#).unwrap();
+        fs::write(
+            api_dir.join("profile.json"),
+            r#"{"folder_name":"api","openai_base_url":"https://api.example/v1"}"#,
+        )
+        .unwrap();
+        fs::write(
+            codex_home.join("config.toml"),
+            "openai_base_url = \"https://stale.example/v1\"\nmodel = \"gpt-5.4\"\n",
+        )
+        .unwrap();
+        let hooks = WindowsPlatformHooks;
+
+        hooks
+            .sync_root_openai_base_url_for_profile("chat", Some(&codex_home))
+            .unwrap();
+        let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert!(!config.contains("openai_base_url"));
+        assert!(config.contains("model = \"gpt-5.4\""));
+
+        hooks
+            .sync_root_openai_base_url_for_profile("api", Some(&codex_home))
+            .unwrap();
+        let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert!(config.contains("openai_base_url = \"https://api.example/v1\""));
+        assert!(config.contains("model = \"gpt-5.4\""));
         let _ = fs::remove_dir_all(&codex_home);
     }
 
