@@ -110,6 +110,10 @@ fn read_user_path_value() -> AppResult<String> {
         "[Environment]::GetEnvironmentVariable('Path', 'User')",
     ]);
 
+    read_user_path_value_with_command(command)
+}
+
+fn read_user_path_value_with_command(mut command: Command) -> AppResult<String> {
     let output = hide_console_window(&mut command)
         .output()
         .map_err(|error| {
@@ -120,7 +124,15 @@ fn read_user_path_value() -> AppResult<String> {
         })?;
 
     if !output.status.success() {
-        return Ok(String::new());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::new(
+            "PATH_READ_FAILED",
+            if stderr.is_empty() {
+                "Failed to read user PATH.".to_string()
+            } else {
+                stderr
+            },
+        ));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -571,12 +583,15 @@ pub fn uninstall(remove_script: bool, codex_home: Option<&Path>) -> AppResult<Un
 mod tests {
     use std::fs;
     use std::path::PathBuf;
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        ensure_dir_on_path_entries, install_from_with_path_hook, refresh_install_state,
-        remove_dir_from_path_entries, uninstall_with_path_hook, CLI_RUNTIME_FILENAME,
+        ensure_dir_on_path_entries, install_from_with_path_hook, read_user_path_value_with_command,
+        refresh_install_state, remove_dir_from_path_entries, uninstall_with_path_hook,
+        CLI_RUNTIME_FILENAME,
     };
+    use crate::errors::AppError;
     use crate::windows::{
         env_guard,
         process::{load_install_state, InstallState},
@@ -589,6 +604,18 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("codex-switch-install-{name}-{unique}"))
+    }
+
+    fn shell_command(script: &str) -> Command {
+        if cfg!(target_os = "windows") {
+            let mut command = Command::new("cmd");
+            command.args(["/C", script]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", script]);
+            command
+        }
     }
 
     #[test]
@@ -607,6 +634,16 @@ mod tests {
     }
 
     #[test]
+    fn ensure_dir_on_path_entries_adds_target_when_user_path_is_empty() {
+        let target = PathBuf::from(r"C:\Users\demo\.codex\bin");
+
+        let (next_entries, changed) = ensure_dir_on_path_entries(&[], &target);
+
+        assert!(changed);
+        assert_eq!(next_entries, vec![r"C:\Users\demo\.codex\bin".to_string()]);
+    }
+
+    #[test]
     fn remove_dir_from_path_entries_removes_target_case_insensitively() {
         let target = PathBuf::from(r"C:\Users\demo\.codex\bin");
         let entries = vec![
@@ -618,6 +655,25 @@ mod tests {
 
         assert!(changed);
         assert_eq!(next_entries, vec![r"C:\Program Files\Codex".to_string()]);
+    }
+
+    #[test]
+    fn read_user_path_value_with_command_returns_path_read_failed_on_non_zero_exit() {
+        let command = shell_command("echo synthetic path read failure 1>&2 && exit 7");
+
+        let error = read_user_path_value_with_command(command).unwrap_err();
+
+        assert_eq!(error.error_code, "PATH_READ_FAILED");
+        assert!(error.message.contains("synthetic path read failure"));
+    }
+
+    #[test]
+    fn read_user_path_value_with_command_treats_successful_empty_stdout_as_empty_path() {
+        let command = shell_command("exit 0");
+
+        let value = read_user_path_value_with_command(command).unwrap();
+
+        assert_eq!(value, "");
     }
 
     #[test]
@@ -662,6 +718,48 @@ mod tests {
         );
         assert!(result.path_added_by_installer);
         assert!(result.path_changed);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn install_from_path_read_failure_does_not_write_path_added_state() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("install-path-read-failure");
+        let _env =
+            EnvVarGuard::capture(&["PATH", "CODEX_EXE", "CODEX_INSTALL_DIR", "LOCALAPPDATA"]);
+        let source_cli = codex_home.join("source").join(CLI_RUNTIME_FILENAME);
+        fs::create_dir_all(source_cli.parent().unwrap()).unwrap();
+        fs::write(&source_cli, "cli").unwrap();
+        fs::write(codex_home.join("auth.json"), "seed-auth").unwrap();
+
+        let npm_dir = codex_home.join("npm");
+        fs::create_dir_all(&npm_dir).unwrap();
+        fs::write(
+            npm_dir.join("codex.cmd"),
+            "@echo off\r\necho codex-cli 0.133.0\r\n",
+        )
+        .unwrap();
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
+        std::env::set_var("PATH", &npm_dir);
+
+        let result = install_from_with_path_hook(&source_cli, Some(&codex_home), |_| {
+            Err(AppError::new(
+                "PATH_READ_FAILED",
+                "synthetic path read failure",
+            ))
+        });
+        let error = match result {
+            Ok(_) => panic!("install should fail when reading user PATH fails"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.error_code, "PATH_READ_FAILED");
+        assert_eq!(
+            load_install_state(Some(&codex_home)),
+            InstallState::default()
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 

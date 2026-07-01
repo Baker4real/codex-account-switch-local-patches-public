@@ -1,4 +1,5 @@
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -28,6 +29,7 @@ const WINDOWS_APPS_PATH_SEGMENT: &str = r"\microsoft\windowsapps\";
 const WINDOWS_STORE_APP_ID: &str = "OpenAI.Codex_2p2nqsd0c76g0!App";
 const WINDOWS_STORE_SHELL_PREFIX: &str = r"shell:AppsFolder\";
 const FORCED_EDGE_LOGIN_ACCOUNT_LABEL: &str = "forced-edge-login@example.com";
+const WHERE_CODEX_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 static WINDOWS_APP_TARGET_CACHE: OnceLock<String> = OnceLock::new();
@@ -202,6 +204,34 @@ pub(super) fn hide_console_window(command: &mut Command) -> &mut Command {
     command
 }
 
+fn where_command_program() -> OsString {
+    #[cfg(test)]
+    if let Some(path) = env::var_os("CODEX_SWITCH_TEST_WHERE_EXE") {
+        return path;
+    }
+
+    OsString::from("where")
+}
+
+fn where_codex_candidate_paths_with_timeout(timeout: Duration) -> Vec<PathBuf> {
+    let mut command = Command::new(where_command_program());
+    command.arg("codex");
+    hide_console_window(&mut command);
+
+    let Some(stdout) =
+        crate::shared::codex_cli_path::run_capturing_stdout_with_timeout(command, timeout)
+    else {
+        return Vec::new();
+    };
+
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .collect()
+}
+
 pub(super) fn discover_real_codex_cli_path(managed_shim_path: Option<&Path>) -> Option<PathBuf> {
     let mut candidates = Vec::new();
     let mut push_candidate_path = |path: PathBuf| {
@@ -211,19 +241,8 @@ pub(super) fn discover_real_codex_cli_path(managed_shim_path: Option<&Path>) -> 
     push_official_codex_cli_candidates(&mut push_candidate_path);
 
     if cfg!(target_os = "windows") {
-        let mut command = Command::new("where");
-        command.arg("codex");
-        if let Ok(output) = hide_console_window(&mut command).output() {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout
-                    .lines()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                {
-                    push_candidate_path(PathBuf::from(line));
-                }
-            }
+        for path in where_codex_candidate_paths_with_timeout(WHERE_CODEX_TIMEOUT) {
+            push_candidate_path(path);
         }
     }
 
@@ -763,18 +782,8 @@ pub fn suggested_codex_cli_paths(codex_home: Option<&Path>) -> Vec<PathBuf> {
         push(base.join("codex.cmd"));
     }
 
-    let mut where_command = Command::new("where");
-    where_command.arg("codex");
-    if let Ok(output) = hide_console_window(&mut where_command).output() {
-        if output.status.success() {
-            for line in String::from_utf8_lossy(&output.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-            {
-                push(PathBuf::from(line));
-            }
-        }
+    for path in where_codex_candidate_paths_with_timeout(WHERE_CODEX_TIMEOUT) {
+        push(path);
     }
 
     suggestions
@@ -962,15 +971,17 @@ mod tests {
     use super::{
         build_app_server_command, build_login_browser_command, discover_real_codex_cli_path,
         is_acceptable_real_codex_cli_path, load_install_state, login_browser_for_profile,
-        looks_like_codex_version, resolve_login_browser_app_server_launch, resolve_real_codex_cli,
-        resolve_windows_app_target, windows_store_shell_target, AppLaunchTarget, InstallState,
-        LoginBrowser, LoginBrowserLaunch, FORCED_EDGE_LOGIN_ACCOUNT_LABEL, WINDOWS_STORE_APP_ID,
+        looks_like_codex_version, redetect_runnable_codex_cli_paths,
+        resolve_login_browser_app_server_launch, resolve_real_codex_cli,
+        resolve_windows_app_target, where_codex_candidate_paths_with_timeout,
+        windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
+        LoginBrowserLaunch, FORCED_EDGE_LOGIN_ACCOUNT_LABEL, WINDOWS_STORE_APP_ID,
     };
     use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn temp_codex_home(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1009,13 +1020,9 @@ mod tests {
     }
 
     #[cfg(target_os = "windows")]
-    fn write_runnable_codex_exe(path: &Path, version: &str) {
+    fn write_rust_exe(path: &Path, source: &str) {
         let source_path = path.with_extension("rs");
-        fs::write(
-            &source_path,
-            format!("fn main() {{ println!({version:?}); }}\n"),
-        )
-        .unwrap();
+        fs::write(&source_path, source).unwrap();
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| std::ffi::OsString::from("rustc"));
         let output = std::process::Command::new(rustc)
             .arg(&source_path)
@@ -1028,6 +1035,19 @@ mod tests {
             "failed to compile codex.exe fixture\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_runnable_codex_exe(path: &Path, version: &str) {
+        write_rust_exe(path, &format!("fn main() {{ println!({version:?}); }}\n"));
+    }
+
+    #[cfg(target_os = "windows")]
+    fn write_hanging_where_exe(path: &Path) {
+        write_rust_exe(
+            path,
+            "fn main() { std::thread::sleep(std::time::Duration::from_secs(5)); }\n",
         );
     }
 
@@ -1313,6 +1333,66 @@ mod tests {
         let resolved = discover_real_codex_cli_path(Some(&managed_bin.join("codex.cmd")));
 
         assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn where_codex_candidate_paths_times_out_hanging_where() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("where-timeout");
+        let _env = EnvVarGuard::capture(&["CODEX_SWITCH_TEST_WHERE_EXE"]);
+        fs::create_dir_all(&codex_home).unwrap();
+        let fake_where = codex_home.join("where.exe");
+        write_hanging_where_exe(&fake_where);
+        std::env::set_var("CODEX_SWITCH_TEST_WHERE_EXE", &fake_where);
+
+        let started = Instant::now();
+        let paths = where_codex_candidate_paths_with_timeout(Duration::from_millis(100));
+
+        assert!(paths.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "where timeout helper should return promptly"
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn redetect_runnable_codex_cli_paths_skips_hanging_where() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("redetect-where-timeout");
+        let _env = EnvVarGuard::capture(&[
+            "PATH",
+            "CODEX_EXE",
+            "CODEX_INSTALL_DIR",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "CODEX_SWITCH_TEST_WHERE_EXE",
+        ]);
+        fs::create_dir_all(&codex_home).unwrap();
+        let fake_where = codex_home.join("where.exe");
+        write_hanging_where_exe(&fake_where);
+        std::env::set_var("CODEX_SWITCH_TEST_WHERE_EXE", &fake_where);
+        std::env::remove_var("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::remove_var("LOCALAPPDATA");
+        std::env::remove_var("APPDATA");
+        std::env::remove_var("ProgramFiles");
+        std::env::remove_var("ProgramFiles(x86)");
+
+        let started = Instant::now();
+        let candidates = redetect_runnable_codex_cli_paths(Some(&codex_home));
+
+        assert!(candidates.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "redetect should be bounded by the where timeout, not the hanging process"
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 
