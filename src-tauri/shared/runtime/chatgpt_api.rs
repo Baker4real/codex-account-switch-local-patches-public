@@ -103,9 +103,31 @@ const EXPIRY_SKEW_SECONDS: i64 = 300;
 pub struct ChatGptApiSnapshot {
     pub quota: Option<QuotaSummary>,
     pub plan_type: Option<String>,
+    pub oauth_token_rotated: bool,
     #[allow(dead_code)]
     pub subscription_expires_at: Option<String>,
 }
+
+#[derive(Debug, Clone)]
+pub struct ChatGptApiRefreshFailure {
+    pub error: AppError,
+    pub oauth_token_rotated: bool,
+}
+
+impl ChatGptApiRefreshFailure {
+    pub fn new(error: AppError, oauth_token_rotated: bool) -> Self {
+        Self {
+            error,
+            oauth_token_rotated,
+        }
+    }
+
+    pub fn into_error(self) -> AppError {
+        self.error
+    }
+}
+
+pub type ChatGptApiRefreshResult = Result<ChatGptApiSnapshot, ChatGptApiRefreshFailure>;
 
 #[derive(Deserialize)]
 struct OAuthRefreshResponse {
@@ -180,7 +202,19 @@ pub fn refresh_profile_via_api(
     profile_name: &str,
     codex_home: &Path,
 ) -> AppResult<ChatGptApiSnapshot> {
-    refresh_profile_via_api_with_options(profile_name, codex_home, RefreshOptions::default())
+    refresh_profile_via_api_detailed(profile_name, codex_home)
+        .map_err(ChatGptApiRefreshFailure::into_error)
+}
+
+pub fn refresh_profile_via_api_detailed(
+    profile_name: &str,
+    codex_home: &Path,
+) -> ChatGptApiRefreshResult {
+    refresh_profile_via_api_with_options_detailed(
+        profile_name,
+        codex_home,
+        RefreshOptions::default(),
+    )
 }
 
 /// Knobs for `refresh_profile_via_api_with_options`. Today the only knob
@@ -204,25 +238,46 @@ pub fn refresh_profile_via_api_with_options(
     codex_home: &Path,
     options: RefreshOptions,
 ) -> AppResult<ChatGptApiSnapshot> {
+    refresh_profile_via_api_with_options_detailed(profile_name, codex_home, options)
+        .map_err(ChatGptApiRefreshFailure::into_error)
+}
+
+pub fn refresh_profile_via_api_with_options_detailed(
+    profile_name: &str,
+    codex_home: &Path,
+    options: RefreshOptions,
+) -> ChatGptApiRefreshResult {
     let profile_dir = get_backup_root(Some(codex_home)).join(profile_name);
     if !profile_dir.is_dir() {
-        return Err(AppError::new(
-            "PROFILE_NOT_FOUND",
-            format!("Profile not found: {profile_name}"),
+        return Err(ChatGptApiRefreshFailure::new(
+            AppError::new(
+                "PROFILE_NOT_FOUND",
+                format!("Profile not found: {profile_name}"),
+            ),
+            false,
         ));
     }
 
-    let auth = read_auth_file(&profile_dir)?;
+    let auth = read_auth_file(&profile_dir)
+        .map_err(|error| ChatGptApiRefreshFailure::new(error, false))?;
     if auth.auth_mode.as_deref() != Some("chatgpt") {
-        return Err(AppError::new(
-            "PROFILE_NOT_OAUTH",
-            "API refresh path only applies to ChatGPT/OAuth profiles.",
+        return Err(ChatGptApiRefreshFailure::new(
+            AppError::new(
+                "PROFILE_NOT_OAUTH",
+                "API refresh path only applies to ChatGPT/OAuth profiles.",
+            ),
+            false,
         ));
     }
 
-    let client = build_http_client()?;
-    let usage_payload =
-        fetch_usage_with_retry(&client, &profile_dir, &auth, options.force_token_rotation)?;
+    let client =
+        build_http_client().map_err(|error| ChatGptApiRefreshFailure::new(error, false))?;
+    let usage_result =
+        fetch_usage_with_retry(&client, &profile_dir, &auth, options.force_token_rotation)
+            .map_err(|error| {
+                ChatGptApiRefreshFailure::new(error.error, error.oauth_token_rotated)
+            })?;
+    let usage_payload = usage_result.payload;
     let plan_type = usage_payload
         .plan_type
         .clone()
@@ -233,6 +288,7 @@ pub fn refresh_profile_via_api_with_options(
     Ok(ChatGptApiSnapshot {
         quota,
         plan_type,
+        oauth_token_rotated: usage_result.oauth_token_rotated,
         subscription_expires_at,
     })
 }
@@ -354,7 +410,7 @@ fn fetch_usage_with_retry(
     profile_dir: &Path,
     auth: &ProfileAuthFile,
     force_token_rotation: bool,
-) -> AppResult<RateLimitStatusPayload> {
+) -> Result<UsageFetchResult, UsageFetchError> {
     // 1) Refresh proactively if the JWT is already expired or about to
     //    expire. Avoids a guaranteed 401 + retry pair. When the caller
     //    forces rotation, refresh unconditionally — id_token claims
@@ -362,21 +418,55 @@ fn fetch_usage_with_retry(
     //    of the OAuth refresh endpoint, so user-initiated refreshes
     //    must take this path even when the access_token is still valid.
     let mut working_auth = auth.clone();
+    let mut oauth_token_rotated = false;
     if should_refresh_oauth_before_usage(&working_auth.access_token, force_token_rotation) {
-        working_auth = refresh_oauth_tokens(client, profile_dir, &working_auth)?;
+        working_auth = refresh_oauth_tokens(client, profile_dir, &working_auth)
+            .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?;
+        oauth_token_rotated = true;
     }
 
     // 2) First attempt.
-    let response = send_usage_request(client, &working_auth)?;
+    let response = send_usage_request(client, &working_auth)
+        .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?;
     if response.status() != StatusCode::UNAUTHORIZED {
-        return decode_usage_response(response);
+        return Ok(UsageFetchResult {
+            payload: decode_usage_response(response)
+                .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?,
+            oauth_token_rotated,
+        });
     }
 
     // 3) On 401, refresh once and retry. If the refresh itself fails, the
     //    caller falls back to the legacy `codex exec` path.
-    let refreshed = refresh_oauth_tokens(client, profile_dir, &working_auth)?;
-    let retry = send_usage_request(client, &refreshed)?;
-    decode_usage_response(retry)
+    let refreshed = refresh_oauth_tokens(client, profile_dir, &working_auth)
+        .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?;
+    oauth_token_rotated = true;
+    let retry = send_usage_request(client, &refreshed)
+        .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?;
+    Ok(UsageFetchResult {
+        payload: decode_usage_response(retry)
+            .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?,
+        oauth_token_rotated,
+    })
+}
+
+struct UsageFetchResult {
+    payload: RateLimitStatusPayload,
+    oauth_token_rotated: bool,
+}
+
+struct UsageFetchError {
+    error: AppError,
+    oauth_token_rotated: bool,
+}
+
+impl UsageFetchError {
+    fn new(error: AppError, oauth_token_rotated: bool) -> Self {
+        Self {
+            error,
+            oauth_token_rotated,
+        }
+    }
 }
 
 fn send_usage_request(

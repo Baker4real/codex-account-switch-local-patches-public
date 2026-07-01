@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::errors::AppResult;
 use crate::shared::codex_app_server::AppServerSnapshot;
+use crate::shared::process_lock::ProcessLockGuard;
 
 pub trait PlatformHooks: Send + Sync {
     fn open_or_activate_codex_app(&self, codex_home: Option<&Path>) -> AppResult<String>;
@@ -57,6 +58,20 @@ pub trait PlatformHooks: Send + Sync {
         };
 
         self.sync_root_openai_base_url_for_profile(&current_profile, Some(&codex_home))
+    }
+    fn acquire_background_refresh_lock(
+        &self,
+        _codex_home: &Path,
+    ) -> AppResult<Option<ProcessLockGuard>> {
+        Ok(None)
+    }
+    fn sync_live_auth_if_current_profile(
+        &self,
+        _profile_name: &str,
+        _codex_home: &Path,
+        _refreshed_auth_path: &Path,
+    ) -> AppResult<()> {
+        Ok(())
     }
     fn sync_on_window_close(&self) -> AppResult<()>;
 }

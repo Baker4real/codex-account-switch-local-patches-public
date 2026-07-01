@@ -958,6 +958,26 @@ impl PlatformHooks for WindowsPlatformHooks {
         crate::shared::config::sync_root_openai_base_url_for_profile(profile_name, codex_home)
     }
 
+    fn acquire_background_refresh_lock(
+        &self,
+        codex_home: &Path,
+    ) -> AppResult<Option<crate::shared::process_lock::ProcessLockGuard>> {
+        super::refresh_runtime::acquire_refresh_lock(codex_home).map(Some)
+    }
+
+    fn sync_live_auth_if_current_profile(
+        &self,
+        profile_name: &str,
+        codex_home: &Path,
+        refreshed_auth_path: &Path,
+    ) -> AppResult<()> {
+        super::refresh_runtime::sync_live_auth_if_current_profile(
+            profile_name,
+            codex_home,
+            refreshed_auth_path,
+        )
+    }
+
     fn sync_on_window_close(&self) -> AppResult<()> {
         crate::windows::bootstrap::sync_root_state_to_current_profile(None).map(|_| ())
     }

@@ -24,7 +24,7 @@ use super::runtime_isolation::{
 const REFRESH_RUNTIME_PROFILE_FILES: [&str; 2] =
     [RUNTIME_AUTH_FILENAME, RUNTIME_PROFILE_METADATA_FILENAME];
 
-fn acquire_refresh_lock(codex_home: &Path) -> AppResult<ProcessLockGuard> {
+pub(crate) fn acquire_refresh_lock(codex_home: &Path) -> AppResult<ProcessLockGuard> {
     acquire_process_lock(
         Some(codex_home),
         "REFRESH_BUSY",
@@ -90,7 +90,7 @@ fn prepare_refresh_runtime_home(codex_home: &Path, profile_dir: &Path) -> AppRes
     Ok(runtime_home)
 }
 
-fn sync_live_auth_if_current_profile(
+pub(crate) fn sync_live_auth_if_current_profile(
     profile_name: &str,
     codex_home: &Path,
     refreshed_auth_path: &Path,
@@ -145,11 +145,13 @@ fn try_refresh_via_chatgpt_api(
             return Ok(None);
         }
     };
-    sync_live_auth_if_current_profile(
-        profile_name,
-        codex_home,
-        &profile_dir.join(RUNTIME_AUTH_FILENAME),
-    )?;
+    if snapshot.oauth_token_rotated {
+        sync_live_auth_if_current_profile(
+            profile_name,
+            codex_home,
+            &profile_dir.join(RUNTIME_AUTH_FILENAME),
+        )?;
+    }
     let plan_type_from_api = snapshot.plan_type.clone();
     let now_ms = std::time::SystemTime::now()
         .duration_since(UNIX_EPOCH)
