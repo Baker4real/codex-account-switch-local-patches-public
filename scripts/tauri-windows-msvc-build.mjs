@@ -4,7 +4,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const cargoHome = process.env.CARGO_HOME || "D:\\Codex\\.cargo";
+const cargoHome = "D:\\Codex\\.cargo";
 const rustupBin = join(cargoHome, "bin");
 const tauriCli = join(repoRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
 
@@ -21,7 +21,8 @@ const pathEntries = (process.env.PATH || "")
 const env = {
   ...process.env,
   CARGO_HOME: cargoHome,
-  RUSTUP_HOME: process.env.RUSTUP_HOME || "D:\\Codex\\.rustup",
+  RUSTUP_HOME: "D:\\Codex\\.rustup",
+  RUSTC: join(rustupBin, "rustc.exe"),
   PATH: [rustupBin, ...pathEntries].join(delimiter),
 };
 
