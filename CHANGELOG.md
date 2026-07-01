@@ -8,6 +8,7 @@
 - 账号页 quota 读数现在显示来源与新鲜度：官方 ChatGPT API、Codex app-server fallback、本地 session 观测或未知来源。5 小时 / 周额度低于或等于 20% 时只显示低额度提示，不自动切换账号。
 - Windows 本地 MSVC 便携构建现在通过 `scripts/tauri-windows-msvc-build.mjs` 执行；脚本优先使用 `D:\Codex\.cargo\bin` 下的 rustup shim，并在 `rustc -vV` 未报告 `x86_64-pc-windows-msvc` 时拒绝构建，避免 PATH 中更靠前的 GNU Rust 静默产出错误本地产物。
 - Login / refresh runtime 清理现在保留上游 `plugins` / `cache` / `sqlite` 共享行为，只 prune 隔离功能状态，拒绝不安全 prune 路径，并把 `_autosave` 保持为追加式 timestamp 授权快照。备份保留必须走显式 dry-run / apply 清理流程。
+- Plan / quota 刷新不再把 `last_plan_check_ms` 超过 6 小时当作授权失效信号。卡片刷新和后台 bulk refresh 会先使用现有 `access_token` 查询官方 usage；只有 access token 过期、临近过期或 usage 返回 401 时才消耗 `refresh_token`，避免仍有效账号被提前提示重新登录。
 
 ## 1.5.12 - 2026-05-29
 

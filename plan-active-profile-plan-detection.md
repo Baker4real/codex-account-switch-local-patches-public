@@ -30,16 +30,17 @@ PR: #19 (merged 2026-05-08)
 
 ## Phase B — proactive freshness (one or two PRs)
 
-- [x] **B1.** Force OAuth refresh on user-initiated card refresh
-      `RefreshOptions { force_token_rotation }` plumbed through
-      `refresh_profile_via_api_with_options`. mac/win `try_refresh_via_chatgpt_api`
-      now sets `force_token_rotation: true`. The 5-min silent ticker keeps the
-      cheap path.
+- [x] **B1.** User-initiated card refresh reads usage without forcing OAuth
+      `RefreshOptions { force_token_rotation }` remains available, but mac/win
+      `try_refresh_via_chatgpt_api` keeps it `false`. Refresh first uses the
+      cached `access_token`; OAuth rotation happens only when the access token
+      is expired, near expiry, or rejected by a 401.
 - [x] **B2.** Day-rollover background pass over all OAuth profiles
       New Tauri command `refresh_all_oauth_profile_plans_silent` walks every
-      OAuth profile, forces a token rotation, and rolls plan + quota into
-      metadata. Frontend kicks it on bootstrap (after first dashboard render)
-      and on every local-day rollover (10-min polling against
+      OAuth profile whose `last_plan_check_ms` is outside the 6h freshness
+      window, reads official usage without forcing OAuth rotation, and rolls
+      plan + quota into metadata. Frontend kicks it on bootstrap (after first
+      dashboard render) and on every local-day rollover (10-min polling against
       `Date.toDateString()`).
 - [x] **B3.** Track `last_plan_check_ms` separately from `last_refresh` and
       `quota_updated_at_ms`, so the UI can show plan freshness independently of

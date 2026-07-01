@@ -160,6 +160,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - `QuotaSummary` 在 5 小时和周额度窗口之外携带 `provenance` 元数据，让前端能区分官方新鲜数据、fallback 数据和本地观测数据。
 - 来源取值为 `chat_gpt_api`、`codex_app_server`、`session_jsonl`、`unknown`；可信度取值为 `official`、`fallback`、`local_observation`、`unknown`。
 - ChatGPT Web API 路径把 quota 标记为 `official`；Codex app-server JSON-RPC 路径标记为 `fallback`；session JSONL 解析标记为 `local_observation`，并在可用时附带来源文件 mtime。
+- `last_plan_check_ms` 的 6 小时窗口只控制后台 bulk plan refresh 是否再次查询 usage；它不是授权边界，不能因为 plan 缓存过期就强制 OAuth rotation。
 - 账号页在 quota 数值旁显示来源 badge 和观测年龄。5 小时或周额度剩余百分比低于或等于 20% 时只进入警示状态；账号切换仍必须由用户显式触发。
 
 ## 授权缓存状态
@@ -168,6 +169,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - ChatGPT / Codex OAuth 的 `refresh_token` 通常是 opaque string；项目不能从 token 本体解析固定 TTL。只有 `auth.json` 显式出现 `tokens.refresh_token_expires_at_ms` 或 `tokens.refresh_token_expires_at` 时，UI 才显示 refresh token 到期时间。
 - 官方 Codex CI/CD 文档把 `last_refresh` 超过约 8 天描述为 token bundle stale；本项目用这个规则提示“建议刷新授权缓存”。这不是 refresh token 的官方到期保证，也不能替代 401 后的 refresh-and-retry。
 - `access_token` / `id_token` 的 JWT `exp` 可用于判断短期登录缓存是否需要刷新，但不能被当作 refresh token 到期时间展示。
+- Plan / quota 刷新会先使用当前 `access_token` 请求官方 usage；只有 access token 已过期、临近过期或 usage 请求返回 401 时，才通过 `refresh_token` 换新 token。
 - 前端把状态做成单行 chip，完整解释放在 `title` / `aria-label`；可见文案避免“点刷新 / 点登录”这类看起来像额外按钮的动作提示。
 
 ## Local Windows patch build
