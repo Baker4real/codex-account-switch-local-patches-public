@@ -60,7 +60,13 @@ fn session_files_descending(codex_home: Option<&Path>) -> Vec<PathBuf> {
 
     let mut files = Vec::new();
     collect_jsonl_files(&sessions_root, &mut files);
-    files.sort_by(|left, right| right.as_os_str().cmp(left.as_os_str()));
+    files.sort_by(|left, right| {
+        let left_mtime = file_modified_ms(left).unwrap_or(0);
+        let right_mtime = file_modified_ms(right).unwrap_or(0);
+        right_mtime
+            .cmp(&left_mtime)
+            .then_with(|| right.as_os_str().cmp(left.as_os_str()))
+    });
     files
 }
 
@@ -224,7 +230,7 @@ pub fn load_latest_local_quota_snapshot_since(
         .collect();
 
     // Tier-1 fast path: if the previously winning file still exists,
-    // is still the lex-largest jsonl in `sessions/`, and its
+    // is still the mtime-newest jsonl in `sessions/`, and its
     // `(mtime, size)` signature is unchanged, we already know the
     // answer — no JSONL reads required. The dashboard's 15-second
     // ticker hits this >99% of the time on an idle session corpus
@@ -307,7 +313,7 @@ fn try_fast_path(
 ) -> Option<LocalQuotaSnapshot> {
     let last = cache.last_snapshot.as_ref()?;
     // Only short-circuit when the cached file is still the
-    // lex-largest entry — otherwise a brand-new session would be
+    // mtime-newest entry — otherwise a brand-new session would be
     // ignored until the cache happened to be invalidated by some
     // other change.
     let newest = scan_paths.first()?;
@@ -389,7 +395,7 @@ mod tests {
         use crate::models::{QuotaConfidence, QuotaSource};
         use std::fs;
         use std::path::PathBuf;
-        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
         fn temp_codex_home(name: &str) -> PathBuf {
             let unique = SystemTime::now()
@@ -407,14 +413,37 @@ mod tests {
             path
         }
 
-        fn write_jsonl(codex_home: &Path, rel: &str, body: &str) {
+        fn write_jsonl(codex_home: &Path, rel: &str, body: &str) -> PathBuf {
             let path = codex_home.join("sessions").join(rel);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, body).unwrap();
+            path
+        }
+
+        fn write_jsonl_after_mtime(
+            codex_home: &Path,
+            rel: &str,
+            body: &str,
+            min_mtime_ms: u64,
+        ) -> PathBuf {
+            let path = codex_home.join("sessions").join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            for _ in 0..100 {
+                std::thread::sleep(Duration::from_millis(20));
+                fs::write(&path, body).unwrap();
+                if file_signature(&path).0 > min_mtime_ms {
+                    return path;
+                }
+            }
+            panic!(
+                "failed to advance mtime for {} beyond {min_mtime_ms}",
+                path.display()
+            );
         }
 
         const QUOTA_LINE: &str = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":11,"resets_at":1730000000,"window_minutes":300},"secondary":{"used_percent":12,"resets_at":1730600000,"window_minutes":10080}}}}"#;
         const QUOTA_LINE_DIFFERENT: &str = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":50,"resets_at":1730000000,"window_minutes":300},"secondary":{"used_percent":60,"resets_at":1730600000,"window_minutes":10080}}}}"#;
+        const NO_QUOTA_LINE: &str = r#"{"type":"event_msg"}"#;
 
         #[test]
         fn fast_path_returns_seeded_snapshot_when_signature_matches() {
@@ -477,7 +506,10 @@ mod tests {
                 first.quota.provenance.confidence,
                 QuotaConfidence::LocalObservation
             );
-            assert_eq!(first.quota.provenance.source_mtime_ms, first.source_mtime_ms);
+            assert_eq!(
+                first.quota.provenance.source_mtime_ms,
+                first.source_mtime_ms
+            );
 
             // Add a lex-larger file with a different quota — the fast
             // path's `newest != last.path` guard must reject the
@@ -496,6 +528,65 @@ mod tests {
                 "newest path should win over the cached snapshot"
             );
 
+            let _ = fs::remove_dir_all(&codex_home);
+        }
+
+        #[test]
+        fn mtime_newer_jsonl_wins_over_lexicographically_larger_path() {
+            let codex_home = temp_codex_home("mtime-beats-lex");
+            let older_path = write_jsonl(
+                &codex_home,
+                "2026/05/10/rollout-Z.jsonl",
+                QUOTA_LINE_DIFFERENT,
+            );
+            let older_mtime = file_signature(&older_path).0;
+            write_jsonl_after_mtime(
+                &codex_home,
+                "2026/05/10/rollout-A.jsonl",
+                QUOTA_LINE,
+                older_mtime,
+            );
+
+            let result = load_latest_local_quota_snapshot(Some(&codex_home))
+                .expect("mtime-newer lex-smaller file should win");
+
+            assert_eq!(
+                result.quota.five_hour.remaining_percent,
+                Some(89),
+                "mtime-newest JSONL should win over lexicographic path order"
+            );
+            let _ = fs::remove_dir_all(&codex_home);
+        }
+
+        #[test]
+        fn scan_limit_takes_mtime_newest_32_jsonl_files() {
+            let codex_home = temp_codex_home("mtime-top-32");
+            let older_path = write_jsonl(
+                &codex_home,
+                "2026/05/10/zz-old-with-quota.jsonl",
+                QUOTA_LINE_DIFFERENT,
+            );
+            let older_mtime = file_signature(&older_path).0;
+            write_jsonl_after_mtime(
+                &codex_home,
+                "2026/05/10/aa-new-empty-00.jsonl",
+                NO_QUOTA_LINE,
+                older_mtime,
+            );
+            for index in 1..32 {
+                write_jsonl(
+                    &codex_home,
+                    &format!("2026/05/10/aa-new-empty-{index:02}.jsonl"),
+                    NO_QUOTA_LINE,
+                );
+            }
+
+            let result = load_latest_local_quota_snapshot(Some(&codex_home));
+
+            assert!(
+                result.is_none(),
+                "old lex-largest quota file must be outside the mtime-newest 32-file scan window"
+            );
             let _ = fs::remove_dir_all(&codex_home);
         }
 
