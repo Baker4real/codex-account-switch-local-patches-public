@@ -49,6 +49,17 @@ $loader = Get-ChildItem -LiteralPath "$release\build" -Recurse -Filter 'WebView2
 Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dll" -Force
 ```
 
+每次本项目构建或替换出新的 Windows `codex_switch.exe` 后，还必须把同一份
+`codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 同步到远端 Windows
+电脑对应安装目录，替换远端桌面入口实际指向的旧文件。远端桌面项可能是快捷方式，
+不是 exe 本体；先解析远端桌面 `codex_switch*.lnk` 的 `TargetPath` 和
+`WorkingDirectory`，再替换目标目录里的 `codex_switch.exe` 与
+`WebView2Loader.dll`。不要把文件直接复制到 `.lnk` 路径上，也不要只复制 exe。
+替换前停止远端正在运行的 `codex_switch` 进程，替换后校验远端目标文件 SHA-256
+与本机构建产物一致。已知远端 `home` 的桌面入口曾位于
+`D:\Desktop\codex_switch.exe.lnk`，验证过的安装根目录是
+`D:\Codex\apps\codex_switch`；仍要以实时解析到的快捷方式目标为准。
+
 `npm run test:rust:windows-gnu` 只用于当前 `rustc` host 是
 `x86_64-pc-windows-gnu` 的 GNU/MinGW 链接路径诊断；它不是替换安装版的主构建路径。
 
