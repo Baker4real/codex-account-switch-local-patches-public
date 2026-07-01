@@ -13,8 +13,9 @@
 - 仓库：`D:\Codex\projects\codex-account-switch`
 - 分支：`codex/clean-codex-switch-local-patches`
 - 当前状态：`git status --short --branch` clean
-- 当前 HEAD：`37f35c9 docs: record runtime cleanup boundaries`
+- 当前 HEAD：`491c3fe docs: add dependency update handoff`
 - runtime cleanup 实质修复提交：`d6eea82 fix: harden runtime cleanup without pruning auth backups`
+- runtime cleanup 边界文档提交：`37f35c9 docs: record runtime cleanup boundaries`
 
 ## 已整理出的外部证据
 
@@ -37,7 +38,7 @@
 
 当前顶层依赖状态：
 
-| 包 | 当前 | latest | 建议 |
+| 包 | 当前 | npm latest | 建议 |
 | --- | --- | --- | --- |
 | `vite` | `7.1.4` | `8.1.2` | 先只做 audit fix 到 `7.3.6` |
 | `typescript` | `5.9.2` | `6.0.3` | 暂不跳大版本 |
