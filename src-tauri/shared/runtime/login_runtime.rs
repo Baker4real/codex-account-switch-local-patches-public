@@ -21,6 +21,7 @@ use std::path::Path;
 use crate::errors::{AppError, AppResult};
 use crate::platform::hooks::PlatformHooks;
 
+use super::fs_ops::atomic_copy_file;
 use super::metadata::{
     load_auth_metadata_from_path, sync_profile_metadata_from_auth,
     sync_root_metadata_if_current_profile,
@@ -51,87 +52,18 @@ fn prepare_login_runtime_home(codex_home: &Path, runtime_home: &Path) -> AppResu
     Ok(())
 }
 
-/// Atomic-ish file replace. Stages to a sibling `.tmp` file and renames
-/// over the destination. Two Windows-specific wrinkles drive the
-/// fallback dance below:
-///
-/// 1. `std::fs::rename` against an existing file fails when the
-///    destination is opened by another process *without*
-///    `FILE_SHARE_DELETE` (typical for AV scanners and any handle Codex
-///    itself holds on `~/.codex/auth.json`). On the active-profile
-///    branch we'd otherwise leave the live auth stale even though the
-///    backup folder already got the fresh copy.
-/// 2. Even when rename fails, a `truncate-then-write` of the destination
-///    succeeds because Windows opens the existing handle with
-///    `FILE_SHARE_READ | FILE_SHARE_WRITE` from another process's point
-///    of view — they can read while we replace contents.
-///
-/// So: try the cheap atomic rename first (POSIX + happy-path Windows);
-/// if it fails, fall back to writing the temp's bytes into the
-/// destination via `std::fs::write` and dropping the temp. The fallback
-/// is functionally atomic for the small auth.json payload — write
-/// happens in a single syscall, readers see either old or new contents
-/// (never a half-written buffer).
-fn atomic_publish_file(src: &Path, dst: &Path) -> AppResult<()> {
-    if let Some(parent) = dst.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                AppError::new(
-                    "FS_CREATE_FAILED",
-                    format!(
-                        "Failed to create parent directory {}: {error}",
-                        parent.display()
-                    ),
-                )
-            })?;
-        }
-    }
-    let temp = dst.with_extension(format!(
-        "tmp.{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    std::fs::copy(src, &temp).map_err(|error| {
-        let _ = std::fs::remove_file(&temp);
+fn publish_auth_file(src: &Path, dst: &Path) -> AppResult<()> {
+    atomic_copy_file(src, dst).map_err(|error| {
         AppError::new(
             "LOGIN_AUTH_PERSIST_FAILED",
             format!(
-                "Failed to stage write of {} -> {}: {error}",
+                "Failed to publish auth.json {} -> {}: {}",
                 src.display(),
-                temp.display()
+                dst.display(),
+                error.message
             ),
         )
-    })?;
-
-    if std::fs::rename(&temp, dst).is_ok() {
-        return Ok(());
-    }
-
-    // Rename failed. Fall back to truncate-then-write of the destination
-    // using the bytes we already staged into `temp`.
-    let buffered = std::fs::read(&temp).map_err(|error| {
-        let _ = std::fs::remove_file(&temp);
-        AppError::new(
-            "LOGIN_AUTH_PERSIST_FAILED",
-            format!(
-                "Failed to read staged auth {} during fallback publish: {error}",
-                temp.display()
-            ),
-        )
-    })?;
-    let result = std::fs::write(dst, &buffered).map_err(|error| {
-        AppError::new(
-            "LOGIN_AUTH_PERSIST_FAILED",
-            format!(
-                "Failed to publish auth.json to {} via fallback truncate-write: {error}",
-                dst.display()
-            ),
-        )
-    });
-    let _ = std::fs::remove_file(&temp);
-    result
+    })
 }
 
 fn comparable_account_label(auth_path: &Path) -> Option<String> {
@@ -233,7 +165,7 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
 
     let profile_auth = profile_dir.join(RUNTIME_AUTH_FILENAME);
     verify_login_identity_matches_existing_profile(&profile_auth, &runtime_auth)?;
-    atomic_publish_file(&runtime_auth, &profile_auth)?;
+    publish_auth_file(&runtime_auth, &profile_auth)?;
 
     // If the profile being logged into is currently active, the live
     // `~/.codex/auth.json` is now stale relative to what we just wrote
@@ -241,7 +173,7 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
     // user has open picks up the new token on its next API call.
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
         let live_auth = codex_home.join(RUNTIME_AUTH_FILENAME);
-        atomic_publish_file(&runtime_auth, &live_auth)?;
+        publish_auth_file(&runtime_auth, &live_auth)?;
     }
 
     // Login flow has no fresher plan signal than the new id_token codex

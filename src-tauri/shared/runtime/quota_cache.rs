@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::QuotaSummary;
 
+use super::fs_ops::atomic_write_file;
 use super::paths::get_quota_cache_path;
 
 const SCHEMA_VERSION: u32 = 1;
@@ -127,17 +128,6 @@ impl QuotaCache {
         self.schema_version = SCHEMA_VERSION;
         self.prune();
         let path = get_quota_cache_path(codex_home);
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(error) = fs::create_dir_all(parent) {
-                    eprintln!(
-                        "quota_cache: failed to create {} ({error})",
-                        parent.display()
-                    );
-                    return;
-                }
-            }
-        }
         let serialized = match serde_json::to_vec_pretty(self) {
             Ok(value) => value,
             Err(error) => {
@@ -145,34 +135,7 @@ impl QuotaCache {
                 return;
             }
         };
-        // Atomic write: stage to a sibling tmp file with a nanosecond
-        // suffix, then rename. The nanosecond suffix mirrors
-        // `chatgpt_api::atomic_write_bytes` and keeps two concurrent
-        // writers (e.g. release app + `tauri:dev`, or the GUI racing
-        // a CLI example binary) from overwriting each other's tmp
-        // file mid-write — without it both processes would fight for
-        // a fixed `quota_cache.json.tmp` and the loser's transactional
-        // intent would be discarded.
-        let suffix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|value| value.as_nanos())
-            .unwrap_or(0);
-        let mut temp_name = path
-            .file_name()
-            .map(|name| name.to_os_string())
-            .unwrap_or_default();
-        temp_name.push(format!(".{suffix}.tmp"));
-        let temp_path = path.with_file_name(temp_name);
-        if let Err(error) = fs::write(&temp_path, &serialized) {
-            let _ = fs::remove_file(&temp_path);
-            eprintln!(
-                "quota_cache: failed to stage write to {} ({error})",
-                temp_path.display()
-            );
-            return;
-        }
-        if let Err(error) = fs::rename(&temp_path, &path) {
-            let _ = fs::remove_file(&temp_path);
+        if let Err(error) = atomic_write_file(&path, &serialized) {
             eprintln!(
                 "quota_cache: failed to publish write to {} ({error})",
                 path.display()

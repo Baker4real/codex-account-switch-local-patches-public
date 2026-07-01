@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::errors::{AppError, AppResult};
@@ -7,6 +6,7 @@ use crate::platform::hooks::PlatformHooks;
 
 use crate::{platform, shared::switch_core};
 
+use super::fs_ops::atomic_write_file;
 use super::metadata::{load_profile_metadata, sync_profile_quota_with_provenance};
 use super::paths::{
     get_backup_root, get_codex_home, validate_profile_name, PROFILE_METADATA_FILENAME,
@@ -37,12 +37,13 @@ fn write_root_profile_metadata(codex_home: &Path, metadata: &ProfileMetadata) ->
         )
     })?;
 
-    fs::write(&metadata_path, format!("{serialized}\n")).map_err(|error| {
+    atomic_write_file(&metadata_path, format!("{serialized}\n")).map_err(|error| {
         AppError::new(
             "PROFILE_METADATA_WRITE_FAILED",
             format!(
-                "Failed to write root profile metadata {}: {error}",
-                metadata_path.display()
+                "Failed to write root profile metadata {}: {}",
+                metadata_path.display(),
+                error.message
             ),
         )
     })

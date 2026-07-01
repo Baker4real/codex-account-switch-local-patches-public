@@ -8,6 +8,7 @@ use crate::models::{
     ProfileMetadata, QuotaProvenance, QuotaSummary, RefreshTokenHealth, RefreshTokenStatus,
 };
 
+use super::fs_ops::atomic_write_file;
 use super::paths::{
     get_backup_root, get_codex_home, get_profile_metadata_path, validate_profile_name,
     PROFILE_METADATA_FILENAME,
@@ -684,10 +685,14 @@ pub fn save_profile_metadata(
         )
     })?;
 
-    fs::write(metadata_path, format!("{serialized}\n")).map_err(|error| {
+    atomic_write_file(&metadata_path, format!("{serialized}\n")).map_err(|error| {
         crate::errors::AppError::new(
             "PROFILE_METADATA_WRITE_FAILED",
-            format!("Failed to write metadata: {error}"),
+            format!(
+                "Failed to write metadata {}: {}",
+                metadata_path.display(),
+                error.message
+            ),
         )
     })
 }
@@ -715,14 +720,15 @@ pub fn sync_root_metadata_if_current_profile(
         )
     })?;
 
-    fs::write(
-        codex_home.join(PROFILE_METADATA_FILENAME),
-        format!("{serialized}\n"),
-    )
-    .map_err(|error| {
+    let root_metadata_path = codex_home.join(PROFILE_METADATA_FILENAME);
+    atomic_write_file(&root_metadata_path, format!("{serialized}\n")).map_err(|error| {
         crate::errors::AppError::new(
             "PROFILE_METADATA_WRITE_FAILED",
-            format!("Failed to write current profile metadata: {error}"),
+            format!(
+                "Failed to write current profile metadata {}: {}",
+                root_metadata_path.display(),
+                error.message
+            ),
         )
     })
 }

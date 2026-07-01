@@ -9,7 +9,7 @@ use crate::models::ProfileMetadata;
 use crate::platform;
 
 use super::config::sync_root_openai_base_url_from_profile_metadata;
-use super::fs_ops::remove_path;
+use super::fs_ops::{atomic_write_file, remove_path};
 use super::login_runtime::login_profile_with_home;
 use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile_openai_base_url};
 use super::paths::{
@@ -268,10 +268,15 @@ pub fn add_profile(folder_name: &str, openai_base_url: Option<&str>) -> AppResul
             ),
         )
     })?;
-    fs::write(profile_dir.join("auth.json"), AUTH_TEMPLATE).map_err(|error| {
+    let auth_path = profile_dir.join("auth.json");
+    atomic_write_file(&auth_path, AUTH_TEMPLATE).map_err(|error| {
         AppError::new(
             "AUTH_TEMPLATE_WRITE_FAILED",
-            format!("Failed to write auth.json: {error}"),
+            format!(
+                "Failed to write auth.json {}: {}",
+                auth_path.display(),
+                error.message
+            ),
         )
     })?;
 

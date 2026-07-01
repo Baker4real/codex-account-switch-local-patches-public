@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::AppResult;
 
+use super::fs_ops::atomic_write_file;
 use super::paths::{get_backup_root, get_codex_home, get_refresh_runtime_dir};
 use super::profiles::resolve_current_profile;
 
@@ -65,12 +66,13 @@ pub fn ensure_refresh_runtime_config_initialized(codex_home: Option<&Path>) -> A
     })?;
 
     let config_path = runtime_home.join("config.toml");
-    std::fs::write(&config_path, REFRESH_RUNTIME_DEFAULT_CONFIG).map_err(|error| {
+    atomic_write_file(&config_path, REFRESH_RUNTIME_DEFAULT_CONFIG).map_err(|error| {
         crate::errors::AppError::new(
             "FS_WRITE_FAILED",
             format!(
-                "Failed to write refresh runtime config {}: {error}",
-                config_path.display()
+                "Failed to write refresh runtime config {}: {}",
+                config_path.display(),
+                error.message
             ),
         )
     })

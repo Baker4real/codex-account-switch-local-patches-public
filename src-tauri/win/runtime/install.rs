@@ -4,7 +4,7 @@ use std::process::Command;
 
 use crate::errors::{AppError, AppResult};
 
-use super::fs_ops::remove_path;
+use super::fs_ops::{atomic_copy_file, atomic_write_file, remove_path};
 use super::paths::{
     get_backup_root, get_codex_home, get_install_state_file, get_runtime_dir, utc_timestamp,
     ACTIVE_MARKER_FILE, CURRENT_PROFILE_FILENAME, DEFAULT_PROFILES,
@@ -208,26 +208,30 @@ fn has_initialized_active_profile(backup_root: &Path) -> bool {
 
 pub(super) fn initialize_default_active_profile(backup_root: &Path) -> AppResult<()> {
     let current_profile_file = backup_root.join(CURRENT_PROFILE_FILENAME);
-    fs::write(&current_profile_file, "a\n").map_err(|error| {
+    atomic_write_file(&current_profile_file, "a\n").map_err(|error| {
         AppError::new(
             "FS_WRITE_FAILED",
             format!(
-                "Failed to write current profile marker {}: {error}",
-                current_profile_file.display()
+                "Failed to write current profile marker {}: {}",
+                current_profile_file.display(),
+                error.message
             ),
         )
     })?;
 
     let marker_path = backup_root.join("a").join(ACTIVE_MARKER_FILE);
-    fs::write(&marker_path, format!("activated_at={}\n", utc_timestamp())).map_err(|error| {
-        AppError::new(
-            "FS_WRITE_FAILED",
-            format!(
-                "Failed to write active marker {}: {error}",
-                marker_path.display()
-            ),
-        )
-    })
+    atomic_write_file(&marker_path, format!("activated_at={}\n", utc_timestamp())).map_err(
+        |error| {
+            AppError::new(
+                "FS_WRITE_FAILED",
+                format!(
+                    "Failed to write active marker {}: {}",
+                    marker_path.display(),
+                    error.message
+                ),
+            )
+        },
+    )
 }
 
 pub(super) fn ensure_default_profiles(backup_root: &Path) -> AppResult<()> {
@@ -255,12 +259,13 @@ pub(super) fn ensure_placeholder_auth_files(backup_root: &Path) -> AppResult<Vec
             continue;
         }
 
-        fs::write(&auth_file, AUTH_TEMPLATE).map_err(|error| {
+        atomic_write_file(&auth_file, AUTH_TEMPLATE).map_err(|error| {
             AppError::new(
                 "AUTH_TEMPLATE_WRITE_FAILED",
                 format!(
-                    "Failed to write placeholder auth {}: {error}",
-                    auth_file.display()
+                    "Failed to write placeholder auth {}: {}",
+                    auth_file.display(),
+                    error.message
                 ),
             )
         })?;
@@ -277,13 +282,14 @@ pub(super) fn seed_default_profile(codex_home: &Path, backup_root: &Path) -> App
     }
 
     let default_profile_auth_file = backup_root.join("a").join("auth.json");
-    fs::copy(&root_auth_file, &default_profile_auth_file).map_err(|error| {
+    atomic_copy_file(&root_auth_file, &default_profile_auth_file).map_err(|error| {
         AppError::new(
             "FS_COPY_FAILED",
             format!(
-                "Failed to seed default profile auth {} -> {}: {error}",
+                "Failed to seed default profile auth {} -> {}: {}",
                 root_auth_file.display(),
-                default_profile_auth_file.display()
+                default_profile_auth_file.display(),
+                error.message
             ),
         )
     })?;
@@ -307,12 +313,13 @@ fn write_codex_shim(shim_path: &Path) -> AppResult<()> {
     let shim_contents = format!(
         "@echo off\r\nsetlocal\r\nif not defined CODEX_HOME set \"CODEX_HOME=%USERPROFILE%\\\\.codex\"\r\n\"%CODEX_HOME%\\\\account_backup\\\\windows\\\\{CLI_RUNTIME_FILENAME}\" shim %*\r\nexit /b %ERRORLEVEL%\r\n"
     );
-    fs::write(shim_path, shim_contents).map_err(|error| {
+    atomic_write_file(shim_path, shim_contents).map_err(|error| {
         AppError::new(
             "SHIM_WRITE_FAILED",
             format!(
-                "Failed to write command shim {}: {error}",
-                shim_path.display()
+                "Failed to write command shim {}: {}",
+                shim_path.display(),
+                error.message
             ),
         )
     })
@@ -332,13 +339,14 @@ fn copy_runtime_cli(source_cli_path: &Path, target_cli_path: &Path) -> AppResult
     }
 
     if source_cli_path != target_cli_path {
-        fs::copy(source_cli_path, target_cli_path).map_err(|error| {
+        atomic_copy_file(source_cli_path, target_cli_path).map_err(|error| {
             AppError::new(
                 "FS_COPY_FAILED",
                 format!(
-                    "Failed to copy CLI {} -> {}: {error}",
+                    "Failed to copy CLI {} -> {}: {}",
                     source_cli_path.display(),
-                    target_cli_path.display()
+                    target_cli_path.display(),
+                    error.message
                 ),
             )
         })?;

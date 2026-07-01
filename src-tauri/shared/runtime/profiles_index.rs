@@ -9,6 +9,7 @@ use crate::models::{
     ProfilesSnapshotResponse,
 };
 
+use super::fs_ops::atomic_write_file;
 use super::metadata::{derive_refresh_token_status_from_auth_path, load_profile_metadata};
 use super::paths::{
     get_backup_root, get_codex_home, get_profiles_index_path, list_profile_dirs, utc_timestamp,
@@ -172,18 +173,6 @@ fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIn
 
 fn save_profiles_index(index: &ProfilesIndex, codex_home: &Path) -> AppResult<()> {
     let index_path = get_profiles_index_path(Some(codex_home));
-    if let Some(parent) = index_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            AppError::new(
-                "FS_CREATE_FAILED",
-                format!(
-                    "Failed to create index directory {}: {error}",
-                    parent.display()
-                ),
-            )
-        })?;
-    }
-
     let serialized = serde_json::to_string_pretty(index).map_err(|error| {
         AppError::new(
             "PROFILES_INDEX_INVALID",
@@ -191,36 +180,13 @@ fn save_profiles_index(index: &ProfilesIndex, codex_home: &Path) -> AppResult<()
         )
     })?;
 
-    let temp_path = index_path.with_extension("json.tmp");
-    fs::write(&temp_path, format!("{serialized}\n")).map_err(|error| {
+    atomic_write_file(&index_path, format!("{serialized}\n")).map_err(|error| {
         AppError::new(
             "PROFILES_INDEX_WRITE_FAILED",
             format!(
-                "Failed to write temp profiles index {}: {error}",
-                temp_path.display()
-            ),
-        )
-    })?;
-
-    if index_path.exists() {
-        fs::remove_file(&index_path).map_err(|error| {
-            AppError::new(
-                "PROFILES_INDEX_WRITE_FAILED",
-                format!(
-                    "Failed to replace existing profiles index {}: {error}",
-                    index_path.display()
-                ),
-            )
-        })?;
-    }
-
-    fs::rename(&temp_path, &index_path).map_err(|error| {
-        AppError::new(
-            "PROFILES_INDEX_WRITE_FAILED",
-            format!(
-                "Failed to move temp profiles index {} -> {}: {error}",
-                temp_path.display(),
-                index_path.display()
+                "Failed to write profiles index {}: {}",
+                index_path.display(),
+                error.message
             ),
         )
     })

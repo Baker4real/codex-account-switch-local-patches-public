@@ -16,6 +16,7 @@ use crate::shared::codex_app_server::{
 };
 use crate::shared::codex_cli_path::CodexPathResolver;
 pub use crate::shared::codex_cli_path::{InstallState, RealCodexPathSource};
+use crate::shared::fs_ops::atomic_write_file;
 use crate::shared::login_cancel::wait_for_login_or_cancel;
 use crate::shared::metadata::load_profile_metadata;
 
@@ -66,16 +67,10 @@ pub fn load_install_state(codex_home: Option<&Path>) -> InstallState {
 
 pub(super) fn save_install_state(codex_home: Option<&Path>, state: &InstallState) {
     let path = get_install_state_file(codex_home);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if fs::create_dir_all(parent).is_err() {
-        return;
-    }
     let Ok(serialized) = serde_json::to_string_pretty(state) else {
         return;
     };
-    let _ = fs::write(path, format!("{serialized}\n"));
+    let _ = atomic_write_file(&path, format!("{serialized}\n"));
 }
 
 fn normalize_windows_path(path: &Path) -> String {

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::{AppError, AppResult};
 
+use super::fs_ops::atomic_write_file;
 use super::metadata::load_profile_metadata;
 use super::paths::{get_backup_root, get_codex_home, get_root_config_path, validate_profile_name};
 use super::profiles::resolve_current_profile;
@@ -78,22 +79,14 @@ fn sync_root_openai_base_url_value(
         return Ok(());
     }
 
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            AppError::new(
-                "FS_CREATE_FAILED",
-                format!(
-                    "Failed to create config directory {}: {error}",
-                    parent.display()
-                ),
-            )
-        })?;
-    }
-
-    fs::write(&config_path, next).map_err(|error| {
+    atomic_write_file(&config_path, next).map_err(|error| {
         AppError::new(
             "FS_WRITE_FAILED",
-            format!("Failed to write config {}: {error}", config_path.display()),
+            format!(
+                "Failed to write config {}: {}",
+                config_path.display(),
+                error.message
+            ),
         )
     })
 }
