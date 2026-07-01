@@ -146,11 +146,11 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 
 - `Switch` writes current root state back to the identity-resolved profile, snapshots `auth.json`, overlays the target profile into root state, updates active markers, and relaunches Codex if needed
 - `Login` reuses the per-card login path for the current profile, so login output is checked against the target profile identity before any profile `auth.json` is replaced
-- Local Windows patched login routes only the profile whose known account label matches `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` through `codex app-server`, then opens the returned `account/login/start` auth URL in Edge.
+- Local Windows patched login routes only profiles whose `profile.json` explicitly sets `login_browser` to `edge` through `codex app-server`, then opens the returned `account/login/start` auth URL in Edge.
 - The patched browser-login flow no longer passes `--user-data-dir`, `--new-window`, or creates dedicated browser profile directories. Edge handles the URL with the user's normal browser state. Existing `login_browser_profiles` directories from older local builds are disposable cleanup leftovers.
 - Because normal browser state can already be logged into the wrong ChatGPT account, per-card login checks the new OAuth identity against any known identity in the target profile before replacing `auth.json`. A mismatch fails before touching the target profile or live root auth.
 - Browser path override `CODEX_SWITCH_EDGE_PATH` is still supported when common install paths do not find Edge.
-- Other profiles keep the standard `codex login` path so upstream behavior remains the default outside the forced-Edge account label.
+- Other profiles keep the standard `codex login` path so upstream behavior remains the default unless their profile metadata explicitly sets `login_browser` to `edge`.
 - `Open Codex` activates the Codex desktop app if already running, or launches it if not
 - `Add Profiles` creates a new profile directory and writes template `auth.json` plus `profile.json`
 - `Contact Us` opens the project GitHub repository
@@ -176,11 +176,11 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 
 - `LOCAL_PATCHES.md` is the upgrade checklist for this machine's installed local-patch build
 - When an upstream release exists, merge the upstream tag into this source tree and keep the local browser-login and update-request patches before rebuilding
-- The local update checker prefers `D:\Codex\tools\PowerShell\7.6.3\pwsh.exe`, then `pwsh`, then `powershell`, because Windows PowerShell 5.x is blocked on the target host
-- The verified local installed-app replacement path starts from `LOCAL_PATCHES.md`, runs `npm run build -- --mode windows` as the Windows frontend precheck, then uses `npm run tauri:build:windows:portable` as the main MSVC portable build command; the installed target is `D:\Codex\apps\codex_switch\codex_switch.exe`
+- The local update checker uses `pwsh` first and then `powershell`; hosts that require a fixed PowerShell binary must inject it with `CODEX_SWITCH_POWERSHELL`.
+- The verified local installed-app replacement path starts from `LOCAL_PATCHES.md`, runs `npm run build -- --mode windows` as the Windows frontend precheck, then uses `npm run tauri:build:windows:portable` as the main MSVC portable build command. The installed target directory is supplied by the operator, for example through `CODEX_SWITCH_INSTALL_DIR`.
 - 本地 MSVC 便携构建命令需要 Rust target `x86_64-pc-windows-msvc`、Visual Studio Build Tools C++ 工具链和 Windows SDK，产物写入 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`；`npm run tauri:build:portable` 只作为 GNU/MinGW 诊断路径，不是替换安装版的主构建路径
-- `scripts/tauri-windows-msvc-build.mjs` 只修改构建子进程内的 `PATH`：它把 `D:\Codex\.cargo\bin` 放到前面，检查 `rustc -vV`，并在当前 compiler host 不是 `x86_64-pc-windows-msvc` 时中止
-- 本地便携替换必须把 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 一起复制到 `D:\Codex\apps\codex_switch\`；target-specific MSVC 构建里，loader 可能位于 `webview2-com-sys` build output，而不是 release 可执行文件旁边
+- `scripts/tauri-windows-msvc-build.mjs` 只修改构建子进程内的 `PATH`：默认解析环境或系统 `rustup`，也支持 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 和 `CARGO` 注入；它会检查 `rustc -vV`，并在当前 compiler host 不是 `x86_64-pc-windows-msvc` 时中止。
+- 本地便携替换必须把 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 一起复制到安装目录；target-specific MSVC 构建里，loader 可能位于 `webview2-com-sys` build output，而不是 release 可执行文件旁边
 
 ## Windows Codex CLI discovery
 

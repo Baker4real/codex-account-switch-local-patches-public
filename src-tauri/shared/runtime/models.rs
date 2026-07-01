@@ -103,6 +103,7 @@ pub struct ProfileMetadata {
     pub plan_name: Option<String>,
     pub subscription_expires_at: Option<String>,
     pub openai_base_url: Option<String>,
+    pub login_browser: Option<String>,
     pub quota: QuotaSummary,
     pub quota_updated_at_ms: Option<u64>,
     /// Wall-clock millis at the most recent confirmed plan check (any
@@ -393,6 +394,9 @@ mod tests {
 
         assert_eq!(serialized["provenance"]["source"], "chat_gpt_api");
         assert_eq!(serialized["provenance"]["confidence"], "official");
-        assert_eq!(serialized["provenance"]["observed_at_ms"], 1_800_000_000_000_u64);
+        assert_eq!(
+            serialized["provenance"]["observed_at_ms"],
+            1_800_000_000_000_u64
+        );
     }
 }

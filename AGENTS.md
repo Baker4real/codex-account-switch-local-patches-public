@@ -13,9 +13,9 @@
 
 - The installed Windows build may include local patches documented in `LOCAL_PATCHES.md`; when updating from upstream, merge the upstream tag into this source tree and preserve those patches before rebuilding.
 - For future local Windows rebuilds, start from `LOCAL_PATCHES.md` section `已验证 Windows 编译路径（优先使用）`; use `npm run tauri:build:windows:portable` first for installed-app replacement instead of rediscovering GNU/CI paths.
-- Windows directed-browser login is account-label based, not slot-name based: the account named by `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` uses `codex app-server` + the user's normal Edge state regardless of profile slot. Do not restore profile `b`/`c` browser routing, and do not reintroduce `--user-data-dir` or dedicated browser profile directories. Preserve the pre-write account identity check so a normal-browser login cannot silently overwrite a known profile with a different ChatGPT account.
+- Windows directed-browser login is explicit metadata based, not slot-name or account-label based: a profile with `login_browser` set to `edge` uses `codex app-server` + the user's normal Edge state regardless of profile slot. Do not restore profile `b`/`c` browser routing, and do not reintroduce `--user-data-dir` or dedicated browser profile directories. Preserve the pre-write account identity check so a normal-browser login cannot silently overwrite a known profile with a different ChatGPT account.
 - Profile write-back is identity-routed: `.current_profile` and `.active_profile` are hints only. Compare live `auth.json` identity with known profile identities, allow only the matching profile or a genuine empty placeholder, and refuse unmanaged drift instead of overwriting a stale slot.
-- When replacing `D:\Codex\apps\codex_switch\`, copy both `codex_switch.exe` and the adjacent `WebView2Loader.dll` from the Tauri release output.
+- When replacing an installed Windows directory, copy both `codex_switch.exe` and the adjacent `WebView2Loader.dll` from the Tauri release output.
 
 ## Agent skills
 

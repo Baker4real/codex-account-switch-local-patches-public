@@ -66,7 +66,7 @@ run('cargo', [
   'test',
   '--manifest-path',
   manifestPath,
-  'login_browser_app_server_launch_routes_forced_edge_account_without_legacy_profile_dir',
+  'login_browser_app_server_launch_routes_explicit_edge_metadata_without_legacy_profile_dir',
 ])
 run('cargo', [
   'test',

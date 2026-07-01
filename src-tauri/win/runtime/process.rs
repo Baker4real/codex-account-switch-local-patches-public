@@ -28,7 +28,6 @@ const WINDOWS_INVOKABLE_SUFFIXES: [&str; 4] = ["cmd", "exe", "bat", "com"];
 const WINDOWS_APPS_PATH_SEGMENT: &str = r"\microsoft\windowsapps\";
 const WINDOWS_STORE_APP_ID: &str = "OpenAI.Codex_2p2nqsd0c76g0!App";
 const WINDOWS_STORE_SHELL_PREFIX: &str = r"shell:AppsFolder\";
-const FORCED_EDGE_LOGIN_ACCOUNT_LABEL: &str = "forced-edge-login@example.com";
 const WHERE_CODEX_TIMEOUT: Duration = Duration::from_secs(2);
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -453,11 +452,17 @@ fn build_login_command(real_codex_path: &Path, runtime_codex_home: &Path) -> Com
     command
 }
 
-fn account_label_requires_edge(account_label: Option<&str>) -> bool {
-    account_label
+fn login_browser_from_metadata(value: Option<&str>) -> Option<LoginBrowser> {
+    value
         .map(str::trim)
-        .map(|label| label.eq_ignore_ascii_case(FORCED_EDGE_LOGIN_ACCOUNT_LABEL))
-        .unwrap_or(false)
+        .filter(|value| !value.is_empty())
+        .and_then(|value| {
+            if value.eq_ignore_ascii_case("edge") {
+                Some(LoginBrowser::Edge)
+            } else {
+                None
+            }
+        })
 }
 
 fn login_browser_for_profile(
@@ -468,11 +473,7 @@ fn login_browser_for_profile(
         .map(str::trim)
         .filter(|name| !name.is_empty())?;
     let metadata = load_profile_metadata(profile_name, codex_home);
-    if account_label_requires_edge(metadata.account_label.as_deref()) {
-        Some(LoginBrowser::Edge)
-    } else {
-        None
-    }
+    login_browser_from_metadata(metadata.login_browser.as_deref())
 }
 
 impl LoginBrowser {
@@ -992,8 +993,7 @@ mod tests {
         resolve_login_browser_app_server_launch, resolve_real_codex_cli,
         resolve_windows_app_target, where_codex_candidate_paths_with_timeout,
         windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
-        LoginBrowserLaunch, WindowsPlatformHooks, FORCED_EDGE_LOGIN_ACCOUNT_LABEL,
-        WINDOWS_STORE_APP_ID,
+        LoginBrowserLaunch, WindowsPlatformHooks, WINDOWS_STORE_APP_ID,
     };
     use crate::platform::hooks::PlatformHooks;
     use crate::windows::{env_guard, EnvVarGuard};
@@ -1011,12 +1011,24 @@ mod tests {
     }
 
     fn write_profile_metadata(codex_home: &Path, profile_name: &str, account_label: &str) {
+        write_profile_metadata_with_login_browser(codex_home, profile_name, account_label, None);
+    }
+
+    fn write_profile_metadata_with_login_browser(
+        codex_home: &Path,
+        profile_name: &str,
+        account_label: &str,
+        login_browser: Option<&str>,
+    ) {
         let profile_dir = codex_home.join("account_backup").join(profile_name);
         fs::create_dir_all(&profile_dir).unwrap();
+        let login_browser = login_browser
+            .map(|value| format!(",\n  \"login_browser\": \"{value}\""))
+            .unwrap_or_default();
         fs::write(
             profile_dir.join("profile.json"),
             format!(
-                "{{\n  \"folder_name\": \"{profile_name}\",\n  \"account_label\": \"{account_label}\"\n}}\n"
+                "{{\n  \"folder_name\": \"{profile_name}\",\n  \"account_label\": \"{account_label}\"{login_browser}\n}}\n"
             ),
         )
         .unwrap();
@@ -1087,15 +1099,21 @@ mod tests {
     }
 
     #[test]
-    fn login_browser_for_profile_routes_forced_edge_account_only() {
-        let codex_home = temp_codex_home("forced-edge-account");
-        write_profile_metadata(
+    fn login_browser_for_profile_routes_explicit_edge_metadata_only() {
+        let codex_home = temp_codex_home("explicit-edge-account");
+        write_profile_metadata_with_login_browser(
             &codex_home,
             "a",
-            &format!("  {}  ", FORCED_EDGE_LOGIN_ACCOUNT_LABEL.to_uppercase()),
+            "edge-enabled@profile.example",
+            Some("  EdGe  "),
         );
-        write_profile_metadata(&codex_home, "b", "someone@example.com");
-        write_profile_metadata(&codex_home, "c", "someone-else@example.com");
+        write_profile_metadata(&codex_home, "b", "plain@profile.example");
+        write_profile_metadata_with_login_browser(
+            &codex_home,
+            "c",
+            "unknown@profile.example",
+            Some("firefox"),
+        );
 
         assert_eq!(
             login_browser_for_profile(Some(&codex_home), Some(" a ")),
@@ -1133,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn login_browser_app_server_launch_routes_forced_edge_account_without_legacy_profile_dir() {
+    fn login_browser_app_server_launch_routes_explicit_edge_metadata_without_legacy_profile_dir() {
         let _guard = env_guard();
         let codex_home = temp_codex_home("browser-app-server-launch");
         let browser_env_vars: &[&'static str] = &["CODEX_SWITCH_EDGE_PATH", "LOCALAPPDATA"];
@@ -1144,7 +1162,12 @@ mod tests {
         fs::write(&edge_path, "").unwrap();
         std::env::set_var("CODEX_SWITCH_EDGE_PATH", &edge_path);
         std::env::remove_var("LOCALAPPDATA");
-        write_profile_metadata(&codex_home, "a", FORCED_EDGE_LOGIN_ACCOUNT_LABEL);
+        write_profile_metadata_with_login_browser(
+            &codex_home,
+            "a",
+            "edge-enabled@profile.example",
+            Some("edge"),
+        );
 
         let real_codex_path = codex_home.join("codex.exe");
         let runtime_codex_home = codex_home
@@ -1163,7 +1186,7 @@ mod tests {
             Some("a"),
         )
         .unwrap()
-        .expect("the forced Edge account should use app-server browser login");
+        .expect("the Edge-marked profile should use app-server browser login");
         let a_args = a_command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())

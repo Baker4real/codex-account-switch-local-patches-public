@@ -1,30 +1,16 @@
 import { existsSync } from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { assertMsvcRustc, resolveWindowsRustEnv } from "./windows-rust-env.mjs";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const cargoHome = "D:\\Codex\\.cargo";
-const rustupBin = join(cargoHome, "bin");
 const tauriCli = join(repoRoot, "node_modules", "@tauri-apps", "cli", "tauri.js");
+const { rustcExe, env } = resolveWindowsRustEnv();
 
-if (!existsSync(join(rustupBin, "rustc.exe"))) {
-  throw new Error(`Missing rustup rustc shim: ${join(rustupBin, "rustc.exe")}`);
-}
 if (!existsSync(tauriCli)) {
   throw new Error(`Missing local Tauri CLI: ${tauriCli}`);
 }
-
-const pathEntries = (process.env.PATH || "")
-  .split(delimiter)
-  .filter((entry) => entry && entry.toLowerCase() !== rustupBin.toLowerCase());
-const env = {
-  ...process.env,
-  CARGO_HOME: cargoHome,
-  RUSTUP_HOME: "D:\\Codex\\.rustup",
-  RUSTC: join(rustupBin, "rustc.exe"),
-  PATH: [rustupBin, ...pathEntries].join(delimiter),
-};
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -46,10 +32,12 @@ function run(command, args, options = {}) {
   return result;
 }
 
-const rustcVersion = run("rustc", ["-vV"], { capture: true }).stdout;
-if (!rustcVersion.includes("host: x86_64-pc-windows-msvc")) {
-  throw new Error(`MSVC build requires rustup's MSVC rustc. Actual rustc:\n${rustcVersion}`);
-}
+const rustcVersion = assertMsvcRustc({
+  rustcExe,
+  env,
+  cwd: repoRoot,
+  context: "Windows MSVC build",
+});
 
-console.log(rustcVersion.trim());
+console.log(rustcVersion);
 run(process.execPath, [tauriCli, "build", "--target", "x86_64-pc-windows-msvc", "--no-bundle"]);

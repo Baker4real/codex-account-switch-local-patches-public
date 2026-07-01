@@ -26,7 +26,7 @@
 - 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `profile.json` 元数据），切换时把目标账号态写入 `~/.codex/`；旧账号的账号态会先按 `auth.json` 身份路由回真实所属 profile，无法识别时拒绝写回旧槽位。
 - **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮，并用来源 badge 区分官方 API、app-server fallback、本地观测或未知数据。
 - **授权缓存状态**：账号卡片和当前账号面板会显示 refresh token / 授权缓存健康状态、可观察到的到期时间或上次刷新时间；当官方登录缓存没有暴露 refresh token 到期时间时，只提示授权缓存建议刷新，不把它误写成固定到期时间。
-- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 指定账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
+- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 profile metadata 显式设置 `login_browser: "edge"` 的账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
 - **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号；per-card 刷新会优先用现有 `access_token` 拉官方 usage，只有 access token 过期或被 401 拒绝时才消耗 `refresh_token`。切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。5 小时或周额度低于 20% 时只提示风险，不自动切换账号。
 - **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
 - **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
@@ -58,7 +58,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 1. 从 Releases 下载并安装 Codex Switch，启动桌面窗口。
 2. 进入「设置」页，确认 **Codex CLI 路径** 已自动填好（默认探测 PATH / `~/.codex/bin`）；缺失时手动指定，状态变绿即可。
 3. 进入「账号」页，点「添加账号」→ 输入账号别名（落地为 `~/.codex/account_backup/<别名>/`）。
-4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，指定账号会打开 Edge；其他账号走普通登录浏览器行为。
+4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，只有 profile metadata 显式设置 `login_browser: "edge"` 的账号会打开 Edge；其他账号走普通登录浏览器行为。
 5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。
 6. 需要清空 quota cache 或重新拉计划 / 额度时，点对应账号的「刷新」。刷新会先用现有 `access_token` 查询官方 usage；只有 access token 过期或后端返回 401 时才走 OAuth refresh。
 
@@ -124,9 +124,9 @@ dist/
     ...
 ```
 
-Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`。本机替换已安装的本地补丁版时，优先使用 `LOCAL_PATCHES.md` 里的“已验证 Windows 编译路径”：先跑 `npm run build -- --mode windows` 做前端 Windows mode 预检，再跑 `npm run tauri:build:windows:portable` 生成 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该 wrapper 会优先使用 `D:\Codex\.cargo\bin` 里的 rustup shim，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`，避免独立安装的 GNU Rust 抢先进入 PATH。
+Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`。本机替换已安装的本地补丁版时，优先使用 `LOCAL_PATCHES.md` 里的“已验证 Windows 编译路径”：先跑 `npm run build -- --mode windows` 做前端 Windows mode 预检，再跑 `npm run tauri:build:windows:portable` 生成 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该 wrapper 默认使用当前环境或系统 `rustup`，也可通过 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 或 `CARGO` 指定工具链，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`。
 
-替换 `D:\Codex\apps\codex_switch\` 时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
+替换本机安装目录时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
 
 ## 版本与发布
 
@@ -159,7 +159,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### per-card「登录」按钮为什么有时变成「取消」
 
-普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版中，账号标签匹配 `FORCED_EDGE_LOGIN_ACCOUNT_LABEL` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
+普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版中，profile metadata 显式设置 `login_browser: "edge"` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
 
 因为定向 Edge 登录复用的是 Edge 当前正常登录状态，点击登录前请确认 Edge 里的 ChatGPT 账号就是目标 profile 要保存的账号。若目标 profile 已有可识别账号，应用会在写入前校验新旧账号标识，不一致时拒绝覆盖旧 `auth.json`。
 

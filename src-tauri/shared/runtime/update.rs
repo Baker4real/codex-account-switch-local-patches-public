@@ -156,11 +156,6 @@ fn fetch_update_json(url: &str) -> AppResult<String> {
     use std::os::windows::process::CommandExt;
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
-    const POWERSHELL_CANDIDATES: [&str; 3] = [
-        r"D:\Codex\tools\PowerShell\7.6.3\pwsh.exe",
-        "pwsh",
-        "powershell",
-    ];
     let script = format!(
         concat!(
             "$ProgressPreference='SilentlyContinue'; ",
@@ -172,8 +167,8 @@ fn fetch_update_json(url: &str) -> AppResult<String> {
     );
 
     let mut last_start_error = None;
-    for candidate in POWERSHELL_CANDIDATES {
-        let output = Command::new(candidate)
+    for candidate in powershell_candidates() {
+        let output = Command::new(&candidate)
             .args([
                 "-NoLogo",
                 "-NoProfile",
@@ -204,6 +199,18 @@ fn fetch_update_json(url: &str) -> AppResult<String> {
         }
     };
     Err(AppError::new("UPDATE_REQUEST_FAILED", message))
+}
+
+#[cfg(windows)]
+fn powershell_candidates() -> Vec<String> {
+    let configured = std::env::var("CODEX_SWITCH_POWERSHELL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    configured
+        .into_iter()
+        .chain(["pwsh".to_string(), "powershell".to_string()])
+        .collect()
 }
 
 fn parse_fetch_output(success: bool, stdout: &[u8], stderr: &[u8]) -> AppResult<String> {
@@ -252,5 +259,21 @@ mod tests {
             Ordering::Equal
         );
         assert_eq!(compare_versions("v1.4.9", "1.5.0").unwrap(), Ordering::Less);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_candidates_use_env_override_before_system_defaults() {
+        let previous = std::env::var_os("CODEX_SWITCH_POWERSHELL");
+        std::env::set_var("CODEX_SWITCH_POWERSHELL", r"C:\Tools\pwsh.exe");
+        let candidates = super::powershell_candidates();
+        assert_eq!(candidates[0], r"C:\Tools\pwsh.exe");
+        assert!(candidates.iter().any(|value| value == "pwsh"));
+        assert!(candidates.iter().any(|value| value == "powershell"));
+        if let Some(previous) = previous {
+            std::env::set_var("CODEX_SWITCH_POWERSHELL", previous);
+        } else {
+            std::env::remove_var("CODEX_SWITCH_POWERSHELL");
+        }
     }
 }

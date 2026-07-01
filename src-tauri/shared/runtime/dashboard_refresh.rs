@@ -150,6 +150,10 @@ pub fn refresh_all_oauth_profile_plans_silent(
     hooks: &dyn PlatformHooks,
     mut refresh_api: impl FnMut(&str, &Path, RefreshOptions) -> ChatGptApiRefreshResult,
 ) -> Result<u32, CommandError> {
+    // Invoked by the frontend on startup and local-day rollover. A profile
+    // whose plan was checked within PLAN_FRESHNESS_TTL_MS (6h) is skipped, and
+    // RefreshOptions keeps OAuth token rotation lazy: only expired access
+    // tokens or a usage 401 trigger rotation.
     let codex_home = get_codex_home();
     let backup_root = get_backup_root(Some(&codex_home));
     let index = super::profiles_index::load_profiles_index(Some(&codex_home))

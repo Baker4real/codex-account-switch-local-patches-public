@@ -53,10 +53,11 @@ fn refresh_active_profile_quota_silent_inner() -> Result<CurrentQuotaResponse, C
     )
 }
 
-/// Daily / startup background pass: serially refresh every OAuth profile's
-/// plan and quota through the usage API without forcing OAuth rotation.
-/// `chatgpt_api` still refreshes tokens when the access_token is expired or
-/// rejected, but a stale plan cache alone must not make a user re-login.
+/// Startup / local-day rollover background pass: serially refresh every OAuth
+/// profile's plan and quota through the usage API. Each profile is skipped
+/// while its plan check is still fresh (6h TTL). `chatgpt_api` rotates OAuth
+/// tokens only when the access_token is expired or the usage endpoint returns
+/// 401; a stale plan cache alone must not spend a refresh_token.
 ///
 /// Failures per-profile are silent — this is best-effort, never blocks
 /// the user, and the dashboard's other refresh paths remain the

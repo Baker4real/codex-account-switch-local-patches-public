@@ -235,21 +235,21 @@
               <span>4</span>
               <div>
                 <h3 data-i18n-key="guideStepRefreshTitle">Refresh quota</h3>
-                <p data-i18n-key="guideStepRefreshText">TODO: explain when to use the per-card Refresh button and what it costs.</p>
+                <p data-i18n-key="guideStepRefreshText">Use Refresh when a card looks stale. It reads quota data without starting a model run, but it still performs a network request.</p>
               </div>
             </article>
             <article class="timeline-card">
               <span>5</span>
               <div>
                 <h3 data-i18n-key="guideStepBaseUrlTitle">Set a custom Base URL (optional)</h3>
-                <p data-i18n-key="guideStepBaseUrlText">TODO: explain when a custom Base URL is needed and the warning indicator.</p>
+                <p data-i18n-key="guideStepBaseUrlText">Use a custom Base URL only for API key profiles that point at a compatible endpoint.</p>
               </div>
             </article>
             <article class="timeline-card">
               <span>6</span>
               <div>
                 <h3 data-i18n-key="guideStepBackupTitle">Where backups live</h3>
-                <p data-i18n-key="guideStepBackupText">TODO: explain the account_backup folder layout and the Open folder button.</p>
+                <p data-i18n-key="guideStepBackupText">The account_backup folder under CODEX_HOME stores one folder per profile with auth and profile metadata.</p>
               </div>
             </article>
           </div>
@@ -257,36 +257,36 @@
           <h3 class="guide-section-heading" data-i18n-key="guideSectionTipsHeading">Tips &amp; warnings</h3>
           <div class="guide-callouts">
             <aside class="guide-callout guide-callout--info">
-              <strong data-i18n-key="guideTipFreshTitle">TODO: Quota freshness tip headline</strong>
-              <p data-i18n-key="guideTipFreshText">TODO: explain the auto-refresh cadence (15s ticker, 5min silent ticker, daily plan refresh).</p>
+              <strong data-i18n-key="guideTipFreshTitle">Refresh cadence</strong>
+              <p data-i18n-key="guideTipFreshText">Local quota is read every 15 seconds. Silent active refresh waits at least 5 minutes, and bulk plan refresh runs on startup or local-day rollover with a 6-hour freshness skip.</p>
             </aside>
             <aside class="guide-callout guide-callout--warn">
-              <strong data-i18n-key="guideTipBaseUrlTitle">TODO: Base URL warning headline</strong>
+              <strong data-i18n-key="guideTipBaseUrlTitle">Base URL applies to API key profiles</strong>
               <p data-i18n-key="guideTipBaseUrlText">ChatGPT/OAuth profiles may keep a Base URL note, but Windows clears root config before using them.</p>
             </aside>
             <aside class="guide-callout guide-callout--success">
-              <strong data-i18n-key="guideTipMultiAccountTitle">TODO: Multi-account headline</strong>
-              <p data-i18n-key="guideTipMultiAccountText">TODO: explain that switching never deletes the previous account state.</p>
+              <strong data-i18n-key="guideTipMultiAccountTitle">Switching preserves saved accounts</strong>
+              <p data-i18n-key="guideTipMultiAccountText">Switch publishes the selected profile into the live Codex home and leaves other account_backup slots intact.</p>
             </aside>
           </div>
 
           <h3 class="guide-section-heading" data-i18n-key="guideSectionFaqHeading">FAQ</h3>
           <div class="guide-faq">
             <details>
-              <summary data-i18n-key="guideFaqResetQ">TODO: FAQ — quota reset timing?</summary>
-              <p data-i18n-key="guideFaqResetA">TODO: answer.</p>
+              <summary data-i18n-key="guideFaqResetQ">When do quota numbers reset?</summary>
+              <p data-i18n-key="guideFaqResetA">Reset times come from Codex and ChatGPT rate-limit windows when the service returns them.</p>
             </details>
             <details>
-              <summary data-i18n-key="guideFaqLoginQ">TODO: FAQ — login fails / Codex CLI not found?</summary>
-              <p data-i18n-key="guideFaqLoginA">TODO: answer (point at Settings → Codex CLI path).</p>
+              <summary data-i18n-key="guideFaqLoginQ">Login fails or Codex CLI is missing?</summary>
+              <p data-i18n-key="guideFaqLoginA">Open Settings and choose the real codex executable. Edge-marked profiles use the app-server browser login path.</p>
             </details>
             <details>
-              <summary data-i18n-key="guideFaqSwitchQ">TODO: FAQ — switch keeps spinning / locked?</summary>
-              <p data-i18n-key="guideFaqSwitchA">TODO: answer (mention .switch.lock auto-cleanup).</p>
+              <summary data-i18n-key="guideFaqSwitchQ">Switch keeps spinning or says it is locked?</summary>
+              <p data-i18n-key="guideFaqSwitchA">A .switch.lock file prevents concurrent writes and is released when the operation finishes; stale locks are cleaned automatically.</p>
             </details>
             <details>
-              <summary data-i18n-key="guideFaqDataQ">TODO: FAQ — where is data stored / how to back up?</summary>
-              <p data-i18n-key="guideFaqDataA">TODO: answer (~/.codex/account_backup, optionally export).</p>
+              <summary data-i18n-key="guideFaqDataQ">Where is account data stored?</summary>
+              <p data-i18n-key="guideFaqDataA">Each profile lives under CODEX_HOME/account_backup. Copy that folder for an external backup and protect exported auth files.</p>
             </details>
           </div>
 
