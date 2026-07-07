@@ -226,68 +226,86 @@ let previewSnapshot: ProfilesSnapshotResponse = {
 };
 
 function previewOpenAiUsageSummary(): OpenAiUsageSummary {
-  const input = 1_800_000;
-  const cached = 1_120_000;
-  const output = 115_000;
-  const totalCost = 2_765_000;
+  const primaryTokens = {
+    input_tokens: 1_800_000,
+    cached_input_tokens: 1_120_000,
+    output_tokens: 115_000,
+    reasoning_output_tokens: 42_000,
+    real_total_tokens: 1_915_000,
+  };
+  const secondaryTokens = {
+    input_tokens: 900_000,
+    cached_input_tokens: 410_000,
+    output_tokens: 78_000,
+    reasoning_output_tokens: 28_000,
+    real_total_tokens: 978_000,
+  };
+  const totalTokens = {
+    input_tokens: primaryTokens.input_tokens + secondaryTokens.input_tokens,
+    cached_input_tokens: primaryTokens.cached_input_tokens + secondaryTokens.cached_input_tokens,
+    output_tokens: primaryTokens.output_tokens + secondaryTokens.output_tokens,
+    reasoning_output_tokens: primaryTokens.reasoning_output_tokens + secondaryTokens.reasoning_output_tokens,
+    real_total_tokens: primaryTokens.real_total_tokens + secondaryTokens.real_total_tokens,
+  };
+  const primaryCost = {
+    input_cost_micros: 1_190_000,
+    cached_input_cost_micros: 196_000,
+    output_cost_micros: 1_379_000,
+    total_cost_micros: 2_765_000,
+    unpriced_tokens: 0,
+  };
+  const secondaryCost = {
+    input_cost_micros: 700_000,
+    cached_input_cost_micros: 71_800,
+    output_cost_micros: 1_092_000,
+    total_cost_micros: 1_863_800,
+    unpriced_tokens: 0,
+  };
+  const totalCost = {
+    input_cost_micros: primaryCost.input_cost_micros + secondaryCost.input_cost_micros,
+    cached_input_cost_micros:
+      primaryCost.cached_input_cost_micros + secondaryCost.cached_input_cost_micros,
+    output_cost_micros: primaryCost.output_cost_micros + secondaryCost.output_cost_micros,
+    total_cost_micros: primaryCost.total_cost_micros + secondaryCost.total_cost_micros,
+    unpriced_tokens: 0,
+  };
   const generatedAt = Date.now();
   return {
     generated_at_ms: generatedAt,
     attribution_since_ms: generatedAt - 6 * 60 * 60 * 1000,
     range_start_ms: generatedAt - 24 * 60 * 60 * 1000,
     range_end_ms: generatedAt,
-    total_requests: 18,
-    tokens: {
-      input_tokens: input,
-      cached_input_tokens: cached,
-      output_tokens: output,
-      reasoning_output_tokens: 42_000,
-      real_total_tokens: input + output,
-    },
-    cost: {
-      input_cost_micros: 1_190_000,
-      cached_input_cost_micros: 196_000,
-      output_cost_micros: 1_379_000,
-      total_cost_micros: totalCost,
-      unpriced_tokens: 0,
-    },
-    cache_hit_rate: cached / input,
+    total_requests: 30,
+    tokens: totalTokens,
+    cost: totalCost,
+    cache_hit_rate: totalTokens.cached_input_tokens / totalTokens.input_tokens,
     accounts: [{
       profile: previewCurrentCard.folder_name,
       account_label: previewCurrentCard.account_label,
       official_source: "OpenAI default",
       request_count: 18,
-      tokens: {
-        input_tokens: input,
-        cached_input_tokens: cached,
-        output_tokens: output,
-        reasoning_output_tokens: 42_000,
-        real_total_tokens: input + output,
-      },
-      cost: {
-        input_cost_micros: 1_190_000,
-        cached_input_cost_micros: 196_000,
-        output_cost_micros: 1_379_000,
-        total_cost_micros: totalCost,
-        unpriced_tokens: 0,
-      },
+      tokens: primaryTokens,
+      cost: primaryCost,
       models: [{
         model: "gpt-5.3-codex",
         request_count: 18,
-        tokens: {
-          input_tokens: input,
-          cached_input_tokens: cached,
-          output_tokens: output,
-          reasoning_output_tokens: 42_000,
-          real_total_tokens: input + output,
-        },
-        cost: {
-          input_cost_micros: 1_190_000,
-          cached_input_cost_micros: 196_000,
-          output_cost_micros: 1_379_000,
-          total_cost_micros: totalCost,
-          unpriced_tokens: 0,
-        },
+        tokens: primaryTokens,
+        cost: primaryCost,
+        priced: true,
+        pricing_note: null,
+      }],
+    }, {
+      profile: "preview-alt",
+      account_label: "preview.secondary@example.com",
+      official_source: "OpenAI default",
+      request_count: 12,
+      tokens: secondaryTokens,
+      cost: secondaryCost,
+      models: [{
+        model: "gpt-5.4",
+        request_count: 12,
+        tokens: secondaryTokens,
+        cost: secondaryCost,
         priced: true,
         pricing_note: null,
       }],
@@ -295,20 +313,15 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     models: [{
       model: "gpt-5.3-codex",
       request_count: 18,
-      tokens: {
-        input_tokens: input,
-        cached_input_tokens: cached,
-        output_tokens: output,
-        reasoning_output_tokens: 42_000,
-        real_total_tokens: input + output,
-      },
-      cost: {
-        input_cost_micros: 1_190_000,
-        cached_input_cost_micros: 196_000,
-        output_cost_micros: 1_379_000,
-        total_cost_micros: totalCost,
-        unpriced_tokens: 0,
-      },
+      tokens: primaryTokens,
+      cost: primaryCost,
+      priced: true,
+      pricing_note: null,
+    }, {
+      model: "gpt-5.4",
+      request_count: 12,
+      tokens: secondaryTokens,
+      cost: secondaryCost,
       priced: true,
       pricing_note: null,
     }],
@@ -396,8 +409,11 @@ function previewOpenAiUsageDataSources(): OpenAiUsageDataSourceSummary[] {
 }
 
 function previewOpenAiUsageDashboard(): OpenAiUsageDashboard {
+  const summary = previewOpenAiUsageSummary();
   return {
-    summary: previewOpenAiUsageSummary(),
+    summary,
+    account_summary: summary.accounts,
+    model_options: summary.models,
     trends: previewOpenAiUsageTrends(),
     logs: previewOpenAiUsageLogs(),
     data_sources: previewOpenAiUsageDataSources(),

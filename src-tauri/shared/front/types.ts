@@ -208,6 +208,8 @@ export interface OpenAiUsageDataSourceSummary {
 
 export interface OpenAiUsageDashboard {
   summary: OpenAiUsageSummary;
+  account_summary: OpenAiUsageAccountSummary[];
+  model_options: OpenAiUsageModelSummary[];
   trends: OpenAiUsageTrendPoint[];
   logs: OpenAiUsageRequestLogPage;
   data_sources: OpenAiUsageDataSourceSummary[];

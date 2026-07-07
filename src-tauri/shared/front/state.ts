@@ -1,6 +1,8 @@
 import type {
+  OpenAiUsageAccountSummary,
   OpenAiUsageSummary,
   OpenAiUsageDataSourceSummary,
+  OpenAiUsageModelSummary,
   OpenAiUsageRangePreset,
   OpenAiUsageRequestLogPage,
   OpenAiUsageTrendPoint,
@@ -24,6 +26,8 @@ export const state = {
   snapshot: null as ProfilesSnapshotResponse | null,
   currentQuota: null as QuotaSummary | null,
   usageSummary: null as OpenAiUsageSummary | null,
+  usageAccountSummary: [] as OpenAiUsageAccountSummary[],
+  usageModelOptions: [] as OpenAiUsageModelSummary[],
   usageTrends: [] as OpenAiUsageTrendPoint[],
   usageLogs: null as OpenAiUsageRequestLogPage | null,
   usageDataSources: [] as OpenAiUsageDataSourceSummary[],

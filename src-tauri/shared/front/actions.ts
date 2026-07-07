@@ -374,6 +374,12 @@ async function loadUsageData(): Promise<void> {
   const dashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
 
   state.usageSummary = dashboard.summary;
+  state.usageAccountSummary = dashboard.account_summary.length > 0
+    ? dashboard.account_summary
+    : dashboard.summary.accounts;
+  state.usageModelOptions = dashboard.model_options.length > 0
+    ? dashboard.model_options
+    : dashboard.summary.models;
   state.usageTrends = dashboard.trends;
   state.usageLogs = dashboard.logs;
   state.usageDataSources = dashboard.data_sources;
@@ -382,6 +388,12 @@ async function loadUsageData(): Promise<void> {
     state.usageLogsPage = totalPages;
     const clampedDashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
     state.usageSummary = clampedDashboard.summary;
+    state.usageAccountSummary = clampedDashboard.account_summary.length > 0
+      ? clampedDashboard.account_summary
+      : clampedDashboard.summary.accounts;
+    state.usageModelOptions = clampedDashboard.model_options.length > 0
+      ? clampedDashboard.model_options
+      : clampedDashboard.summary.models;
     state.usageTrends = clampedDashboard.trends;
     state.usageLogs = clampedDashboard.logs;
     state.usageDataSources = clampedDashboard.data_sources;

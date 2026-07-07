@@ -391,6 +391,8 @@ pub struct OpenAiUsageDataSourceSummary {
 #[serde(default)]
 pub struct OpenAiUsageDashboard {
     pub summary: OpenAiUsageSummary,
+    pub account_summary: Vec<OpenAiUsageAccountSummary>,
+    pub model_options: Vec<OpenAiUsageModelSummary>,
     pub trends: Vec<OpenAiUsageTrendPoint>,
     pub logs: OpenAiUsageRequestLogPage,
     pub data_sources: Vec<OpenAiUsageDataSourceSummary>,

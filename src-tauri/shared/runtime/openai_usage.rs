@@ -176,12 +176,27 @@ pub fn load_openai_usage_dashboard(
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
     let events = load_ledger_events(&conn, &query)?;
+    let account_query = without_account_filter(&query);
+    let account_events = load_ledger_events(&conn, &account_query)?;
+    let account_summary = build_summary_from_events(
+        new_usage_summary(&account_query),
+        &account_events,
+        &account_query,
+    )
+    .accounts;
+    let model_query = without_model_filter(&query);
+    let model_events = load_ledger_events(&conn, &model_query)?;
+    let model_options =
+        build_summary_from_events(new_usage_summary(&model_query), &model_events, &model_query)
+            .models;
     let summary = build_summary_from_events(summary, &events, &query);
     let trends = build_trends(&events, &query);
     let logs = build_request_log_page(&events, page, page_size);
     let data_sources = build_data_source_summaries(&events);
     Ok(OpenAiUsageDashboard {
         summary,
+        account_summary,
+        model_options,
         trends,
         logs,
         data_sources,
@@ -197,6 +212,19 @@ fn new_usage_summary(query: &OpenAiUsageQuery) -> OpenAiUsageSummary {
         range_end_ms: query.end_date.and_then(end_seconds_to_ms),
         ..OpenAiUsageSummary::default()
     }
+}
+
+fn without_account_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
+    let mut next = query.clone();
+    next.profile = None;
+    next.account_label = None;
+    next
+}
+
+fn without_model_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
+    let mut next = query.clone();
+    next.model = None;
+    next
 }
 
 fn build_summary_from_events(
@@ -2044,6 +2072,104 @@ mod tests {
         assert_eq!(summary.accounts[0].tokens.input_tokens, 1000);
         assert_eq!(summary.accounts[1].profile, "b");
         assert_eq!(summary.accounts[1].tokens.input_tokens, 500);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_facets_keep_time_scope_without_self_filter_collapse() {
+        let codex_home = temp_codex_home("dashboard-facets");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("a".to_string()),
+                account_label: Some("acct_A".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
+                profile: Some("b".to_string()),
+                account_label: Some("acct_B".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-facets"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"account-a-only-model"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:03.500Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:05.000Z","type":"turn_context","payload":{"model":"unknown-model"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1900,"cached_input_tokens":260,"output_tokens":250,"reasoning_output_tokens":50}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:10.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2500,"cached_input_tokens":300,"output_tokens":300,"reasoning_output_tokens":60}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let account_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:07.000Z") / 1000) as i64),
+            profile: Some("b".to_string()),
+            ..OpenAiUsageQuery::default()
+        };
+        let account_dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(account_query), 1, 20).unwrap();
+
+        assert_eq!(account_dashboard.summary.accounts.len(), 1);
+        assert_eq!(account_dashboard.summary.accounts[0].profile, "b");
+        assert_eq!(
+            account_dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.profile.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(account_dashboard.account_summary[1].request_count, 2);
+
+        let model_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:07.000Z") / 1000) as i64),
+            profile: Some("b".to_string()),
+            model: Some("unknown-model".to_string()),
+            ..OpenAiUsageQuery::default()
+        };
+        let model_dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(model_query), 1, 20).unwrap();
+
+        assert_eq!(model_dashboard.summary.models.len(), 1);
+        assert_eq!(model_dashboard.summary.models[0].model, "unknown-model");
+        assert_eq!(
+            model_dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.profile.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b"]
+        );
+        assert_eq!(
+            model_dashboard
+                .model_options
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<Vec<_>>(),
+            vec!["gpt-5.3-codex", "unknown-model"]
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 

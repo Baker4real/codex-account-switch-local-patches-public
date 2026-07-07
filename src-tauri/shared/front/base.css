@@ -1640,6 +1640,7 @@ html[data-theme] .toast.is-error {
   height: 16px;
 }
 
+.usage-account-panel,
 .usage-summary-panel,
 .usage-trend-panel,
 .usage-detail-panel {
@@ -1662,6 +1663,10 @@ html[data-theme] .toast.is-error {
   border-radius: 8px;
   background: var(--card-background);
   box-shadow: var(--card-shadow);
+}
+
+.usage-table-row--selected {
+  background: var(--control-surface-current);
 }
 
 .usage-hero-card,

@@ -189,6 +189,8 @@ const enMessages = {
   usageNoAttribution: "No provable official OpenAI usage yet",
   usageNoAttributionCopy:
     "Codex session logs do not record historical Base URL snapshots. Strict mode excludes records that cannot be proven official or attributed to the active account.",
+  usageNoFilteredUsage: "No usage matches the current filters",
+  usageNoFilteredUsageCopy: "Adjust the account, model, or time range to inspect the available usage rows.",
   usageLoading: "Loading usage data...",
   usageLoadFailed: "Usage data could not be loaded.",
   usagePricedCost: "Priced cost",
@@ -565,6 +567,8 @@ const messages: Record<Locale, Messages> = {
     usageNoAttribution: "暂无可证明的官方 OpenAI 使用记录",
     usageNoAttributionCopy:
       "Codex session 记录不保存历史 Base URL 快照。严格模式会排除无法证明官方来源或无法归属到当前账号的记录。",
+    usageNoFilteredUsage: "当前筛选条件下没有使用记录",
+    usageNoFilteredUsageCopy: "可以调整账号、模型或时间范围查看已有统计。",
     usageLoading: "正在加载使用统计...",
     usageLoadFailed: "使用统计加载失败。",
     usagePricedCost: "已定价费用",

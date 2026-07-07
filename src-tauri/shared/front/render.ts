@@ -1,6 +1,7 @@
 import type {
   CurrentCard,
   DashboardViewModel,
+  OpenAiUsageAccountSummary,
   OpenAiUsageCostBreakdown,
   OpenAiUsageRequestLog,
   OpenAiUsageSummary,
@@ -73,6 +74,7 @@ export const elements = {
   usageAccountFilter: optionalElement<HTMLSelectElement>("usage-account-filter"),
   usageModelFilter: optionalElement<HTMLSelectElement>("usage-model-filter"),
   usageRefreshIntervalSelect: optionalElement<HTMLSelectElement>("usage-refresh-interval-select"),
+  usageAccountPanel: optionalElement<HTMLDivElement>("usage-account-panel"),
   usageSummaryPanel: optionalElement<HTMLDivElement>("usage-summary-panel"),
   usageTrendPanel: optionalElement<HTMLDivElement>("usage-trend-panel"),
   usageDetailPanel: optionalElement<HTMLDivElement>("usage-detail-panel"),
@@ -842,11 +844,18 @@ export function renderShellOverview(dashboard: DashboardViewModel | null): void 
 }
 
 export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
-  if (!elements.usageSummaryPanel || !elements.usageTrendPanel || !elements.usageDetailPanel) {
+  if (
+    !elements.usageSummaryPanel ||
+    !elements.usageTrendPanel ||
+    !elements.usageDetailPanel
+  ) {
     return;
   }
   renderUsageControls(summary);
   if (state.usageLoadError) {
+    if (elements.usageAccountPanel) {
+      elements.usageAccountPanel.innerHTML = "";
+    }
     elements.usageSummaryPanel.innerHTML = `
       <article class="usage-empty-state usage-empty-state--error">
         <strong>${t(state.locale, "usageLoadFailed")}</strong>
@@ -859,6 +868,9 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
   }
 
   if (!state.usageLoaded) {
+    if (elements.usageAccountPanel) {
+      elements.usageAccountPanel.innerHTML = "";
+    }
     elements.usageSummaryPanel.innerHTML = `
       <article class="usage-empty-state">
         <strong>${t(state.locale, "usageLoading")}</strong>
@@ -869,18 +881,40 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
     return;
   }
 
+  const accountTable = buildUsageAccountTable(state.usageAccountSummary);
   if (!summary || summary.total_requests === 0) {
+    const hasActiveUsageFilter = Boolean(
+      state.usageProfileFilter ||
+        state.usageModelFilter ||
+        state.usageStatusCodeFilter != null,
+    );
+    const hasFacetUsage = state.usageAccountSummary.length > 0 || state.usageModelOptions.length > 0;
+    const emptyTitleKey = hasActiveUsageFilter && hasFacetUsage
+      ? "usageNoFilteredUsage"
+      : "usageNoAttribution";
+    const emptyCopyKey = hasActiveUsageFilter && hasFacetUsage
+      ? "usageNoFilteredUsageCopy"
+      : "usageNoAttributionCopy";
+    if (elements.usageAccountPanel) {
+      elements.usageAccountPanel.innerHTML = accountTable;
+    }
     elements.usageSummaryPanel.innerHTML = `
       <article class="usage-empty-state">
-        <strong>${t(state.locale, "usageNoAttribution")}</strong>
-        <p>${t(state.locale, "usageNoAttributionCopy")}</p>
+        <strong>${t(state.locale, emptyTitleKey)}</strong>
+        <p>${t(state.locale, emptyCopyKey)}</p>
       </article>
     `;
     elements.usageTrendPanel.innerHTML = buildUsageTrendMarkup();
-    elements.usageDetailPanel.innerHTML = buildUsageEvidenceMarkup(summary);
+    elements.usageDetailPanel.innerHTML = `
+      ${elements.usageAccountPanel ? "" : accountTable}
+      ${buildUsageEvidenceMarkup(summary)}
+    `;
     return;
   }
 
+  if (elements.usageAccountPanel) {
+    elements.usageAccountPanel.innerHTML = accountTable;
+  }
   elements.usageSummaryPanel.innerHTML = `
     <div class="usage-hero-grid">
       <article class="usage-hero-card usage-hero-card--wide">
@@ -916,7 +950,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
   elements.usageTrendPanel.innerHTML = buildUsageTrendMarkup();
   elements.usageDetailPanel.innerHTML = `
     ${buildUsageLogsTable()}
-    ${buildUsageAccountTable(summary)}
+    ${elements.usageAccountPanel ? "" : accountTable}
     ${buildUsageModelTable(summary)}
     ${buildUsageDataSourceMarkup()}
     ${buildUsageEvidenceMarkup(summary)}
@@ -945,32 +979,45 @@ function renderUsageControls(summary: OpenAiUsageSummary | null): void {
   elements.usageEndInput.disabled = !custom || state.usageLiveEnd;
   elements.usageLiveEndCheckbox.disabled = !custom;
 
+  const accountOptions = state.usageAccountSummary.length > 0
+    ? state.usageAccountSummary
+    : summary?.accounts ?? [];
   const accounts = new Map<string, string>();
-  for (const account of summary?.accounts ?? []) {
+  for (const account of accountOptions) {
     accounts.set(account.profile, account.account_label ?? account.profile);
   }
   if (state.usageProfileFilter && !accounts.has(state.usageProfileFilter)) {
     accounts.set(state.usageProfileFilter, state.usageProfileFilter);
   }
-  elements.usageAccountFilter.innerHTML = [
+  const accountOptionsHtml = [
     `<option value="">${t(state.locale, "usageAllAccounts")}</option>`,
     ...Array.from(accounts.entries()).map(([profile, label]) => (
       `<option value="${escapeHtml(profile)}">${escapeHtml(label)}</option>`
     )),
   ].join("");
-  elements.usageAccountFilter.value = state.usageProfileFilter ?? "";
+  setSelectOptions(elements.usageAccountFilter, accountOptionsHtml, state.usageProfileFilter ?? "");
 
-  const models = new Set((summary?.models ?? []).map((model) => model.model));
+  const modelOptions = state.usageModelOptions.length > 0
+    ? state.usageModelOptions
+    : summary?.models ?? [];
+  const models = new Set(modelOptions.map((model) => model.model));
   if (state.usageModelFilter) {
     models.add(state.usageModelFilter);
   }
-  elements.usageModelFilter.innerHTML = [
+  const modelOptionsHtml = [
     `<option value="">${t(state.locale, "usageAllModels")}</option>`,
     ...Array.from(models).map((model) => (
       `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
     )),
   ].join("");
-  elements.usageModelFilter.value = state.usageModelFilter ?? "";
+  setSelectOptions(elements.usageModelFilter, modelOptionsHtml, state.usageModelFilter ?? "");
+}
+
+function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value: string): void {
+  if (select.innerHTML !== optionsHtml) {
+    select.innerHTML = optionsHtml;
+  }
+  select.value = value;
 }
 
 function formatDateTimeLocalInput(value: number | null): string {
@@ -1001,9 +1048,16 @@ function buildUsageTokenMetric(labelKey: MessageKey, value: number): string {
   `;
 }
 
-function buildUsageAccountTable(summary: OpenAiUsageSummary): string {
-  const rows = summary.accounts.map((account) => `
-    <tr>
+function buildUsageAccountTable(accounts: OpenAiUsageAccountSummary[]): string {
+  if (accounts.length === 0) {
+    return "";
+  }
+  const rows = accounts.map((account) => {
+    const selectedClass = state.usageProfileFilter === account.profile
+      ? ` class="usage-table-row--selected"`
+      : "";
+    return `
+    <tr${selectedClass}>
       <td>${escapeHtml(account.profile)}</td>
       <td>${escapeHtml(account.account_label ?? "--")}</td>
       <td>${escapeHtml(account.official_source)}</td>
@@ -1011,7 +1065,8 @@ function buildUsageAccountTable(summary: OpenAiUsageSummary): string {
       <td>${formatInteger(account.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(account.cost)}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
   return `
     <article class="usage-table-card">
       <h3>${t(state.locale, "usageAccounts")}</h3>
