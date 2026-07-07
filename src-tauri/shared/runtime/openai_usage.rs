@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, BTreeMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -6,22 +6,22 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::errors::{AppError, AppResult};
 use crate::models::{
     OpenAiUsageAccountSummary, OpenAiUsageCostBreakdown, OpenAiUsageDashboard,
-    OpenAiUsageDataSourceSummary, OpenAiUsageExclusions, OpenAiUsageModelSummary, OpenAiUsageQuery,
-    OpenAiUsageRequestLog, OpenAiUsageRequestLogPage, OpenAiUsageSummary, OpenAiUsageTokenTotals,
-    OpenAiUsageTrendPoint, ProfileIndexEntry,
+    OpenAiUsageDataSourceSummary, OpenAiUsageExclusions, OpenAiUsageLayerSummary,
+    OpenAiUsageModelSummary, OpenAiUsageQuery, OpenAiUsageRequestLog, OpenAiUsageRequestLogPage,
+    OpenAiUsageSummary, OpenAiUsageTokenTotals, OpenAiUsageTrendPoint, ProfileIndexEntry,
 };
 
-use super::metadata::load_account_identity_from_path;
+use super::metadata::{load_account_identity_from_path, AccountIdentity};
 use super::paths::{
     get_backup_root, get_codex_home, get_current_profile_file, get_openai_usage_attribution_path,
-    get_openai_usage_ledger_path,
+    get_openai_usage_ledger_path, USAGE_EVIDENCE_DIRNAME,
 };
 use super::profiles_index::load_profiles_index;
 use super::session_files::{collect_jsonl_files, file_modified_ms};
@@ -29,6 +29,43 @@ use super::session_files::{collect_jsonl_files, file_modified_ms};
 const PRICING_SOURCE: &str = "OpenAI API pricing";
 const PRICING_SOURCE_URL: &str = "https://developers.openai.com/api/docs/pricing";
 const PRICING_CHECKED_AT: &str = "2026-07-07";
+const EVIDENCE_PARSER_VERSION: &str = "openai-usage-evidence-v2-parser-1";
+const EVIDENCE_CLASSIFIER_VERSION: &str = "openai-usage-evidence-v2-classifier-2";
+const EVIDENCE_DEDUPE_VERSION: &str = "openai-usage-evidence-v2-dedupe-2";
+const LEDGER_SCHEMA_VERSION: &str = "openai-usage-ledger-schema-3";
+const LAYER_CLASSIFIER_VERSION: &str = "openai-usage-layer-classifier-1";
+const ATTRIBUTION_BACKFILL_VERSION: &str = "openai-usage-attribution-backfill-1";
+const PRICING_VERSION: &str = PRICING_CHECKED_AT;
+const SOURCE_OPENAI_RESPONSE_USAGE: &str = "openai_response_usage";
+const SOURCE_CCSWITCH_PROXY: &str = "ccswitch_proxy";
+const SOURCE_CODEX_SESSION_JSONL: &str = "codex_session_jsonl";
+const SOURCE_CCSWITCH_CODEX_SESSION: &str = "ccswitch_codex_session";
+const SOURCE_CCSWITCH_ROLLUP: &str = "ccswitch_rollup";
+const DECISION_ACCEPTED: &str = "accepted";
+const DECISION_CANDIDATE: &str = "candidate";
+const DECISION_REJECTED: &str = "rejected";
+const DECISION_SUPERSEDED: &str = "superseded";
+const LEDGER_LAYER_STRICT_PROVEN: &str = "strict_proven";
+const LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED: &str = "legacy_profile_attributed";
+const LEDGER_LAYER_CANDIDATE_UNATTRIBUTED: &str = "candidate_unattributed";
+const LEDGER_LAYER_REJECTED_INVALID: &str = "rejected_invalid";
+const LEDGER_LAYER_SUPERSEDED: &str = "superseded";
+const ATTRIBUTION_KIND_STRICT_ACCOUNT: &str = "strict_account";
+const ATTRIBUTION_KIND_LEGACY_PROFILE: &str = "legacy_profile";
+const ATTRIBUTION_KIND_UNATTRIBUTED: &str = "unattributed";
+const SCOPE_STRICT: &str = "strict";
+const SCOPE_LEGACY: &str = "legacy";
+const SCOPE_COMBINED_ATTRIBUTED: &str = "combined_attributed";
+const SCOPE_CANDIDATE: &str = "candidate";
+const SCOPE_EXCLUDED: &str = "excluded";
+const CONFIDENCE_PROVEN: &str = "proven";
+const CONFIDENCE_HIGH: &str = "high";
+const CONFIDENCE_LOW: &str = "low";
+const CONFIDENCE_UNPROVEN: &str = "unproven";
+const USAGE_SHAPE_CUMULATIVE_TOTAL_DELTA: &str = "cumulative_total_delta";
+const USAGE_SHAPE_LAST_TOKEN_USAGE: &str = "last_token_usage";
+const USAGE_SHAPE_PROXY_REQUEST: &str = "proxy_request";
+const USAGE_SHAPE_DAILY_ROLLUP: &str = "daily_rollup";
 
 #[derive(Clone, Copy)]
 struct ModelPricing {
@@ -80,8 +117,14 @@ struct ModelAggregate {
 
 #[derive(Default)]
 struct AccountAggregate {
+    profile: String,
+    account_identity_key: Option<String>,
+    legacy_account_key: Option<String>,
     account_label: Option<String>,
     official_source: String,
+    ledger_layer: String,
+    attribution_kind: String,
+    attribution_window_id: Option<String>,
     aggregate: Aggregate,
     models: BTreeMap<String, ModelAggregate>,
 }
@@ -92,6 +135,13 @@ struct UsageCounts {
     cached_input_tokens: u64,
     output_tokens: u64,
     reasoning_output_tokens: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParsedUsage {
+    counts: UsageCounts,
+    usage_shape: &'static str,
+    usage_confidence: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -107,15 +157,25 @@ struct AttributionContext {
     account_label: Option<String>,
     official_source: String,
     attribution_since_ms: u64,
+    account_identity_key: Option<String>,
+    legacy_account_key: Option<String>,
+    identity_source: Option<String>,
+    identity_observed_at_ms: Option<u64>,
+    ledger_layer: String,
+    layer_reason: Option<String>,
+    attribution_kind: String,
+    attribution_window_id: Option<String>,
 }
 
 #[derive(Clone)]
 struct UsageEvent {
+    evidence_id: String,
     request_id: String,
     fingerprint: String,
     session_id: String,
     profile: String,
     account_label: Option<String>,
+    account_identity_key: String,
     official_source: String,
     model: String,
     delta: UsageCounts,
@@ -123,6 +183,266 @@ struct UsageEvent {
     status_code: u16,
     created_at_ms: u64,
     data_source: String,
+    source_type: String,
+    source_priority: i64,
+    usage_confidence: String,
+    pricing_model: String,
+}
+
+#[derive(Clone)]
+struct UsageFact {
+    evidence_id: String,
+    request_id: String,
+    fingerprint: String,
+    session_id: String,
+    profile: String,
+    account_label: Option<String>,
+    account_identity_key: Option<String>,
+    legacy_account_key: Option<String>,
+    official_source: String,
+    ledger_layer: String,
+    layer_reason: Option<String>,
+    attribution_kind: String,
+    attribution_window_id: Option<String>,
+    model: String,
+    delta: UsageCounts,
+    cost: CalculatedCost,
+    status_code: u16,
+    created_at_ms: u64,
+    data_source: String,
+    source_type: String,
+    source_priority: i64,
+    usage_confidence: String,
+    pricing_model: String,
+}
+
+#[derive(Clone)]
+struct UsageEvidence {
+    evidence_id: String,
+    request_id: Option<String>,
+    fingerprint: Option<String>,
+    session_id: Option<String>,
+    source_type: String,
+    source_priority: i64,
+    source_locator: String,
+    source_hash: String,
+    parser_version: String,
+    event_started_at_ms: Option<u64>,
+    event_completed_at_ms: Option<u64>,
+    observed_at_ms: Option<u64>,
+    turn_index: Option<u64>,
+    response_id: Option<String>,
+    previous_response_id: Option<String>,
+    model: Option<String>,
+    request_model: Option<String>,
+    pricing_model: Option<String>,
+    usage_shape: String,
+    usage_confidence: String,
+    delta: Option<UsageCounts>,
+    raw_usage_json: Option<String>,
+    profile: Option<String>,
+    account_identity_key: Option<String>,
+    account_label: Option<String>,
+    identity_source: Option<String>,
+    identity_observed_at_ms: Option<u64>,
+    account_confidence: String,
+    effective_base_url: Option<String>,
+    official_source: Option<String>,
+    official_confidence: String,
+    status_code: Option<u16>,
+    decision: String,
+    decision_reason: Option<String>,
+    superseded_by: Option<String>,
+    ledger_layer: String,
+    layer_reason: Option<String>,
+    attribution_kind: String,
+    attribution_window_id: Option<String>,
+    legacy_account_key: Option<String>,
+    created_at_ms: u64,
+}
+
+struct EvidenceDecision {
+    evidence: UsageEvidence,
+    accepted: Option<UsageEvent>,
+    fact: Option<UsageFact>,
+}
+
+struct EvidenceClassifier;
+
+impl EvidenceClassifier {
+    fn accept_session_evidence(evidence: UsageEvidence, cost: CalculatedCost) -> EvidenceDecision {
+        let fact = if evidence.decision == DECISION_ACCEPTED
+            && matches!(
+                evidence.ledger_layer.as_str(),
+                LEDGER_LAYER_STRICT_PROVEN | LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED
+            ) {
+            usage_fact_from_evidence(&evidence, cost.clone())
+        } else {
+            None
+        };
+        let accepted = if evidence.decision == DECISION_ACCEPTED {
+            match (
+                evidence.request_id.clone(),
+                evidence.fingerprint.clone(),
+                evidence.session_id.clone(),
+                evidence.profile.clone(),
+                evidence.account_identity_key.clone(),
+                evidence.official_source.clone(),
+                evidence.model.clone(),
+                evidence.delta,
+                evidence.status_code,
+                evidence.event_completed_at_ms,
+            ) {
+                (
+                    Some(request_id),
+                    Some(fingerprint),
+                    Some(session_id),
+                    Some(profile),
+                    Some(account_identity_key),
+                    Some(official_source),
+                    Some(model),
+                    Some(delta),
+                    Some(status_code),
+                    Some(created_at_ms),
+                ) => Some(UsageEvent {
+                    evidence_id: evidence.evidence_id.clone(),
+                    request_id,
+                    fingerprint,
+                    session_id,
+                    profile,
+                    account_label: evidence.account_label.clone(),
+                    account_identity_key,
+                    official_source,
+                    model: model.clone(),
+                    delta,
+                    cost,
+                    status_code,
+                    created_at_ms,
+                    data_source: official_data_source().to_string(),
+                    source_type: evidence.source_type.clone(),
+                    source_priority: evidence.source_priority,
+                    usage_confidence: evidence.usage_confidence.clone(),
+                    pricing_model: evidence.pricing_model.clone().unwrap_or(model),
+                }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        EvidenceDecision {
+            evidence,
+            accepted,
+            fact,
+        }
+    }
+}
+
+fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> Option<UsageFact> {
+    let request_id = evidence.request_id.clone()?;
+    let fingerprint = evidence.fingerprint.clone()?;
+    let session_id = evidence.session_id.clone()?;
+    let profile = evidence.profile.clone()?;
+    let official_source = evidence.official_source.clone()?;
+    let model = evidence.model.clone()?;
+    let delta = evidence.delta?;
+    let status_code = evidence.status_code?;
+    let created_at_ms = evidence.event_completed_at_ms?;
+    Some(UsageFact {
+        evidence_id: evidence.evidence_id.clone(),
+        request_id,
+        fingerprint,
+        session_id,
+        profile,
+        account_label: evidence.account_label.clone(),
+        account_identity_key: evidence.account_identity_key.clone(),
+        legacy_account_key: evidence.legacy_account_key.clone(),
+        official_source,
+        ledger_layer: evidence.ledger_layer.clone(),
+        layer_reason: evidence.layer_reason.clone(),
+        attribution_kind: evidence.attribution_kind.clone(),
+        attribution_window_id: evidence.attribution_window_id.clone(),
+        model: model.clone(),
+        delta,
+        cost,
+        status_code,
+        created_at_ms,
+        data_source: official_data_source().to_string(),
+        source_type: evidence.source_type.clone(),
+        source_priority: evidence.source_priority,
+        usage_confidence: evidence.usage_confidence.clone(),
+        pricing_model: evidence.pricing_model.clone().unwrap_or(model),
+    })
+}
+
+trait UsageEvidenceAdapter {
+    fn source_type(&self) -> &'static str;
+    fn collect(&self, _codex_home: &Path) -> AppResult<Vec<UsageEvidence>>;
+}
+
+struct FutureOpenAiResponseUsageAdapter;
+
+impl UsageEvidenceAdapter for FutureOpenAiResponseUsageAdapter {
+    fn source_type(&self) -> &'static str {
+        SOURCE_OPENAI_RESPONSE_USAGE
+    }
+
+    fn collect(&self, _codex_home: &Path) -> AppResult<Vec<UsageEvidence>> {
+        Ok(Vec::new())
+    }
+}
+
+#[derive(Default)]
+struct EvidenceDecisionCounts {
+    accepted: u64,
+    candidate: u64,
+    rejected: u64,
+    superseded: u64,
+    strict_proven: u64,
+    legacy_profile_attributed: u64,
+    candidate_unattributed: u64,
+    rejected_invalid: u64,
+}
+
+struct UsageDedupeEngine {
+    request_ids: HashMap<String, String>,
+    fingerprints: HashMap<String, String>,
+}
+
+impl UsageDedupeEngine {
+    fn accept_or_reason(
+        &mut self,
+        request_id: &str,
+        fingerprint: &str,
+        evidence_id: &str,
+    ) -> Option<(&'static str, String)> {
+        if let Some(existing) = self.request_ids.get(request_id) {
+            return Some(("duplicate request_id", existing.clone()));
+        }
+        if let Some(existing) = self.fingerprints.get(fingerprint) {
+            return Some(("duplicate fingerprint", existing.clone()));
+        }
+        self.request_ids
+            .insert(request_id.to_string(), evidence_id.to_string());
+        self.fingerprints
+            .insert(fingerprint.to_string(), evidence_id.to_string());
+        None
+    }
+}
+
+impl Default for UsageDedupeEngine {
+    fn default() -> Self {
+        Self {
+            request_ids: HashMap::new(),
+            fingerprints: HashMap::new(),
+        }
+    }
+}
+
+struct UsageLoadResult {
+    events: Vec<UsageEvent>,
+    facts: Vec<UsageFact>,
+    evidence: Vec<UsageEvidence>,
+    decisions: EvidenceDecisionCounts,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -130,6 +450,7 @@ struct AttributionRecord {
     observed_at_ms: u64,
     profile: Option<String>,
     account_label: Option<String>,
+    account_identity_key: Option<String>,
     openai_base_url: Option<String>,
     official_source: Option<String>,
     is_official_openai: bool,
@@ -138,6 +459,7 @@ struct AttributionRecord {
 
 impl AttributionRecord {
     fn context(&self) -> Option<AttributionContext> {
+        let account_identity_key = self.account_identity_key.clone()?;
         self.is_official_openai.then(|| AttributionContext {
             profile: self
                 .profile
@@ -149,6 +471,45 @@ impl AttributionRecord {
                 .clone()
                 .unwrap_or_else(|| "OpenAI default".to_string()),
             attribution_since_ms: self.observed_at_ms,
+            account_identity_key: Some(account_identity_key),
+            legacy_account_key: None,
+            identity_source: Some("attribution_record".to_string()),
+            identity_observed_at_ms: Some(self.observed_at_ms),
+            ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
+            layer_reason: Some("account identity key recorded with official source".to_string()),
+            attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
+            attribution_window_id: Some(self.observed_at_ms.to_string()),
+        })
+    }
+
+    fn legacy_context(&self) -> Option<AttributionContext> {
+        if !self.is_official_openai || self.account_identity_key.is_some() {
+            return None;
+        }
+        let profile = self.profile.as_deref()?.trim();
+        if profile.is_empty() {
+            return None;
+        }
+        let attribution_window_id = self.observed_at_ms.to_string();
+        Some(AttributionContext {
+            profile: profile.to_string(),
+            account_label: self.account_label.clone(),
+            official_source: self
+                .official_source
+                .clone()
+                .unwrap_or_else(|| "OpenAI default".to_string()),
+            attribution_since_ms: self.observed_at_ms,
+            account_identity_key: None,
+            legacy_account_key: Some(legacy_account_key(profile, &attribution_window_id)),
+            identity_source: Some("legacy_attribution_record".to_string()),
+            identity_observed_at_ms: Some(self.observed_at_ms),
+            ledger_layer: LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED.to_string(),
+            layer_reason: Some(
+                "official source and profile were recorded before account identity keys existed"
+                    .to_string(),
+            ),
+            attribution_kind: ATTRIBUTION_KIND_LEGACY_PROFILE.to_string(),
+            attribution_window_id: Some(attribution_window_id),
         })
     }
 }
@@ -161,8 +522,9 @@ pub fn load_openai_usage_summary(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let events = load_ledger_events(&conn, &query)?;
-    Ok(build_summary_from_events(summary, &events, &query))
+    let facts = load_usage_facts(&conn, &query)?;
+    let summary = build_summary_from_facts(summary, &facts, &query);
+    attach_layer_summaries(&conn, &query, summary)
 }
 
 pub fn load_openai_usage_dashboard(
@@ -175,24 +537,28 @@ pub fn load_openai_usage_dashboard(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let events = load_ledger_events(&conn, &query)?;
-    let account_query = without_account_filter(&query);
-    let account_events = load_ledger_events(&conn, &account_query)?;
-    let account_summary = build_summary_from_events(
+    let facts = load_usage_facts(&conn, &query)?;
+    let account_query = account_visibility_query(&query);
+    let account_facts = load_usage_facts(&conn, &account_query)?;
+    let account_summary = build_summary_from_facts(
         new_usage_summary(&account_query),
-        &account_events,
+        &account_facts,
         &account_query,
     )
     .accounts;
     let model_query = without_model_filter(&query);
-    let model_events = load_ledger_events(&conn, &model_query)?;
+    let model_facts = load_usage_facts(&conn, &model_query)?;
     let model_options =
-        build_summary_from_events(new_usage_summary(&model_query), &model_events, &model_query)
+        build_summary_from_facts(new_usage_summary(&model_query), &model_facts, &model_query)
             .models;
-    let summary = build_summary_from_events(summary, &events, &query);
-    let trends = build_trends(&events, &query);
-    let logs = build_request_log_page(&events, page, page_size);
-    let data_sources = build_data_source_summaries(&events);
+    let summary = attach_layer_summaries(
+        &conn,
+        &query,
+        build_summary_from_facts(summary, &facts, &query),
+    )?;
+    let trends = build_trends(&facts, &query);
+    let logs = build_request_log_page(&facts, page, page_size);
+    let data_sources = build_data_source_summaries(&facts);
     Ok(OpenAiUsageDashboard {
         summary,
         account_summary,
@@ -208,10 +574,32 @@ fn new_usage_summary(query: &OpenAiUsageQuery) -> OpenAiUsageSummary {
         generated_at_ms: current_time_ms(),
         pricing_source: PRICING_SOURCE.to_string(),
         pricing_checked_at: PRICING_CHECKED_AT.to_string(),
+        scope: normalized_usage_scope(query).to_string(),
         range_start_ms: query.start_date.and_then(seconds_to_ms),
         range_end_ms: query.end_date.and_then(end_seconds_to_ms),
         ..OpenAiUsageSummary::default()
     }
+}
+
+fn normalized_usage_scope(query: &OpenAiUsageQuery) -> &'static str {
+    match query
+        .scope
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(SCOPE_LEGACY) => SCOPE_LEGACY,
+        Some(SCOPE_COMBINED_ATTRIBUTED) => SCOPE_COMBINED_ATTRIBUTED,
+        Some(SCOPE_CANDIDATE) => SCOPE_CANDIDATE,
+        Some(SCOPE_EXCLUDED) => SCOPE_EXCLUDED,
+        _ => SCOPE_STRICT,
+    }
+}
+
+fn query_with_scope(query: &OpenAiUsageQuery, scope: &str) -> OpenAiUsageQuery {
+    let mut next = query.clone();
+    next.scope = Some(scope.to_string());
+    next
 }
 
 fn without_account_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
@@ -221,25 +609,30 @@ fn without_account_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
     next
 }
 
+fn account_visibility_query(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
+    let mut next = without_account_filter(query);
+    if normalized_usage_scope(query) == SCOPE_STRICT {
+        next.scope = Some(SCOPE_COMBINED_ATTRIBUTED.to_string());
+    }
+    next
+}
+
 fn without_model_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
     let mut next = query.clone();
     next.model = None;
     next
 }
 
-fn build_summary_from_events(
+fn build_summary_from_facts(
     mut summary: OpenAiUsageSummary,
-    events: &[UsageEvent],
+    facts: &[UsageFact],
     query: &OpenAiUsageQuery,
 ) -> OpenAiUsageSummary {
     let mut accounts: BTreeMap<String, AccountAggregate> = BTreeMap::new();
     let mut global_models: BTreeMap<String, ModelAggregate> = BTreeMap::new();
 
-    for event in events
-        .iter()
-        .filter(|event| event_matches_query(event, &query))
-    {
-        add_event_usage(&mut accounts, &mut global_models, event);
+    for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
+        add_fact_usage(&mut accounts, &mut global_models, fact);
     }
 
     let total = total_account_aggregate(&accounts);
@@ -249,7 +642,7 @@ fn build_summary_from_events(
     summary.cache_hit_rate = cache_hit_rate(&summary.tokens);
     summary.accounts = accounts
         .into_iter()
-        .map(|(profile, account)| account_to_summary(profile, account))
+        .map(|(_, account)| account_to_summary(account))
         .collect();
     summary.models = models_to_summary(global_models);
     summary
@@ -263,8 +656,8 @@ pub fn load_openai_usage_trends(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let events = load_ledger_events(&conn, &query)?;
-    Ok(build_trends(&events, &query))
+    let facts = load_usage_facts(&conn, &query)?;
+    Ok(build_trends(&facts, &query))
 }
 
 pub fn load_openai_usage_request_logs(
@@ -277,8 +670,8 @@ pub fn load_openai_usage_request_logs(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let events = load_ledger_events(&conn, &query)?;
-    Ok(build_request_log_page(&events, page, page_size))
+    let facts = load_usage_facts(&conn, &query)?;
+    Ok(build_request_log_page(&facts, page, page_size))
 }
 
 pub fn load_openai_usage_request_detail(
@@ -288,10 +681,13 @@ pub fn load_openai_usage_request_detail(
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let mut summary = new_usage_summary(&OpenAiUsageQuery::default());
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    Ok(load_ledger_events(&conn, &OpenAiUsageQuery::default())?
-        .iter()
-        .find(|event| event.request_id == request_id)
-        .map(event_to_log))
+    Ok(load_usage_facts(
+        &conn,
+        &query_with_scope(&OpenAiUsageQuery::default(), SCOPE_COMBINED_ATTRIBUTED),
+    )?
+    .iter()
+    .find(|fact| fact.request_id == request_id)
+    .map(fact_to_log))
 }
 
 pub fn load_openai_usage_data_sources(
@@ -302,16 +698,16 @@ pub fn load_openai_usage_data_sources(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let events = load_ledger_events(&conn, &query)?;
-    Ok(build_data_source_summaries(&events))
+    let facts = load_usage_facts(&conn, &query)?;
+    Ok(build_data_source_summaries(&facts))
 }
 
 fn build_request_log_page(
-    events: &[UsageEvent],
+    facts: &[UsageFact],
     page: u32,
     page_size: u32,
 ) -> OpenAiUsageRequestLogPage {
-    let mut logs = events.iter().map(event_to_log).collect::<Vec<_>>();
+    let mut logs = facts.iter().map(fact_to_log).collect::<Vec<_>>();
     logs.sort_by(|left, right| {
         right
             .created_at_ms
@@ -336,13 +732,13 @@ fn build_request_log_page(
     }
 }
 
-fn build_data_source_summaries(events: &[UsageEvent]) -> Vec<OpenAiUsageDataSourceSummary> {
+fn build_data_source_summaries(facts: &[UsageFact]) -> Vec<OpenAiUsageDataSourceSummary> {
     let mut sources: BTreeMap<String, Aggregate> = BTreeMap::new();
-    for event in events {
+    for fact in facts {
         add_to_aggregate(
-            sources.entry(event.data_source.clone()).or_default(),
-            event.delta,
-            &event.cost.breakdown,
+            sources.entry(fact.data_source.clone()).or_default(),
+            fact.delta,
+            &fact.cost.breakdown,
         );
     }
     sources
@@ -358,7 +754,7 @@ fn build_data_source_summaries(events: &[UsageEvent]) -> Vec<OpenAiUsageDataSour
 fn load_usage_events(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
-) -> AppResult<Vec<UsageEvent>> {
+) -> AppResult<UsageLoadResult> {
     let fallback_attribution = build_attribution_context(codex_home, &mut summary.exclusions)?;
     let attribution_records = load_attribution_records(codex_home);
     summary.attribution_since_ms = attribution_records
@@ -371,13 +767,11 @@ fn load_usage_events(
                 .as_ref()
                 .map(|record| record.attribution_since_ms)
         });
-    if fallback_attribution.is_none() && attribution_records.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut request_ids = HashSet::new();
-    let mut fingerprints = HashSet::new();
+    let mut dedupe = UsageDedupeEngine::default();
     let mut events = Vec::new();
+    let mut facts = Vec::new();
+    let mut evidence = Vec::new();
+    let mut decisions = EvidenceDecisionCounts::default();
 
     for sessions_root in [
         codex_home.join("sessions"),
@@ -391,14 +785,81 @@ fn load_usage_events(
                 &file,
                 fallback_attribution.as_ref(),
                 &attribution_records,
-                &mut request_ids,
-                &mut fingerprints,
+                &mut dedupe,
                 &mut events,
+                &mut facts,
+                &mut evidence,
+                &mut decisions,
                 summary,
             );
         }
     }
-    Ok(events)
+    evidence.extend(collect_future_response_evidence(codex_home)?);
+    evidence.extend(collect_ccswitch_evidence(codex_home)?);
+    Ok(finalize_usage_load(
+        events, facts, evidence, decisions, summary,
+    ))
+}
+
+fn finalize_usage_load(
+    events: Vec<UsageEvent>,
+    facts: Vec<UsageFact>,
+    evidence: Vec<UsageEvidence>,
+    mut decisions: EvidenceDecisionCounts,
+    summary: &mut OpenAiUsageSummary,
+) -> UsageLoadResult {
+    decisions.accepted = evidence
+        .iter()
+        .filter(|entry| entry.decision == DECISION_ACCEPTED)
+        .count() as u64;
+    decisions.candidate = evidence
+        .iter()
+        .filter(|entry| entry.decision == DECISION_CANDIDATE)
+        .count() as u64;
+    decisions.rejected = evidence
+        .iter()
+        .filter(|entry| entry.decision == DECISION_REJECTED)
+        .count() as u64;
+    decisions.superseded = evidence
+        .iter()
+        .filter(|entry| entry.decision == DECISION_SUPERSEDED)
+        .count() as u64;
+    decisions.strict_proven = facts
+        .iter()
+        .filter(|entry| entry.ledger_layer == LEDGER_LAYER_STRICT_PROVEN)
+        .count() as u64;
+    decisions.legacy_profile_attributed = facts
+        .iter()
+        .filter(|entry| entry.ledger_layer == LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED)
+        .count() as u64;
+    decisions.candidate_unattributed = evidence
+        .iter()
+        .filter(|entry| entry.ledger_layer == LEDGER_LAYER_CANDIDATE_UNATTRIBUTED)
+        .count() as u64;
+    decisions.rejected_invalid = evidence
+        .iter()
+        .filter(|entry| entry.ledger_layer == LEDGER_LAYER_REJECTED_INVALID)
+        .count() as u64;
+    summary.exclusions.accepted_events = decisions.accepted;
+    summary.exclusions.candidate_events = decisions.candidate;
+    summary.exclusions.rejected_events = decisions.rejected;
+    summary.exclusions.superseded_events = decisions.superseded;
+    summary.exclusions.strict_proven_events = decisions.strict_proven;
+    summary.exclusions.legacy_profile_attributed_events = decisions.legacy_profile_attributed;
+    summary.exclusions.candidate_unattributed_events = decisions.candidate_unattributed;
+    summary.exclusions.rejected_invalid_events = decisions.rejected_invalid;
+    UsageLoadResult {
+        events,
+        facts,
+        evidence,
+        decisions,
+    }
+}
+
+fn collect_future_response_evidence(codex_home: &Path) -> AppResult<Vec<UsageEvidence>> {
+    let adapter = FutureOpenAiResponseUsageAdapter;
+    let _ = adapter.source_type();
+    adapter.collect(codex_home)
 }
 
 fn sync_openai_usage_ledger(
@@ -411,8 +872,8 @@ fn sync_openai_usage_ledger(
     if apply_cached_usage_sync_state(&conn, &source_signature, summary)? {
         return Ok(conn);
     }
-    let events = load_usage_events(codex_home, summary)?;
-    rebuild_usage_events(&mut conn, &events, &source_signature, summary)?;
+    let usage = load_usage_events(codex_home, summary)?;
+    rebuild_usage_events(&mut conn, &usage, &source_signature, summary)?;
     Ok(conn)
 }
 
@@ -441,14 +902,17 @@ fn open_usage_ledger(codex_home: &Path) -> AppResult<Connection> {
 }
 
 fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
+    drop_legacy_usage_events_table_if_needed(conn)?;
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS openai_usage_events (
             request_id TEXT PRIMARY KEY,
             fingerprint TEXT NOT NULL UNIQUE,
+            evidence_id TEXT,
             session_id TEXT NOT NULL,
             profile TEXT NOT NULL,
             account_label TEXT,
+            account_identity_key TEXT NOT NULL,
             official_source TEXT NOT NULL,
             model TEXT NOT NULL,
             input_tokens INTEGER NOT NULL,
@@ -465,9 +929,14 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             pricing_note TEXT,
             pricing_source TEXT NOT NULL,
             pricing_checked_at TEXT NOT NULL,
+            pricing_model TEXT,
+            pricing_version TEXT,
             status_code INTEGER NOT NULL,
             created_at_ms INTEGER NOT NULL,
             data_source TEXT NOT NULL,
+            source_type TEXT,
+            source_priority INTEGER NOT NULL DEFAULT 0,
+            usage_confidence TEXT,
             inserted_at_ms INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_openai_usage_events_created_at
@@ -476,12 +945,121 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             ON openai_usage_events(profile);
         CREATE INDEX IF NOT EXISTS idx_openai_usage_events_model
             ON openai_usage_events(model);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_events_account_identity
+            ON openai_usage_events(account_identity_key);
+        CREATE TABLE IF NOT EXISTS openai_usage_evidence (
+            evidence_id TEXT PRIMARY KEY,
+            request_id TEXT,
+            fingerprint TEXT,
+            session_id TEXT,
+            source_type TEXT NOT NULL,
+            source_priority INTEGER NOT NULL,
+            source_locator TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            parser_version TEXT NOT NULL,
+            event_started_at_ms INTEGER,
+            event_completed_at_ms INTEGER,
+            observed_at_ms INTEGER,
+            turn_index INTEGER,
+            response_id TEXT,
+            previous_response_id TEXT,
+            model TEXT,
+            request_model TEXT,
+            pricing_model TEXT,
+            usage_shape TEXT NOT NULL,
+            usage_confidence TEXT NOT NULL,
+            input_tokens INTEGER,
+            cached_input_tokens INTEGER,
+            output_tokens INTEGER,
+            reasoning_output_tokens INTEGER,
+            raw_usage_json TEXT,
+            profile TEXT,
+            account_identity_key TEXT,
+            account_label TEXT,
+            identity_source TEXT,
+            identity_observed_at_ms INTEGER,
+            account_confidence TEXT NOT NULL,
+            effective_base_url TEXT,
+            official_source TEXT,
+            official_confidence TEXT NOT NULL,
+            status_code INTEGER,
+            decision TEXT NOT NULL,
+            decision_reason TEXT,
+            superseded_by TEXT,
+            ledger_layer TEXT NOT NULL DEFAULT 'rejected_invalid',
+            layer_reason TEXT,
+            attribution_kind TEXT NOT NULL DEFAULT 'unattributed',
+            attribution_window_id TEXT,
+            legacy_account_key TEXT,
+            created_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_evidence_decision
+            ON openai_usage_evidence(decision);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_evidence_source
+            ON openai_usage_evidence(source_type);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_evidence_created_at
+            ON openai_usage_evidence(created_at_ms);
+        CREATE TABLE IF NOT EXISTS openai_usage_facts (
+            evidence_id TEXT PRIMARY KEY,
+            request_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL UNIQUE,
+            session_id TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            account_label TEXT,
+            account_identity_key TEXT,
+            legacy_account_key TEXT,
+            official_source TEXT NOT NULL,
+            ledger_layer TEXT NOT NULL,
+            layer_reason TEXT,
+            attribution_kind TEXT NOT NULL,
+            attribution_window_id TEXT,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            cached_input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            reasoning_output_tokens INTEGER NOT NULL,
+            real_total_tokens INTEGER NOT NULL,
+            input_cost_micros INTEGER NOT NULL,
+            cached_input_cost_micros INTEGER NOT NULL,
+            output_cost_micros INTEGER NOT NULL,
+            total_cost_micros INTEGER NOT NULL,
+            unpriced_tokens INTEGER NOT NULL,
+            priced INTEGER NOT NULL,
+            pricing_note TEXT,
+            pricing_source TEXT NOT NULL,
+            pricing_checked_at TEXT NOT NULL,
+            pricing_model TEXT,
+            pricing_version TEXT,
+            status_code INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            data_source TEXT NOT NULL,
+            source_type TEXT,
+            source_priority INTEGER NOT NULL DEFAULT 0,
+            usage_confidence TEXT,
+            inserted_at_ms INTEGER NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS openai_usage_sync_state (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             source_signature TEXT NOT NULL,
+            evidence_source_signature TEXT,
+            parser_version TEXT,
+            classifier_version TEXT,
+            dedupe_version TEXT,
+            ledger_schema_version TEXT,
+            layer_classifier_version TEXT,
+            attribution_backfill_version TEXT,
+            pricing_version TEXT,
             pricing_checked_at TEXT NOT NULL,
             synced_at_ms INTEGER NOT NULL,
             attribution_since_ms INTEGER,
+            accepted_events INTEGER NOT NULL DEFAULT 0,
+            candidate_events INTEGER NOT NULL DEFAULT 0,
+            rejected_events INTEGER NOT NULL DEFAULT 0,
+            superseded_events INTEGER NOT NULL DEFAULT 0,
+            strict_proven_events INTEGER NOT NULL DEFAULT 0,
+            legacy_profile_attributed_events INTEGER NOT NULL DEFAULT 0,
+            candidate_unattributed_events INTEGER NOT NULL DEFAULT 0,
+            rejected_invalid_events INTEGER NOT NULL DEFAULT 0,
             duplicate_events INTEGER NOT NULL DEFAULT 0,
             non_official_base_url INTEGER NOT NULL DEFAULT 0,
             unproven_history INTEGER NOT NULL DEFAULT 0,
@@ -498,35 +1076,295 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             format!("Failed to initialize usage ledger schema: {error}"),
         )
     })?;
+    ensure_usage_events_columns(conn)?;
+    ensure_usage_events_account_identity_not_null(conn)?;
+    ensure_usage_evidence_columns(conn)?;
+    ensure_usage_facts_columns(conn)?;
+    ensure_usage_projection_indexes(conn)?;
     ensure_usage_sync_state_columns(conn)
 }
 
+fn drop_legacy_usage_events_table_if_needed(conn: &Connection) -> AppResult<()> {
+    if !table_exists(conn, "openai_usage_events")? {
+        return Ok(());
+    }
+    let columns = table_columns(conn, "openai_usage_events")?;
+    let required_columns = [
+        "request_id",
+        "fingerprint",
+        "created_at_ms",
+        "profile",
+        "model",
+        "account_identity_key",
+    ];
+    let missing_required_column = required_columns
+        .iter()
+        .any(|column| !columns.contains(*column));
+    let nullable_account_key =
+        !table_column_not_null(conn, "openai_usage_events", "account_identity_key")?;
+    if !missing_required_column && !nullable_account_key {
+        return Ok(());
+    }
+    conn.execute("DROP TABLE IF EXISTS openai_usage_events", [])
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVENTS_SCHEMA_DROP_FAILED",
+                format!("Failed to drop legacy usage events table: {error}"),
+            )
+        })?;
+    if table_exists(conn, "openai_usage_sync_state")? {
+        conn.execute("DELETE FROM openai_usage_sync_state WHERE id = 1", [])
+            .map_err(|error| {
+                AppError::new(
+                    "OPENAI_USAGE_SYNC_STATE_RESET_FAILED",
+                    format!("Failed to reset usage sync state after schema rebuild: {error}"),
+                )
+            })?;
+    }
+    Ok(())
+}
+
+fn ensure_usage_events_columns(conn: &Connection) -> AppResult<()> {
+    let columns = table_columns(conn, "openai_usage_events")?;
+    for (name, definition) in [
+        ("evidence_id", "evidence_id TEXT"),
+        ("account_identity_key", "account_identity_key TEXT"),
+        ("pricing_model", "pricing_model TEXT"),
+        ("pricing_version", "pricing_version TEXT"),
+        ("source_type", "source_type TEXT"),
+        (
+            "source_priority",
+            "source_priority INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("usage_confidence", "usage_confidence TEXT"),
+    ] {
+        if !columns.contains(name) {
+            conn.execute(
+                &format!("ALTER TABLE openai_usage_events ADD COLUMN {definition}"),
+                [],
+            )
+            .map_err(|error| {
+                AppError::new(
+                    "OPENAI_USAGE_EVENTS_SCHEMA_ALTER_FAILED",
+                    format!("Failed to add usage event column {name}: {error}"),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_usage_events_account_identity_not_null(conn: &Connection) -> AppResult<()> {
+    if table_column_not_null(conn, "openai_usage_events", "account_identity_key")? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        DROP TABLE IF EXISTS openai_usage_events;
+        CREATE TABLE openai_usage_events (
+            request_id TEXT PRIMARY KEY,
+            fingerprint TEXT NOT NULL UNIQUE,
+            evidence_id TEXT,
+            session_id TEXT NOT NULL,
+            profile TEXT NOT NULL,
+            account_label TEXT,
+            account_identity_key TEXT NOT NULL,
+            official_source TEXT NOT NULL,
+            model TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            cached_input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            reasoning_output_tokens INTEGER NOT NULL,
+            real_total_tokens INTEGER NOT NULL,
+            input_cost_micros INTEGER NOT NULL,
+            cached_input_cost_micros INTEGER NOT NULL,
+            output_cost_micros INTEGER NOT NULL,
+            total_cost_micros INTEGER NOT NULL,
+            unpriced_tokens INTEGER NOT NULL,
+            priced INTEGER NOT NULL,
+            pricing_note TEXT,
+            pricing_source TEXT NOT NULL,
+            pricing_checked_at TEXT NOT NULL,
+            pricing_model TEXT,
+            pricing_version TEXT,
+            status_code INTEGER NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            data_source TEXT NOT NULL,
+            source_type TEXT,
+            source_priority INTEGER NOT NULL DEFAULT 0,
+            usage_confidence TEXT,
+            inserted_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_events_created_at
+            ON openai_usage_events(created_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_events_profile
+            ON openai_usage_events(profile);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_events_model
+            ON openai_usage_events(model);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_events_account_identity
+            ON openai_usage_events(account_identity_key);
+        DELETE FROM openai_usage_sync_state WHERE id = 1;
+        "#,
+    )
+    .map_err(|error| {
+        AppError::new(
+            "OPENAI_USAGE_EVENTS_SCHEMA_REBUILD_FAILED",
+            format!(
+                "Failed to rebuild usage events table with account identity constraint: {error}"
+            ),
+        )
+    })?;
+    Ok(())
+}
+
+fn ensure_usage_evidence_columns(conn: &Connection) -> AppResult<()> {
+    let columns = table_columns(conn, "openai_usage_evidence")?;
+    for (name, definition) in [
+        (
+            "ledger_layer",
+            "ledger_layer TEXT NOT NULL DEFAULT 'rejected_invalid'",
+        ),
+        ("layer_reason", "layer_reason TEXT"),
+        (
+            "attribution_kind",
+            "attribution_kind TEXT NOT NULL DEFAULT 'unattributed'",
+        ),
+        ("attribution_window_id", "attribution_window_id TEXT"),
+        ("legacy_account_key", "legacy_account_key TEXT"),
+    ] {
+        if !columns.contains(name) {
+            conn.execute(
+                &format!("ALTER TABLE openai_usage_evidence ADD COLUMN {definition}"),
+                [],
+            )
+            .map_err(|error| {
+                AppError::new(
+                    "OPENAI_USAGE_EVIDENCE_SCHEMA_ALTER_FAILED",
+                    format!("Failed to add usage evidence column {name}: {error}"),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_usage_facts_columns(conn: &Connection) -> AppResult<()> {
+    let columns = table_columns(conn, "openai_usage_facts")?;
+    for (name, definition) in [
+        ("legacy_account_key", "legacy_account_key TEXT"),
+        (
+            "ledger_layer",
+            "ledger_layer TEXT NOT NULL DEFAULT 'strict_proven'",
+        ),
+        ("layer_reason", "layer_reason TEXT"),
+        (
+            "attribution_kind",
+            "attribution_kind TEXT NOT NULL DEFAULT 'strict_account'",
+        ),
+        ("attribution_window_id", "attribution_window_id TEXT"),
+        ("pricing_model", "pricing_model TEXT"),
+        ("pricing_version", "pricing_version TEXT"),
+        ("source_type", "source_type TEXT"),
+        (
+            "source_priority",
+            "source_priority INTEGER NOT NULL DEFAULT 0",
+        ),
+        ("usage_confidence", "usage_confidence TEXT"),
+    ] {
+        if !columns.contains(name) {
+            conn.execute(
+                &format!("ALTER TABLE openai_usage_facts ADD COLUMN {definition}"),
+                [],
+            )
+            .map_err(|error| {
+                AppError::new(
+                    "OPENAI_USAGE_FACTS_SCHEMA_ALTER_FAILED",
+                    format!("Failed to add usage fact column {name}: {error}"),
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_usage_projection_indexes(conn: &Connection) -> AppResult<()> {
+    conn.execute_batch(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_evidence_layer
+            ON openai_usage_evidence(ledger_layer);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_facts_created_at
+            ON openai_usage_facts(created_at_ms);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_facts_profile
+            ON openai_usage_facts(profile);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_facts_model
+            ON openai_usage_facts(model);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_facts_layer
+            ON openai_usage_facts(ledger_layer);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_facts_account_identity
+            ON openai_usage_facts(account_identity_key);
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_facts_legacy_account
+            ON openai_usage_facts(legacy_account_key);
+        "#,
+    )
+    .map_err(|error| {
+        AppError::new(
+            "OPENAI_USAGE_PROJECTION_INDEX_FAILED",
+            format!("Failed to initialize usage projection indexes: {error}"),
+        )
+    })?;
+    Ok(())
+}
+
 fn ensure_usage_sync_state_columns(conn: &Connection) -> AppResult<()> {
-    let mut stmt = conn
-        .prepare("PRAGMA table_info(openai_usage_sync_state)")
-        .map_err(|error| {
-            AppError::new(
-                "OPENAI_USAGE_SYNC_STATE_SCHEMA_PREPARE_FAILED",
-                format!("Failed to inspect usage sync state schema: {error}"),
-            )
-        })?;
-    let columns = stmt
-        .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| {
-            AppError::new(
-                "OPENAI_USAGE_SYNC_STATE_SCHEMA_QUERY_FAILED",
-                format!("Failed to query usage sync state schema: {error}"),
-            )
-        })?
-        .collect::<Result<HashSet<_>, _>>()
-        .map_err(|error| {
-            AppError::new(
-                "OPENAI_USAGE_SYNC_STATE_SCHEMA_ROW_FAILED",
-                format!("Failed to read usage sync state schema: {error}"),
-            )
-        })?;
+    let columns = table_columns(conn, "openai_usage_sync_state")?;
 
     for (name, definition) in [
+        (
+            "evidence_source_signature",
+            "evidence_source_signature TEXT",
+        ),
+        ("parser_version", "parser_version TEXT"),
+        ("classifier_version", "classifier_version TEXT"),
+        ("dedupe_version", "dedupe_version TEXT"),
+        ("pricing_version", "pricing_version TEXT"),
+        ("ledger_schema_version", "ledger_schema_version TEXT"),
+        ("layer_classifier_version", "layer_classifier_version TEXT"),
+        (
+            "attribution_backfill_version",
+            "attribution_backfill_version TEXT",
+        ),
+        (
+            "accepted_events",
+            "accepted_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "candidate_events",
+            "candidate_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "rejected_events",
+            "rejected_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "superseded_events",
+            "superseded_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "strict_proven_events",
+            "strict_proven_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "legacy_profile_attributed_events",
+            "legacy_profile_attributed_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "candidate_unattributed_events",
+            "candidate_unattributed_events INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "rejected_invalid_events",
+            "rejected_invalid_events INTEGER NOT NULL DEFAULT 0",
+        ),
         ("attribution_since_ms", "attribution_since_ms INTEGER"),
         (
             "duplicate_events",
@@ -564,6 +1402,81 @@ fn ensure_usage_sync_state_columns(conn: &Connection) -> AppResult<()> {
     Ok(())
 }
 
+fn table_columns(conn: &Connection, table: &str) -> AppResult<HashSet<String>> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_SYNC_STATE_SCHEMA_PREPARE_FAILED",
+                format!("Failed to inspect {table} schema: {error}"),
+            )
+        })?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_SYNC_STATE_SCHEMA_QUERY_FAILED",
+                format!("Failed to query {table} schema: {error}"),
+            )
+        })?;
+    let columns = rows.collect::<Result<HashSet<_>, _>>().map_err(|error| {
+        AppError::new(
+            "OPENAI_USAGE_SYNC_STATE_SCHEMA_ROW_FAILED",
+            format!("Failed to read {table} schema: {error}"),
+        )
+    })?;
+    Ok(columns)
+}
+
+fn table_exists(conn: &Connection, table: &str) -> AppResult<bool> {
+    let count = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            [table],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_SCHEMA_TABLE_LOOKUP_FAILED",
+                format!("Failed to inspect table {table}: {error}"),
+            )
+        })?;
+    Ok(count > 0)
+}
+
+fn table_column_not_null(conn: &Connection, table: &str, column: &str) -> AppResult<bool> {
+    let mut stmt = conn
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_SCHEMA_PREPARE_FAILED",
+                format!("Failed to inspect {table} schema: {error}"),
+            )
+        })?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)? != 0))
+        })
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_SCHEMA_QUERY_FAILED",
+                format!("Failed to query {table} schema: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (name, not_null) = row.map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_SCHEMA_ROW_FAILED",
+                format!("Failed to read {table} schema: {error}"),
+            )
+        })?;
+        if name == column {
+            return Ok(not_null);
+        }
+    }
+    Ok(false)
+}
+
 fn apply_cached_usage_sync_state(
     conn: &Connection,
     source_signature: &str,
@@ -574,7 +1487,12 @@ fn apply_cached_usage_sync_state(
             r#"
             SELECT source_signature, pricing_checked_at, attribution_since_ms,
                    duplicate_events, non_official_base_url, unproven_history,
-                   unattributed, missing_model, invalid_delta, malformed_lines
+                   unattributed, missing_model, invalid_delta, malformed_lines,
+                   parser_version, classifier_version, dedupe_version, pricing_version,
+                   accepted_events, candidate_events, rejected_events, superseded_events,
+                   ledger_schema_version, layer_classifier_version, attribution_backfill_version,
+                   strict_proven_events, legacy_profile_attributed_events,
+                   candidate_unattributed_events, rejected_invalid_events
             FROM openai_usage_sync_state
             WHERE id = 1
             "#,
@@ -598,13 +1516,47 @@ fn apply_cached_usage_sync_state(
                 missing_model: u64_from_i64(row.get::<_, i64>(7)?),
                 invalid_delta: u64_from_i64(row.get::<_, i64>(8)?),
                 malformed_lines: u64_from_i64(row.get::<_, i64>(9)?),
+                accepted_events: u64_from_i64(row.get::<_, i64>(14)?),
+                candidate_events: u64_from_i64(row.get::<_, i64>(15)?),
+                rejected_events: u64_from_i64(row.get::<_, i64>(16)?),
+                superseded_events: u64_from_i64(row.get::<_, i64>(17)?),
+                strict_proven_events: u64_from_i64(row.get::<_, i64>(21)?),
+                legacy_profile_attributed_events: u64_from_i64(row.get::<_, i64>(22)?),
+                candidate_unattributed_events: u64_from_i64(row.get::<_, i64>(23)?),
+                rejected_invalid_events: u64_from_i64(row.get::<_, i64>(24)?),
             },
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+            row.get::<_, Option<String>>(13)?,
+            row.get::<_, Option<String>>(18)?,
+            row.get::<_, Option<String>>(19)?,
+            row.get::<_, Option<String>>(20)?,
         ))
     });
     match result {
-        Ok((stored_signature, stored_pricing_checked_at, attribution_since_ms, exclusions)) => {
+        Ok((
+            stored_signature,
+            stored_pricing_checked_at,
+            attribution_since_ms,
+            exclusions,
+            parser_version,
+            classifier_version,
+            dedupe_version,
+            pricing_version,
+            ledger_schema_version,
+            layer_classifier_version,
+            attribution_backfill_version,
+        )) => {
             let current = stored_signature == source_signature
-                && stored_pricing_checked_at == PRICING_CHECKED_AT;
+                && stored_pricing_checked_at == PRICING_CHECKED_AT
+                && parser_version.as_deref() == Some(EVIDENCE_PARSER_VERSION)
+                && classifier_version.as_deref() == Some(EVIDENCE_CLASSIFIER_VERSION)
+                && dedupe_version.as_deref() == Some(EVIDENCE_DEDUPE_VERSION)
+                && ledger_schema_version.as_deref() == Some(LEDGER_SCHEMA_VERSION)
+                && layer_classifier_version.as_deref() == Some(LAYER_CLASSIFIER_VERSION)
+                && attribution_backfill_version.as_deref() == Some(ATTRIBUTION_BACKFILL_VERSION)
+                && pricing_version.as_deref() == Some(PRICING_VERSION);
             if current {
                 summary.attribution_since_ms =
                     attribution_since_ms.and_then(|value| u64::try_from(value).ok());
@@ -626,6 +1578,13 @@ fn usage_source_signature(codex_home: &Path) -> String {
     entries.sort();
     let mut hasher = DefaultHasher::new();
     PRICING_CHECKED_AT.hash(&mut hasher);
+    EVIDENCE_PARSER_VERSION.hash(&mut hasher);
+    EVIDENCE_CLASSIFIER_VERSION.hash(&mut hasher);
+    EVIDENCE_DEDUPE_VERSION.hash(&mut hasher);
+    LEDGER_SCHEMA_VERSION.hash(&mut hasher);
+    LAYER_CLASSIFIER_VERSION.hash(&mut hasher);
+    ATTRIBUTION_BACKFILL_VERSION.hash(&mut hasher);
+    PRICING_VERSION.hash(&mut hasher);
     for entry in entries {
         entry.hash(&mut hasher);
     }
@@ -651,13 +1610,34 @@ fn collect_usage_source_entries(codex_home: &Path, entries: &mut Vec<String>) {
     ] {
         push_file_signature(codex_home, &file, entries);
     }
+    push_file_content_signature(
+        codex_home,
+        &codex_home.join("auth.json"),
+        "root-auth",
+        entries,
+    );
 
     let backup_root = get_backup_root(Some(codex_home));
     for profile_dir in super::paths::list_profile_dirs(&backup_root) {
         push_file_signature(codex_home, &profile_dir.join("profile.json"), entries);
+        push_file_content_signature(
+            codex_home,
+            &profile_dir.join("auth.json"),
+            "profile-auth",
+            entries,
+        );
         push_file_signature(
             codex_home,
             &profile_dir.join(super::paths::ACTIVE_MARKER_FILE),
+            entries,
+        );
+    }
+
+    if let Some(ccswitch_db) = live_ccswitch_db_path(codex_home) {
+        push_external_file_signature("ccswitch", &ccswitch_db, entries);
+        push_external_file_signature(
+            "ccswitch-wal",
+            &ccswitch_db.with_extension("db-wal"),
             entries,
         );
     }
@@ -682,9 +1662,365 @@ fn push_file_signature(codex_home: &Path, file: &Path, entries: &mut Vec<String>
     ));
 }
 
+fn push_file_content_signature(
+    codex_home: &Path,
+    file: &Path,
+    label: &str,
+    entries: &mut Vec<String>,
+) {
+    let Ok(raw) = fs::read_to_string(file) else {
+        return;
+    };
+    let relative = file.strip_prefix(codex_home).unwrap_or(file);
+    entries.push(format!(
+        "{label}:{}:{}",
+        relative.display(),
+        stable_hash(&[&raw])
+    ));
+}
+
+fn push_external_file_signature(label: &str, file: &Path, entries: &mut Vec<String>) {
+    let Ok(metadata) = fs::metadata(file) else {
+        return;
+    };
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .and_then(|value| u64::try_from(value.as_millis()).ok())
+        .unwrap_or_default();
+    entries.push(format!(
+        "{label}:{}:{}:{}",
+        file.display(),
+        metadata.len(),
+        modified_ms
+    ));
+}
+
+fn live_ccswitch_db_path(codex_home: &Path) -> Option<PathBuf> {
+    if codex_home != get_codex_home().as_path() {
+        return None;
+    }
+    let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from)?;
+    let db_path = user_profile.join(".cc-switch").join("cc-switch.db");
+    db_path.is_file().then_some(db_path)
+}
+
+fn freeze_ccswitch_db(codex_home: &Path, db_path: &Path) -> Option<PathBuf> {
+    let snapshot_dir = codex_home.join(USAGE_EVIDENCE_DIRNAME).join("ccswitch");
+    fs::create_dir_all(&snapshot_dir).ok()?;
+    let snapshot = snapshot_dir.join("cc-switch-latest.db");
+    fs::copy(db_path, &snapshot).ok()?;
+    for extension in ["db-wal", "db-shm"] {
+        let source = db_path.with_extension(extension);
+        let target = snapshot.with_extension(extension);
+        if source.is_file() {
+            let _ = fs::copy(source, target);
+        }
+    }
+    Some(snapshot)
+}
+
+fn collect_ccswitch_evidence(codex_home: &Path) -> AppResult<Vec<UsageEvidence>> {
+    let Some(live_db) = live_ccswitch_db_path(codex_home) else {
+        return Ok(Vec::new());
+    };
+    let Some(snapshot) = freeze_ccswitch_db(codex_home, &live_db) else {
+        return Ok(Vec::new());
+    };
+    let conn = Connection::open_with_flags(
+        &snapshot,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|error| {
+        AppError::new(
+            "CCSWITCH_USAGE_OPEN_FAILED",
+            format!(
+                "Failed to open cc-switch usage snapshot {}: {error}",
+                snapshot.display()
+            ),
+        )
+    })?;
+    let mut evidence = Vec::new();
+    collect_ccswitch_proxy_request_evidence(&conn, &snapshot, &mut evidence)?;
+    collect_ccswitch_rollup_evidence(&conn, &snapshot, &mut evidence)?;
+    Ok(evidence)
+}
+
+fn collect_ccswitch_proxy_request_evidence(
+    conn: &Connection,
+    snapshot: &Path,
+    evidence: &mut Vec<UsageEvidence>,
+) -> AppResult<()> {
+    let mut stmt = match conn.prepare(
+        r#"
+        SELECT request_id, provider_id, model, request_model, pricing_model,
+               input_tokens, output_tokens, cache_read_tokens, status_code,
+               session_id, data_source, created_at
+        FROM proxy_request_logs
+        WHERE app_type = 'codex'
+        "#,
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Ok(()),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                u64_from_i64(row.get::<_, i64>(5)?),
+                u64_from_i64(row.get::<_, i64>(6)?),
+                u64_from_i64(row.get::<_, i64>(7)?),
+                row.get::<_, Option<i64>>(8)?,
+                row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, i64>(11)?,
+            ))
+        })
+        .map_err(|error| {
+            AppError::new(
+                "CCSWITCH_USAGE_QUERY_FAILED",
+                format!("Failed to query cc-switch request logs: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (
+            request_id,
+            provider_id,
+            model,
+            request_model,
+            pricing_model,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            status_code,
+            session_id,
+            data_source,
+            created_at_sec,
+        ) = row.map_err(|error| {
+            AppError::new(
+                "CCSWITCH_USAGE_ROW_FAILED",
+                format!("Failed to read cc-switch request log row: {error}"),
+            )
+        })?;
+        let data_source = data_source.unwrap_or_default();
+        let source_type = if data_source == "codex_session" || provider_id == "_codex_session" {
+            SOURCE_CCSWITCH_CODEX_SESSION
+        } else {
+            SOURCE_CCSWITCH_PROXY
+        };
+        let model = model.or(request_model.clone());
+        let created_at_ms = u64_from_i64(created_at_sec).saturating_mul(1000);
+        let delta = UsageCounts {
+            input_tokens,
+            cached_input_tokens: cached_input_tokens.min(input_tokens),
+            output_tokens,
+            reasoning_output_tokens: 0,
+        };
+        let reason = if source_type == SOURCE_CCSWITCH_PROXY {
+            "cc-switch proxy row requires account mapping before acceptance"
+        } else {
+            "cc-switch codex_session row has no account proof"
+        };
+        evidence.push(UsageEvidence {
+            evidence_id: format!("{source_type}:{request_id}"),
+            request_id: Some(request_id.clone()),
+            fingerprint: None,
+            session_id,
+            source_type: source_type.to_string(),
+            source_priority: source_priority(source_type),
+            source_locator: format!("{}#proxy_request_logs:{request_id}", snapshot.display()),
+            source_hash: stable_hash(&[
+                &request_id,
+                &provider_id,
+                model.as_deref().unwrap_or_default(),
+                &created_at_sec.to_string(),
+                &input_tokens.to_string(),
+                &output_tokens.to_string(),
+                &cached_input_tokens.to_string(),
+            ]),
+            parser_version: EVIDENCE_PARSER_VERSION.to_string(),
+            event_started_at_ms: None,
+            event_completed_at_ms: Some(created_at_ms),
+            observed_at_ms: Some(created_at_ms),
+            turn_index: None,
+            response_id: None,
+            previous_response_id: None,
+            model: model.as_deref().map(normalize_model),
+            request_model,
+            pricing_model,
+            usage_shape: if source_type == SOURCE_CCSWITCH_PROXY {
+                USAGE_SHAPE_PROXY_REQUEST.to_string()
+            } else {
+                USAGE_SHAPE_LAST_TOKEN_USAGE.to_string()
+            },
+            usage_confidence: if source_type == SOURCE_CCSWITCH_PROXY {
+                CONFIDENCE_HIGH.to_string()
+            } else {
+                CONFIDENCE_LOW.to_string()
+            },
+            delta: Some(delta),
+            raw_usage_json: None,
+            profile: None,
+            account_identity_key: None,
+            account_label: None,
+            identity_source: None,
+            identity_observed_at_ms: None,
+            account_confidence: CONFIDENCE_UNPROVEN.to_string(),
+            effective_base_url: None,
+            official_source: None,
+            official_confidence: CONFIDENCE_UNPROVEN.to_string(),
+            status_code: status_code.and_then(|value| u16::try_from(value).ok()),
+            decision: DECISION_CANDIDATE.to_string(),
+            decision_reason: Some(reason.to_string()),
+            superseded_by: None,
+            ledger_layer: LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string(),
+            layer_reason: Some(reason.to_string()),
+            attribution_kind: ATTRIBUTION_KIND_UNATTRIBUTED.to_string(),
+            attribution_window_id: None,
+            legacy_account_key: None,
+            created_at_ms,
+        });
+    }
+    Ok(())
+}
+
+fn collect_ccswitch_rollup_evidence(
+    conn: &Connection,
+    snapshot: &Path,
+    evidence: &mut Vec<UsageEvidence>,
+) -> AppResult<()> {
+    let mut stmt = match conn.prepare(
+        r#"
+        SELECT date, provider_id, model, request_model, pricing_model,
+               SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+               SUM(request_count)
+        FROM usage_daily_rollups
+        WHERE app_type = 'codex'
+        GROUP BY date, provider_id, model, request_model, pricing_model
+        "#,
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return Ok(()),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                u64_from_i64(row.get::<_, i64>(5)?),
+                u64_from_i64(row.get::<_, i64>(6)?),
+                u64_from_i64(row.get::<_, i64>(7)?),
+                u64_from_i64(row.get::<_, i64>(8)?),
+            ))
+        })
+        .map_err(|error| {
+            AppError::new(
+                "CCSWITCH_ROLLUP_QUERY_FAILED",
+                format!("Failed to query cc-switch rollups: {error}"),
+            )
+        })?;
+    for row in rows {
+        let (
+            date,
+            provider_id,
+            model,
+            request_model,
+            pricing_model,
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+            request_count,
+        ) = row.map_err(|error| {
+            AppError::new(
+                "CCSWITCH_ROLLUP_ROW_FAILED",
+                format!("Failed to read cc-switch rollup row: {error}"),
+            )
+        })?;
+        let model = model.or(request_model.clone());
+        let evidence_id = format!(
+            "{}:{}:{}:{}",
+            SOURCE_CCSWITCH_ROLLUP,
+            date,
+            provider_id,
+            model.as_deref().unwrap_or("unknown")
+        );
+        evidence.push(UsageEvidence {
+            evidence_id: evidence_id.clone(),
+            request_id: None,
+            fingerprint: None,
+            session_id: None,
+            source_type: SOURCE_CCSWITCH_ROLLUP.to_string(),
+            source_priority: source_priority(SOURCE_CCSWITCH_ROLLUP),
+            source_locator: format!("{}#usage_daily_rollups:{date}", snapshot.display()),
+            source_hash: stable_hash(&[
+                &date,
+                &provider_id,
+                model.as_deref().unwrap_or_default(),
+                &request_count.to_string(),
+                &input_tokens.to_string(),
+                &output_tokens.to_string(),
+                &cached_input_tokens.to_string(),
+            ]),
+            parser_version: EVIDENCE_PARSER_VERSION.to_string(),
+            event_started_at_ms: None,
+            event_completed_at_ms: None,
+            observed_at_ms: None,
+            turn_index: None,
+            response_id: None,
+            previous_response_id: None,
+            model: model.as_deref().map(normalize_model),
+            request_model,
+            pricing_model,
+            usage_shape: USAGE_SHAPE_DAILY_ROLLUP.to_string(),
+            usage_confidence: CONFIDENCE_LOW.to_string(),
+            delta: Some(UsageCounts {
+                input_tokens,
+                cached_input_tokens: cached_input_tokens.min(input_tokens),
+                output_tokens,
+                reasoning_output_tokens: 0,
+            }),
+            raw_usage_json: None,
+            profile: None,
+            account_identity_key: None,
+            account_label: None,
+            identity_source: None,
+            identity_observed_at_ms: None,
+            account_confidence: CONFIDENCE_UNPROVEN.to_string(),
+            effective_base_url: None,
+            official_source: None,
+            official_confidence: CONFIDENCE_UNPROVEN.to_string(),
+            status_code: None,
+            decision: DECISION_CANDIDATE.to_string(),
+            decision_reason: Some(
+                "cc-switch rollup is aggregate evidence and cannot prove request account"
+                    .to_string(),
+            ),
+            superseded_by: None,
+            ledger_layer: LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string(),
+            layer_reason: Some(
+                "cc-switch rollup is aggregate evidence and cannot prove request account"
+                    .to_string(),
+            ),
+            attribution_kind: ATTRIBUTION_KIND_UNATTRIBUTED.to_string(),
+            attribution_window_id: None,
+            legacy_account_key: None,
+            created_at_ms: current_time_ms(),
+        });
+    }
+    Ok(())
+}
+
 fn rebuild_usage_events(
     conn: &mut Connection,
-    events: &[UsageEvent],
+    usage: &UsageLoadResult,
     source_signature: &str,
     summary: &OpenAiUsageSummary,
 ) -> AppResult<()> {
@@ -701,21 +2037,39 @@ fn rebuild_usage_events(
                 format!("Failed to clear usage ledger events: {error}"),
             )
         })?;
+    tx.execute("DELETE FROM openai_usage_evidence", [])
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVIDENCE_CLEAR_FAILED",
+                format!("Failed to clear usage evidence ledger: {error}"),
+            )
+        })?;
+    tx.execute("DELETE FROM openai_usage_facts", [])
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_FACTS_CLEAR_FAILED",
+                format!("Failed to clear usage facts projection: {error}"),
+            )
+        })?;
+    insert_usage_evidence(&tx, &usage.evidence)?;
+    insert_usage_facts(&tx, &usage.facts)?;
     {
         let mut stmt = tx
             .prepare(
                 r#"
             INSERT INTO openai_usage_events (
-                request_id, fingerprint, session_id, profile, account_label,
-                official_source, model, input_tokens, cached_input_tokens,
+                request_id, fingerprint, evidence_id, session_id, profile, account_label,
+                account_identity_key, official_source, model, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens, real_total_tokens,
                 input_cost_micros, cached_input_cost_micros, output_cost_micros,
                 total_cost_micros, unpriced_tokens, priced, pricing_note,
-                pricing_source, pricing_checked_at, status_code, created_at_ms,
-                data_source, inserted_at_ms
+                pricing_source, pricing_checked_at, pricing_model, pricing_version,
+                status_code, created_at_ms, data_source, source_type, source_priority,
+                usage_confidence, inserted_at_ms
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
-                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32
             )
             "#,
             )
@@ -726,13 +2080,15 @@ fn rebuild_usage_events(
                 )
             })?;
         let inserted_at_ms = i64_from_u64(current_time_ms());
-        for event in events {
+        for event in &usage.events {
             stmt.execute(params![
                 &event.request_id,
                 &event.fingerprint,
+                &event.evidence_id,
                 &event.session_id,
                 &event.profile,
                 event.account_label.as_deref(),
+                &event.account_identity_key,
                 &event.official_source,
                 &event.model,
                 i64_from_u64(event.delta.input_tokens),
@@ -754,9 +2110,14 @@ fn rebuild_usage_events(
                 event.cost.pricing_note.as_deref(),
                 PRICING_SOURCE,
                 PRICING_CHECKED_AT,
+                &event.pricing_model,
+                PRICING_VERSION,
                 i64::from(event.status_code),
                 i64_from_u64(event.created_at_ms),
                 &event.data_source,
+                &event.source_type,
+                event.source_priority,
+                &event.usage_confidence,
                 inserted_at_ms,
             ])
             .map_err(|error| {
@@ -773,16 +2134,37 @@ fn rebuild_usage_events(
     tx.execute(
         r#"
         INSERT INTO openai_usage_sync_state (
-            id, source_signature, pricing_checked_at, synced_at_ms,
-            attribution_since_ms, duplicate_events, non_official_base_url,
-            unproven_history, unattributed, missing_model, invalid_delta,
-            malformed_lines
-        ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            id, source_signature, evidence_source_signature, parser_version,
+            classifier_version, dedupe_version, ledger_schema_version,
+            layer_classifier_version, attribution_backfill_version,
+            pricing_version, pricing_checked_at,
+            synced_at_ms, attribution_since_ms, accepted_events, candidate_events,
+            rejected_events, superseded_events, strict_proven_events,
+            legacy_profile_attributed_events, candidate_unattributed_events,
+            rejected_invalid_events, duplicate_events, non_official_base_url,
+            unproven_history, unattributed, missing_model, invalid_delta, malformed_lines
+        ) VALUES (1, ?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
         ON CONFLICT(id) DO UPDATE SET
             source_signature = excluded.source_signature,
+            evidence_source_signature = excluded.evidence_source_signature,
+            parser_version = excluded.parser_version,
+            classifier_version = excluded.classifier_version,
+            dedupe_version = excluded.dedupe_version,
+            ledger_schema_version = excluded.ledger_schema_version,
+            layer_classifier_version = excluded.layer_classifier_version,
+            attribution_backfill_version = excluded.attribution_backfill_version,
+            pricing_version = excluded.pricing_version,
             pricing_checked_at = excluded.pricing_checked_at,
             synced_at_ms = excluded.synced_at_ms,
             attribution_since_ms = excluded.attribution_since_ms,
+            accepted_events = excluded.accepted_events,
+            candidate_events = excluded.candidate_events,
+            rejected_events = excluded.rejected_events,
+            superseded_events = excluded.superseded_events,
+            strict_proven_events = excluded.strict_proven_events,
+            legacy_profile_attributed_events = excluded.legacy_profile_attributed_events,
+            candidate_unattributed_events = excluded.candidate_unattributed_events,
+            rejected_invalid_events = excluded.rejected_invalid_events,
             duplicate_events = excluded.duplicate_events,
             non_official_base_url = excluded.non_official_base_url,
             unproven_history = excluded.unproven_history,
@@ -793,9 +2175,24 @@ fn rebuild_usage_events(
         "#,
         params![
             source_signature,
+            EVIDENCE_PARSER_VERSION,
+            EVIDENCE_CLASSIFIER_VERSION,
+            EVIDENCE_DEDUPE_VERSION,
+            LEDGER_SCHEMA_VERSION,
+            LAYER_CLASSIFIER_VERSION,
+            ATTRIBUTION_BACKFILL_VERSION,
+            PRICING_VERSION,
             PRICING_CHECKED_AT,
             i64_from_u64(current_time_ms()),
             summary.attribution_since_ms.map(i64_from_u64),
+            i64_from_u64(usage.decisions.accepted),
+            i64_from_u64(usage.decisions.candidate),
+            i64_from_u64(usage.decisions.rejected),
+            i64_from_u64(usage.decisions.superseded),
+            i64_from_u64(usage.decisions.strict_proven),
+            i64_from_u64(usage.decisions.legacy_profile_attributed),
+            i64_from_u64(usage.decisions.candidate_unattributed),
+            i64_from_u64(usage.decisions.rejected_invalid),
             i64_from_u64(summary.exclusions.duplicate_events),
             i64_from_u64(summary.exclusions.non_official_base_url),
             i64_from_u64(summary.exclusions.unproven_history),
@@ -820,6 +2217,186 @@ fn rebuild_usage_events(
     Ok(())
 }
 
+fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> AppResult<()> {
+    let mut stmt = tx
+        .prepare(
+            r#"
+            INSERT INTO openai_usage_evidence (
+                evidence_id, request_id, fingerprint, session_id, source_type,
+                source_priority, source_locator, source_hash, parser_version,
+                event_started_at_ms, event_completed_at_ms, observed_at_ms,
+                turn_index, response_id, previous_response_id, model, request_model,
+                pricing_model, usage_shape, usage_confidence, input_tokens,
+                cached_input_tokens, output_tokens, reasoning_output_tokens,
+                raw_usage_json, profile, account_identity_key, account_label,
+                identity_source, identity_observed_at_ms, account_confidence,
+                effective_base_url, official_source, official_confidence,
+                status_code, decision, decision_reason, superseded_by, ledger_layer,
+                layer_reason, attribution_kind, attribution_window_id, legacy_account_key,
+                created_at_ms
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+                ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44
+            )
+            "#,
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVIDENCE_PREPARE_FAILED",
+                format!("Failed to prepare usage evidence insert: {error}"),
+            )
+        })?;
+    for entry in evidence {
+        let delta = entry.delta.unwrap_or_default();
+        stmt.execute(params![
+            &entry.evidence_id,
+            entry.request_id.as_deref(),
+            entry.fingerprint.as_deref(),
+            entry.session_id.as_deref(),
+            &entry.source_type,
+            entry.source_priority,
+            &entry.source_locator,
+            &entry.source_hash,
+            &entry.parser_version,
+            entry.event_started_at_ms.map(i64_from_u64),
+            entry.event_completed_at_ms.map(i64_from_u64),
+            entry.observed_at_ms.map(i64_from_u64),
+            entry.turn_index.map(i64_from_u64),
+            entry.response_id.as_deref(),
+            entry.previous_response_id.as_deref(),
+            entry.model.as_deref(),
+            entry.request_model.as_deref(),
+            entry.pricing_model.as_deref(),
+            &entry.usage_shape,
+            &entry.usage_confidence,
+            entry.delta.map(|_| i64_from_u64(delta.input_tokens)),
+            entry.delta.map(|_| i64_from_u64(delta.cached_input_tokens)),
+            entry.delta.map(|_| i64_from_u64(delta.output_tokens)),
+            entry
+                .delta
+                .map(|_| i64_from_u64(delta.reasoning_output_tokens)),
+            entry.raw_usage_json.as_deref(),
+            entry.profile.as_deref(),
+            entry.account_identity_key.as_deref(),
+            entry.account_label.as_deref(),
+            entry.identity_source.as_deref(),
+            entry.identity_observed_at_ms.map(i64_from_u64),
+            &entry.account_confidence,
+            entry.effective_base_url.as_deref(),
+            entry.official_source.as_deref(),
+            &entry.official_confidence,
+            entry.status_code.map(i64::from),
+            &entry.decision,
+            entry.decision_reason.as_deref(),
+            entry.superseded_by.as_deref(),
+            &entry.ledger_layer,
+            entry.layer_reason.as_deref(),
+            &entry.attribution_kind,
+            entry.attribution_window_id.as_deref(),
+            entry.legacy_account_key.as_deref(),
+            i64_from_u64(entry.created_at_ms),
+        ])
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVIDENCE_INSERT_FAILED",
+                format!(
+                    "Failed to insert usage evidence {}: {error}",
+                    entry.evidence_id
+                ),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()> {
+    let mut stmt = tx
+        .prepare(
+            r#"
+            INSERT INTO openai_usage_facts (
+                evidence_id, request_id, fingerprint, session_id, profile, account_label,
+                account_identity_key, legacy_account_key, official_source, ledger_layer,
+                layer_reason, attribution_kind, attribution_window_id, model, input_tokens,
+                cached_input_tokens, output_tokens, reasoning_output_tokens, real_total_tokens,
+                input_cost_micros, cached_input_cost_micros, output_cost_micros,
+                total_cost_micros, unpriced_tokens, priced, pricing_note, pricing_source,
+                pricing_checked_at, pricing_model, pricing_version, status_code, created_at_ms,
+                data_source, source_type, source_priority, usage_confidence, inserted_at_ms
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+                ?36, ?37
+            )
+            "#,
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_FACTS_PREPARE_FAILED",
+                format!("Failed to prepare usage facts insert: {error}"),
+            )
+        })?;
+    let inserted_at_ms = i64_from_u64(current_time_ms());
+    for fact in facts {
+        stmt.execute(params![
+            &fact.evidence_id,
+            &fact.request_id,
+            &fact.fingerprint,
+            &fact.session_id,
+            &fact.profile,
+            fact.account_label.as_deref(),
+            fact.account_identity_key.as_deref(),
+            fact.legacy_account_key.as_deref(),
+            &fact.official_source,
+            &fact.ledger_layer,
+            fact.layer_reason.as_deref(),
+            &fact.attribution_kind,
+            fact.attribution_window_id.as_deref(),
+            &fact.model,
+            i64_from_u64(fact.delta.input_tokens),
+            i64_from_u64(fact.delta.cached_input_tokens),
+            i64_from_u64(fact.delta.output_tokens),
+            i64_from_u64(fact.delta.reasoning_output_tokens),
+            i64_from_u64(
+                fact.delta
+                    .input_tokens
+                    .saturating_add(fact.delta.output_tokens)
+            ),
+            i64_from_u64(fact.cost.breakdown.input_cost_micros),
+            i64_from_u64(fact.cost.breakdown.cached_input_cost_micros),
+            i64_from_u64(fact.cost.breakdown.output_cost_micros),
+            i64_from_u64(fact.cost.breakdown.total_cost_micros),
+            i64_from_u64(fact.cost.breakdown.unpriced_tokens),
+            if fact.cost.priced { 1_i64 } else { 0_i64 },
+            fact.cost.pricing_note.as_deref(),
+            PRICING_SOURCE,
+            PRICING_CHECKED_AT,
+            &fact.pricing_model,
+            PRICING_VERSION,
+            i64::from(fact.status_code),
+            i64_from_u64(fact.created_at_ms),
+            &fact.data_source,
+            &fact.source_type,
+            fact.source_priority,
+            &fact.usage_confidence,
+            inserted_at_ms,
+        ])
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_FACTS_INSERT_FAILED",
+                format!(
+                    "Failed to insert usage fact {} / {}: {error}",
+                    fact.ledger_layer, fact.request_id
+                ),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
 fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Vec<UsageEvent>> {
     let start_ms = query.start_date.and_then(seconds_to_ms).map(i64_from_u64);
     let end_ms = query.end_date.and_then(end_seconds_to_ms).map(i64_from_u64);
@@ -844,12 +2421,12 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
     let mut stmt = conn
         .prepare(
             r#"
-            SELECT request_id, fingerprint, session_id, profile, account_label,
-                   official_source, model, input_tokens, cached_input_tokens,
+            SELECT request_id, fingerprint, evidence_id, session_id, profile, account_label,
+                   account_identity_key, official_source, model, input_tokens, cached_input_tokens,
                    output_tokens, reasoning_output_tokens, input_cost_micros,
                    cached_input_cost_micros, output_cost_micros, total_cost_micros,
                    unpriced_tokens, priced, pricing_note, status_code, created_at_ms,
-                   data_source
+                   data_source, source_type, source_priority, usage_confidence, pricing_model
             FROM openai_usage_events
             WHERE (?1 IS NULL OR created_at_ms >= ?1)
               AND (?2 IS NULL OR created_at_ms <= ?2)
@@ -871,18 +2448,22 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
         .query_map(
             params![start_ms, end_ms, profile, account_label, model, status_code],
             |row| {
-                let input_tokens = u64_from_i64(row.get::<_, i64>(7)?);
-                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(8)?);
-                let output_tokens = u64_from_i64(row.get::<_, i64>(9)?);
-                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(10)?);
+                let input_tokens = u64_from_i64(row.get::<_, i64>(9)?);
+                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(10)?);
+                let output_tokens = u64_from_i64(row.get::<_, i64>(11)?);
+                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(12)?);
                 Ok(UsageEvent {
+                    evidence_id: row
+                        .get::<_, Option<String>>(2)?
+                        .unwrap_or_else(|| row.get::<_, String>(0).unwrap_or_default()),
                     request_id: row.get(0)?,
                     fingerprint: row.get(1)?,
-                    session_id: row.get(2)?,
-                    profile: row.get(3)?,
-                    account_label: row.get(4)?,
-                    official_source: row.get(5)?,
-                    model: row.get(6)?,
+                    session_id: row.get(3)?,
+                    profile: row.get(4)?,
+                    account_label: row.get(5)?,
+                    account_identity_key: row.get::<_, String>(6)?,
+                    official_source: row.get(7)?,
+                    model: row.get(8)?,
                     delta: UsageCounts {
                         input_tokens,
                         cached_input_tokens,
@@ -891,18 +2472,28 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
                     },
                     cost: CalculatedCost {
                         breakdown: OpenAiUsageCostBreakdown {
-                            input_cost_micros: u64_from_i64(row.get::<_, i64>(11)?),
-                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(12)?),
-                            output_cost_micros: u64_from_i64(row.get::<_, i64>(13)?),
-                            total_cost_micros: u64_from_i64(row.get::<_, i64>(14)?),
-                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(15)?),
+                            input_cost_micros: u64_from_i64(row.get::<_, i64>(13)?),
+                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(14)?),
+                            output_cost_micros: u64_from_i64(row.get::<_, i64>(15)?),
+                            total_cost_micros: u64_from_i64(row.get::<_, i64>(16)?),
+                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(17)?),
                         },
-                        priced: row.get::<_, i64>(16)? != 0,
-                        pricing_note: row.get(17)?,
+                        priced: row.get::<_, i64>(18)? != 0,
+                        pricing_note: row.get(19)?,
                     },
-                    status_code: u16::try_from(row.get::<_, i64>(18)?).unwrap_or(0),
-                    created_at_ms: u64_from_i64(row.get::<_, i64>(19)?),
-                    data_source: row.get(20)?,
+                    status_code: u16::try_from(row.get::<_, i64>(20)?).unwrap_or(0),
+                    created_at_ms: u64_from_i64(row.get::<_, i64>(21)?),
+                    data_source: row.get(22)?,
+                    source_type: row
+                        .get::<_, Option<String>>(23)?
+                        .unwrap_or_else(|| SOURCE_CODEX_SESSION_JSONL.to_string()),
+                    source_priority: row.get::<_, Option<i64>>(24)?.unwrap_or_default(),
+                    usage_confidence: row
+                        .get::<_, Option<String>>(25)?
+                        .unwrap_or_else(|| CONFIDENCE_HIGH.to_string()),
+                    pricing_model: row
+                        .get::<_, Option<String>>(26)?
+                        .unwrap_or_else(|| row.get::<_, String>(8).unwrap_or_default()),
                 })
             },
         )
@@ -925,6 +2516,187 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
     Ok(events)
 }
 
+fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Vec<UsageFact>> {
+    let scope = normalized_usage_scope(query);
+    if matches!(scope, SCOPE_CANDIDATE | SCOPE_EXCLUDED) {
+        return Ok(Vec::new());
+    }
+    let start_ms = query.start_date.and_then(seconds_to_ms).map(i64_from_u64);
+    let end_ms = query.end_date.and_then(end_seconds_to_ms).map(i64_from_u64);
+    let profile = query
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let account_label = query
+        .account_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let model = query
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_model);
+    let status_code = query.status_code.map(i64::from);
+
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT evidence_id, request_id, fingerprint, session_id, profile, account_label,
+                   account_identity_key, legacy_account_key, official_source, ledger_layer,
+                   layer_reason, attribution_kind, attribution_window_id, model, input_tokens,
+                   cached_input_tokens, output_tokens, reasoning_output_tokens,
+                   input_cost_micros, cached_input_cost_micros, output_cost_micros,
+                   total_cost_micros, unpriced_tokens, priced, pricing_note, status_code,
+                   created_at_ms, data_source, source_type, source_priority, usage_confidence,
+                   pricing_model
+            FROM openai_usage_facts
+            WHERE (?1 IS NULL OR created_at_ms >= ?1)
+              AND (?2 IS NULL OR created_at_ms <= ?2)
+              AND (?3 IS NULL OR profile = ?3)
+              AND (?4 IS NULL OR account_label = ?4)
+              AND (?5 IS NULL OR model = ?5)
+              AND (?6 IS NULL OR status_code = ?6)
+              AND (
+                (?7 = 'strict' AND ledger_layer = 'strict_proven')
+                OR (?7 = 'legacy' AND ledger_layer = 'legacy_profile_attributed')
+                OR (?7 = 'combined_attributed' AND ledger_layer IN ('strict_proven', 'legacy_profile_attributed'))
+              )
+            ORDER BY created_at_ms ASC, request_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_FACTS_QUERY_PREPARE_FAILED",
+                format!("Failed to prepare usage facts query: {error}"),
+            )
+        })?;
+
+    let rows = stmt
+        .query_map(
+            params![
+                start_ms,
+                end_ms,
+                profile,
+                account_label,
+                model,
+                status_code,
+                scope
+            ],
+            |row| {
+                let input_tokens = u64_from_i64(row.get::<_, i64>(14)?);
+                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(15)?);
+                let output_tokens = u64_from_i64(row.get::<_, i64>(16)?);
+                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(17)?);
+                Ok(UsageFact {
+                    evidence_id: row.get(0)?,
+                    request_id: row.get(1)?,
+                    fingerprint: row.get(2)?,
+                    session_id: row.get(3)?,
+                    profile: row.get(4)?,
+                    account_label: row.get(5)?,
+                    account_identity_key: row.get(6)?,
+                    legacy_account_key: row.get(7)?,
+                    official_source: row.get(8)?,
+                    ledger_layer: row.get(9)?,
+                    layer_reason: row.get(10)?,
+                    attribution_kind: row.get(11)?,
+                    attribution_window_id: row.get(12)?,
+                    model: row.get(13)?,
+                    delta: UsageCounts {
+                        input_tokens,
+                        cached_input_tokens,
+                        output_tokens,
+                        reasoning_output_tokens,
+                    },
+                    cost: CalculatedCost {
+                        breakdown: OpenAiUsageCostBreakdown {
+                            input_cost_micros: u64_from_i64(row.get::<_, i64>(18)?),
+                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(19)?),
+                            output_cost_micros: u64_from_i64(row.get::<_, i64>(20)?),
+                            total_cost_micros: u64_from_i64(row.get::<_, i64>(21)?),
+                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(22)?),
+                        },
+                        priced: row.get::<_, i64>(23)? != 0,
+                        pricing_note: row.get(24)?,
+                    },
+                    status_code: u16::try_from(row.get::<_, i64>(25)?).unwrap_or(0),
+                    created_at_ms: u64_from_i64(row.get::<_, i64>(26)?),
+                    data_source: row.get(27)?,
+                    source_type: row
+                        .get::<_, Option<String>>(28)?
+                        .unwrap_or_else(|| SOURCE_CODEX_SESSION_JSONL.to_string()),
+                    source_priority: row.get::<_, Option<i64>>(29)?.unwrap_or_default(),
+                    usage_confidence: row
+                        .get::<_, Option<String>>(30)?
+                        .unwrap_or_else(|| CONFIDENCE_HIGH.to_string()),
+                    pricing_model: row
+                        .get::<_, Option<String>>(31)?
+                        .unwrap_or_else(|| row.get::<_, String>(13).unwrap_or_default()),
+                })
+            },
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_FACTS_QUERY_FAILED",
+                format!("Failed to query usage facts: {error}"),
+            )
+        })?;
+
+    let mut facts = Vec::new();
+    for row in rows {
+        facts.push(row.map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_FACTS_ROW_FAILED",
+                format!("Failed to read usage facts row: {error}"),
+            )
+        })?);
+    }
+    Ok(facts)
+}
+
+fn attach_layer_summaries(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    mut summary: OpenAiUsageSummary,
+) -> AppResult<OpenAiUsageSummary> {
+    let layer_query = query_with_scope(query, SCOPE_COMBINED_ATTRIBUTED);
+    let facts = load_usage_facts(conn, &layer_query)?;
+    summary.layer_summaries = build_layer_summaries(&facts, &layer_query);
+    Ok(summary)
+}
+
+fn build_layer_summaries(
+    facts: &[UsageFact],
+    query: &OpenAiUsageQuery,
+) -> Vec<OpenAiUsageLayerSummary> {
+    let mut layers = BTreeMap::<String, Aggregate>::new();
+    layers
+        .entry(LEDGER_LAYER_STRICT_PROVEN.to_string())
+        .or_default();
+    layers
+        .entry(LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED.to_string())
+        .or_default();
+    for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
+        add_to_aggregate(
+            layers.entry(fact.ledger_layer.clone()).or_default(),
+            fact.delta,
+            &fact.cost.breakdown,
+        );
+    }
+    layers
+        .into_iter()
+        .map(|(ledger_layer, aggregate)| OpenAiUsageLayerSummary {
+            ledger_layer,
+            request_count: aggregate.requests,
+            tokens: aggregate.tokens,
+            cost: aggregate.cost,
+        })
+        .collect()
+}
+
 fn i64_from_u64(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -933,6 +2705,7 @@ fn u64_from_i64(value: i64) -> u64 {
     u64::try_from(value).unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn event_matches_query(event: &UsageEvent, query: &OpenAiUsageQuery) -> bool {
     if let Some(start) = query.start_date.and_then(seconds_to_ms) {
         if event.created_at_ms < start {
@@ -982,7 +2755,56 @@ fn event_matches_query(event: &UsageEvent, query: &OpenAiUsageQuery) -> bool {
     true
 }
 
-fn build_trends(events: &[UsageEvent], query: &OpenAiUsageQuery) -> Vec<OpenAiUsageTrendPoint> {
+fn fact_matches_query(fact: &UsageFact, query: &OpenAiUsageQuery) -> bool {
+    if let Some(start) = query.start_date.and_then(seconds_to_ms) {
+        if fact.created_at_ms < start {
+            return false;
+        }
+    }
+    if let Some(end) = query.end_date.and_then(end_seconds_to_ms) {
+        if fact.created_at_ms > end {
+            return false;
+        }
+    }
+    if let Some(profile) = query
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if fact.profile != profile {
+            return false;
+        }
+    }
+    if let Some(account_label) = query
+        .account_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if fact.account_label.as_deref() != Some(account_label) {
+            return false;
+        }
+    }
+    if let Some(model) = query
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if fact.model != normalize_model(model) {
+            return false;
+        }
+    }
+    if let Some(status_code) = query.status_code {
+        if fact.status_code != status_code {
+            return false;
+        }
+    }
+    true
+}
+
+fn build_trends(facts: &[UsageFact], query: &OpenAiUsageQuery) -> Vec<OpenAiUsageTrendPoint> {
     let now_sec = i64::try_from(current_time_ms() / 1000).unwrap_or_default();
     let end_sec = query.end_date.unwrap_or(now_sec);
     let start_sec = query
@@ -1002,19 +2824,16 @@ fn build_trends(events: &[UsageEvent], query: &OpenAiUsageQuery) -> Vec<OpenAiUs
     for bucket_start in trend_bucket_starts(start_ms, end_ms, hourly) {
         buckets.entry(bucket_start).or_default();
     }
-    for event in events
-        .iter()
-        .filter(|event| event_matches_query(event, query))
-    {
+    for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
         let bucket = if hourly {
-            local_hour_bucket_ms(event.created_at_ms)
+            local_hour_bucket_ms(fact.created_at_ms)
         } else {
-            local_day_bucket_ms(event.created_at_ms)
+            local_day_bucket_ms(fact.created_at_ms)
         };
         add_to_aggregate(
             buckets.entry(bucket).or_default(),
-            event.delta,
-            &event.cost.breakdown,
+            fact.delta,
+            &fact.cost.breakdown,
         );
     }
     buckets
@@ -1115,6 +2934,7 @@ fn format_bucket_date(bucket_ms: u64, hourly: bool) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn event_to_log(event: &UsageEvent) -> OpenAiUsageRequestLog {
     OpenAiUsageRequestLog {
         request_id: event.request_id.clone(),
@@ -1122,6 +2942,9 @@ fn event_to_log(event: &UsageEvent) -> OpenAiUsageRequestLog {
         profile: event.profile.clone(),
         account_label: event.account_label.clone(),
         official_source: event.official_source.clone(),
+        ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
+        attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
+        attribution_window_id: None,
         model: event.model.clone(),
         tokens: tokens_from_delta(event.delta),
         cost: event.cost.breakdown.clone(),
@@ -1130,6 +2953,29 @@ fn event_to_log(event: &UsageEvent) -> OpenAiUsageRequestLog {
         status_code: event.status_code,
         created_at_ms: event.created_at_ms,
         data_source: event.data_source.clone(),
+        usage_confidence: event.usage_confidence.clone(),
+    }
+}
+
+fn fact_to_log(fact: &UsageFact) -> OpenAiUsageRequestLog {
+    OpenAiUsageRequestLog {
+        request_id: fact.request_id.clone(),
+        session_id: fact.session_id.clone(),
+        profile: fact.profile.clone(),
+        account_label: fact.account_label.clone(),
+        official_source: fact.official_source.clone(),
+        ledger_layer: fact.ledger_layer.clone(),
+        attribution_kind: fact.attribution_kind.clone(),
+        attribution_window_id: fact.attribution_window_id.clone(),
+        model: fact.model.clone(),
+        tokens: tokens_from_delta(fact.delta),
+        cost: fact.cost.breakdown.clone(),
+        priced: fact.cost.priced,
+        pricing_note: fact.cost.pricing_note.clone(),
+        status_code: fact.status_code,
+        created_at_ms: fact.created_at_ms,
+        data_source: fact.data_source.clone(),
+        usage_confidence: fact.usage_confidence.clone(),
     }
 }
 
@@ -1165,6 +3011,7 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
             observed_at_ms,
             profile: None,
             account_label: None,
+            account_identity_key: None,
             openai_base_url: None,
             official_source: None,
             is_official_openai: false,
@@ -1180,6 +3027,7 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
             observed_at_ms,
             profile: Some(profile_name),
             account_label: None,
+            account_identity_key: None,
             openai_base_url: None,
             official_source: None,
             is_official_openai: false,
@@ -1195,9 +3043,13 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
     let root_identity = load_account_identity_from_path(&codex_home.join("auth.json"));
     let profile_identity = load_account_identity_from_path(&profile_dir.join("auth.json"));
     let identity_matches = matches!(
-        (root_identity, profile_identity),
-        (Some(root), Some(slot)) if root.same_account(&slot)
+        (&root_identity, &profile_identity),
+        (Some(root), Some(slot)) if root.same_account(slot)
     );
+    let account_identity_key = root_identity
+        .as_ref()
+        .filter(|_| identity_matches)
+        .map(account_identity_key);
     let is_official_openai = official_source.is_some() && identity_matches;
     let exclusion_reason = if is_official_openai {
         None
@@ -1210,6 +3062,7 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
         observed_at_ms,
         profile: Some(profile_name),
         account_label: profile.account_label.clone(),
+        account_identity_key,
         openai_base_url: profile.openai_base_url.clone(),
         official_source,
         is_official_openai,
@@ -1273,39 +3126,67 @@ fn load_attribution_records(codex_home: &Path) -> Vec<AttributionRecord> {
     records
 }
 
-fn attribution_for_event<'a>(
-    event_time_ms: Option<u64>,
-    fallback: Option<&'a AttributionContext>,
-    records: &'a [AttributionRecord],
+enum AttributionLookup {
+    Attributed(AttributionContext),
+    CandidateUnattributed(&'static str),
+    RejectedInvalid(&'static str),
+}
+
+fn attribution_for_event(
+    event_time_ms: u64,
+    fallback: Option<&AttributionContext>,
+    records: &[AttributionRecord],
     exclusions: &mut OpenAiUsageExclusions,
-) -> Option<AttributionContext> {
-    let Some(event_time_ms) = event_time_ms else {
-        exclusions.unproven_history = exclusions.unproven_history.saturating_add(1);
-        return None;
-    };
+) -> AttributionLookup {
     if let Some(record) = records
         .iter()
         .rev()
         .find(|record| record.observed_at_ms <= event_time_ms)
     {
         if !record.is_official_openai {
-            exclusions.non_official_base_url = exclusions.non_official_base_url.saturating_add(1);
-            return None;
+            if record
+                .exclusion_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("base_url"))
+            {
+                exclusions.non_official_base_url =
+                    exclusions.non_official_base_url.saturating_add(1);
+            } else {
+                exclusions.unattributed = exclusions.unattributed.saturating_add(1);
+            }
+            return AttributionLookup::RejectedInvalid("non official OpenAI source");
         }
-        return record.context();
+        if let Some(context) = record.context() {
+            return AttributionLookup::Attributed(context);
+        }
+        if let Some(context) = record.legacy_context() {
+            return AttributionLookup::Attributed(context);
+        }
+        exclusions.unattributed = exclusions.unattributed.saturating_add(1);
+        return AttributionLookup::CandidateUnattributed(
+            "official source was recorded but account/profile attribution is incomplete",
+        );
     }
     if let Some(fallback) = fallback {
         if event_time_ms >= fallback.attribution_since_ms {
-            return Some(AttributionContext {
+            return AttributionLookup::Attributed(AttributionContext {
                 profile: fallback.profile.clone(),
                 account_label: fallback.account_label.clone(),
                 official_source: fallback.official_source.clone(),
                 attribution_since_ms: fallback.attribution_since_ms,
+                account_identity_key: fallback.account_identity_key.clone(),
+                legacy_account_key: fallback.legacy_account_key.clone(),
+                identity_source: fallback.identity_source.clone(),
+                identity_observed_at_ms: fallback.identity_observed_at_ms,
+                ledger_layer: fallback.ledger_layer.clone(),
+                layer_reason: fallback.layer_reason.clone(),
+                attribution_kind: fallback.attribution_kind.clone(),
+                attribution_window_id: fallback.attribution_window_id.clone(),
             });
         }
     }
     exclusions.unproven_history = exclusions.unproven_history.saturating_add(1);
-    None
+    AttributionLookup::CandidateUnattributed("no attribution record covered this event")
 }
 
 fn official_pricing_note(pricing: ModelPricing) -> String {
@@ -1319,6 +3200,46 @@ fn official_data_source() -> &'static str {
     "codex_session"
 }
 
+fn source_priority(source_type: &str) -> i64 {
+    match source_type {
+        SOURCE_OPENAI_RESPONSE_USAGE => 500,
+        SOURCE_CCSWITCH_PROXY => 400,
+        SOURCE_CODEX_SESSION_JSONL => 300,
+        SOURCE_CCSWITCH_CODEX_SESSION => 200,
+        SOURCE_CCSWITCH_ROLLUP => 100,
+        _ => 0,
+    }
+}
+
+fn account_identity_key(identity: &AccountIdentity) -> String {
+    let mut hasher = DefaultHasher::new();
+    "openai-account-identity-v1".hash(&mut hasher);
+    identity
+        .account_id
+        .as_deref()
+        .unwrap_or_default()
+        .hash(&mut hasher);
+    identity
+        .email
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .hash(&mut hasher);
+    format!("acct_{:016x}", hasher.finish())
+}
+
+fn legacy_account_key(profile: &str, attribution_window_id: &str) -> String {
+    format!("legacy_profile:{profile}:{attribution_window_id}")
+}
+
+fn stable_hash(parts: &[&str]) -> String {
+    let mut hasher = DefaultHasher::new();
+    for part in parts {
+        part.hash(&mut hasher);
+    }
+    format!("{:016x}", hasher.finish())
+}
+
 fn fingerprint_for_event(
     attribution: &AttributionContext,
     model: &str,
@@ -1326,9 +3247,14 @@ fn fingerprint_for_event(
     event_time_ms: Option<u64>,
 ) -> String {
     let bucket = event_time_ms.unwrap_or_default() / 60_000;
+    let account_key = attribution
+        .account_identity_key
+        .as_deref()
+        .or(attribution.legacy_account_key.as_deref())
+        .unwrap_or(&attribution.profile);
     format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        attribution.profile,
+        account_key,
         attribution.official_source,
         model,
         delta.input_tokens,
@@ -1337,6 +3263,139 @@ fn fingerprint_for_event(
         delta.reasoning_output_tokens,
         bucket,
         official_data_source()
+    )
+}
+
+struct SessionEvidenceInput<'a> {
+    file: &'a Path,
+    line_number: usize,
+    line: &'a str,
+    request_id: &'a str,
+    session_id: &'a str,
+    event_index: u64,
+    event_time_ms: Option<u64>,
+    model: Option<&'a str>,
+    parsed_usage: Option<ParsedUsage>,
+    delta: Option<UsageCounts>,
+    attribution: Option<&'a AttributionContext>,
+    fingerprint: Option<String>,
+    decision: &'a str,
+    decision_reason: Option<&'a str>,
+    superseded_by: Option<&'a str>,
+}
+
+fn session_usage_evidence(input: SessionEvidenceInput<'_>) -> UsageEvidence {
+    let source_type = SOURCE_CODEX_SESSION_JSONL.to_string();
+    let parsed_usage = input.parsed_usage;
+    let attribution = input.attribution;
+    let (source_locator, source_hash, evidence_id) =
+        session_evidence_identity(input.file, input.line_number, input.line, input.request_id);
+    let profile = attribution.map(|value| value.profile.clone());
+    let account_identity_key = attribution.and_then(|value| value.account_identity_key.clone());
+    let account_label = attribution.and_then(|value| value.account_label.clone());
+    let identity_source = attribution.and_then(|value| value.identity_source.clone());
+    let identity_observed_at_ms = attribution.and_then(|value| value.identity_observed_at_ms);
+    let official_source = attribution.map(|value| value.official_source.clone());
+    let ledger_layer = ledger_layer_for_decision(input.decision, attribution);
+    let attribution_kind = attribution
+        .map(|value| value.attribution_kind.clone())
+        .unwrap_or_else(|| ATTRIBUTION_KIND_UNATTRIBUTED.to_string());
+    let attribution_window_id = attribution.and_then(|value| value.attribution_window_id.clone());
+    let legacy_account_key = attribution.and_then(|value| value.legacy_account_key.clone());
+    let layer_reason = input
+        .decision_reason
+        .map(ToString::to_string)
+        .or_else(|| attribution.and_then(|value| value.layer_reason.clone()));
+    UsageEvidence {
+        evidence_id,
+        request_id: Some(input.request_id.to_string()),
+        fingerprint: input.fingerprint,
+        session_id: Some(input.session_id.to_string()),
+        source_type,
+        source_priority: source_priority(SOURCE_CODEX_SESSION_JSONL),
+        source_locator,
+        source_hash,
+        parser_version: EVIDENCE_PARSER_VERSION.to_string(),
+        event_started_at_ms: None,
+        event_completed_at_ms: input.event_time_ms,
+        observed_at_ms: input.event_time_ms,
+        turn_index: Some(input.event_index),
+        response_id: None,
+        previous_response_id: None,
+        model: input.model.map(ToString::to_string),
+        request_model: input.model.map(ToString::to_string),
+        pricing_model: input.model.map(ToString::to_string),
+        usage_shape: parsed_usage
+            .map(|usage| usage.usage_shape.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        usage_confidence: parsed_usage
+            .map(|usage| usage.usage_confidence.to_string())
+            .unwrap_or_else(|| CONFIDENCE_UNPROVEN.to_string()),
+        delta: input.delta,
+        raw_usage_json: Some(input.line.to_string()),
+        profile,
+        account_identity_key: account_identity_key.clone(),
+        account_label,
+        identity_source,
+        identity_observed_at_ms,
+        account_confidence: if account_identity_key.is_some() {
+            CONFIDENCE_PROVEN.to_string()
+        } else {
+            CONFIDENCE_UNPROVEN.to_string()
+        },
+        effective_base_url: official_source.clone(),
+        official_source: official_source.clone(),
+        official_confidence: if official_source.is_some() {
+            CONFIDENCE_PROVEN.to_string()
+        } else {
+            CONFIDENCE_UNPROVEN.to_string()
+        },
+        status_code: Some(200),
+        decision: input.decision.to_string(),
+        decision_reason: input.decision_reason.map(ToString::to_string),
+        superseded_by: input.superseded_by.map(ToString::to_string),
+        ledger_layer,
+        layer_reason,
+        attribution_kind,
+        attribution_window_id,
+        legacy_account_key,
+        created_at_ms: input.event_time_ms.unwrap_or_else(current_time_ms),
+    }
+}
+
+fn ledger_layer_for_decision(decision: &str, attribution: Option<&AttributionContext>) -> String {
+    match decision {
+        DECISION_ACCEPTED => attribution
+            .map(|value| value.ledger_layer.clone())
+            .unwrap_or_else(|| LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string()),
+        DECISION_CANDIDATE => LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string(),
+        DECISION_SUPERSEDED => LEDGER_LAYER_SUPERSEDED.to_string(),
+        DECISION_REJECTED => LEDGER_LAYER_REJECTED_INVALID.to_string(),
+        _ => LEDGER_LAYER_REJECTED_INVALID.to_string(),
+    }
+}
+
+fn accepted_decision_reason(attribution: &AttributionContext) -> &'static str {
+    if attribution.ledger_layer == LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED {
+        "official source, legacy profile window, token delta, and dedupe proven"
+    } else {
+        "account, official source, token delta, and dedupe proven"
+    }
+}
+
+fn session_evidence_identity(
+    file: &Path,
+    line_number: usize,
+    line: &str,
+    request_id: &str,
+) -> (String, String, String) {
+    let source_locator = format!("{}:{}", file.display(), line_number);
+    let source_hash = stable_hash(&[line]);
+    let evidence_instance_hash = stable_hash(&[&source_locator, &source_hash]);
+    (
+        source_locator,
+        source_hash,
+        format!("{SOURCE_CODEX_SESSION_JSONL}:{request_id}:{evidence_instance_hash}"),
     )
 }
 
@@ -1368,13 +3427,15 @@ fn build_attribution_context(
     let profile_dir = backup_root.join(&profile_name);
     let root_identity = load_account_identity_from_path(&codex_home.join("auth.json"));
     let profile_identity = load_account_identity_from_path(&profile_dir.join("auth.json"));
-    if !matches!(
-        (root_identity, profile_identity),
-        (Some(root), Some(slot)) if root.same_account(&slot)
-    ) {
+    let identity_matches = matches!(
+        (&root_identity, &profile_identity),
+        (Some(root), Some(slot)) if root.same_account(slot)
+    );
+    if !identity_matches {
         exclusions.unattributed = exclusions.unattributed.saturating_add(1);
         return Ok(None);
     }
+    let account_identity_key = root_identity.as_ref().map(account_identity_key);
 
     let active_marker = profile_dir.join(super::paths::ACTIVE_MARKER_FILE);
     let current_marker = get_current_profile_file(Some(codex_home));
@@ -1395,6 +3456,16 @@ fn build_attribution_context(
         account_label: profile.account_label.clone(),
         official_source,
         attribution_since_ms,
+        account_identity_key,
+        legacy_account_key: None,
+        identity_source: Some("live_root_profile_auth_match".to_string()),
+        identity_observed_at_ms: Some(attribution_since_ms),
+        ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
+        layer_reason: Some(
+            "live root/profile auth identity match with official source".to_string(),
+        ),
+        attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
+        attribution_window_id: Some(attribution_since_ms.to_string()),
     }))
 }
 
@@ -1432,9 +3503,11 @@ fn collect_session_file_events(
     file: &Path,
     fallback_attribution: Option<&AttributionContext>,
     attribution_records: &[AttributionRecord],
-    request_ids: &mut HashSet<String>,
-    fingerprints: &mut HashSet<String>,
+    dedupe: &mut UsageDedupeEngine,
     events: &mut Vec<UsageEvent>,
+    facts: &mut Vec<UsageFact>,
+    evidence: &mut Vec<UsageEvidence>,
+    decisions: &mut EvidenceDecisionCounts,
     summary: &mut OpenAiUsageSummary,
 ) {
     let Ok(raw) = fs::read_to_string(file) else {
@@ -1449,7 +3522,7 @@ fn collect_session_file_events(
     let mut previous_usage: Option<UsageCounts> = None;
     let mut event_index = 0_u64;
 
-    for line in raw.lines() {
+    for (line_index, line) in raw.lines().enumerate() {
         let parsed = match serde_json::from_str::<SessionLine>(line) {
             Ok(value) => value,
             Err(_) => {
@@ -1487,80 +3560,254 @@ fn collect_session_file_events(
                 }
                 event_index = event_index.saturating_add(1);
                 let event_time_ms = parsed.timestamp.as_deref().and_then(parse_timestamp_ms);
-                let Some(current_usage) = payload.and_then(parse_usage_counts) else {
+                let request_id = format!("codex_session:{session_id}:{event_index}");
+                let parsed_usage = payload.and_then(parse_usage_counts);
+                let Some(parsed_usage) = parsed_usage else {
                     summary.exclusions.malformed_lines =
                         summary.exclusions.malformed_lines.saturating_add(1);
+                    decisions.rejected = decisions.rejected.saturating_add(1);
+                    evidence.push(session_usage_evidence(SessionEvidenceInput {
+                        file,
+                        line_number: line_index + 1,
+                        line,
+                        request_id: &request_id,
+                        session_id: &session_id,
+                        event_index,
+                        event_time_ms,
+                        model: current_model.as_deref(),
+                        parsed_usage: None,
+                        delta: None,
+                        attribution: None,
+                        fingerprint: None,
+                        decision: DECISION_REJECTED,
+                        decision_reason: Some("malformed token_count usage"),
+                        superseded_by: None,
+                    }));
                     continue;
                 };
-                let Some(attribution) = attribution_for_event(
-                    event_time_ms,
-                    fallback_attribution,
-                    attribution_records,
-                    &mut summary.exclusions,
-                ) else {
-                    previous_usage = Some(current_usage);
-                    continue;
-                };
+                let current_usage = parsed_usage.counts;
                 let Some(model) = current_model.clone() else {
                     previous_usage = Some(current_usage);
                     summary.exclusions.missing_model =
                         summary.exclusions.missing_model.saturating_add(1);
+                    decisions.rejected = decisions.rejected.saturating_add(1);
+                    evidence.push(session_usage_evidence(SessionEvidenceInput {
+                        file,
+                        line_number: line_index + 1,
+                        line,
+                        request_id: &request_id,
+                        session_id: &session_id,
+                        event_index,
+                        event_time_ms,
+                        model: None,
+                        parsed_usage: Some(parsed_usage),
+                        delta: None,
+                        attribution: None,
+                        fingerprint: None,
+                        decision: DECISION_REJECTED,
+                        decision_reason: Some("missing model"),
+                        superseded_by: None,
+                    }));
                     continue;
                 };
                 let Some(delta) = usage_delta(previous_usage, current_usage) else {
                     previous_usage = Some(current_usage);
                     summary.exclusions.invalid_delta =
                         summary.exclusions.invalid_delta.saturating_add(1);
+                    decisions.rejected = decisions.rejected.saturating_add(1);
+                    evidence.push(session_usage_evidence(SessionEvidenceInput {
+                        file,
+                        line_number: line_index + 1,
+                        line,
+                        request_id: &request_id,
+                        session_id: &session_id,
+                        event_index,
+                        event_time_ms,
+                        model: Some(&model),
+                        parsed_usage: Some(parsed_usage),
+                        delta: None,
+                        attribution: None,
+                        fingerprint: None,
+                        decision: DECISION_REJECTED,
+                        decision_reason: Some("invalid negative token delta"),
+                        superseded_by: None,
+                    }));
                     continue;
                 };
                 previous_usage = Some(current_usage);
                 if delta.input_tokens == 0 && delta.output_tokens == 0 {
+                    decisions.rejected = decisions.rejected.saturating_add(1);
+                    evidence.push(session_usage_evidence(SessionEvidenceInput {
+                        file,
+                        line_number: line_index + 1,
+                        line,
+                        request_id: &request_id,
+                        session_id: &session_id,
+                        event_index,
+                        event_time_ms,
+                        model: Some(&model),
+                        parsed_usage: Some(parsed_usage),
+                        delta: Some(delta),
+                        attribution: None,
+                        fingerprint: None,
+                        decision: DECISION_REJECTED,
+                        decision_reason: Some("zero token delta"),
+                        superseded_by: None,
+                    }));
                     continue;
                 }
 
-                let request_id = format!("codex_session:{session_id}:{event_index}");
-                if !request_ids.insert(request_id.clone()) {
-                    summary.exclusions.duplicate_events =
-                        summary.exclusions.duplicate_events.saturating_add(1);
-                    continue;
-                }
-                let fingerprint = fingerprint_for_event(&attribution, &model, delta, event_time_ms);
-                if !fingerprints.insert(fingerprint.clone()) {
-                    summary.exclusions.duplicate_events =
-                        summary.exclusions.duplicate_events.saturating_add(1);
-                    continue;
-                }
-                let Some(created_at_ms) = event_time_ms else {
+                let Some(event_time_ms) = event_time_ms else {
                     summary.exclusions.unproven_history =
                         summary.exclusions.unproven_history.saturating_add(1);
+                    decisions.rejected = decisions.rejected.saturating_add(1);
+                    evidence.push(session_usage_evidence(SessionEvidenceInput {
+                        file,
+                        line_number: line_index + 1,
+                        line,
+                        request_id: &request_id,
+                        session_id: &session_id,
+                        event_index,
+                        event_time_ms: None,
+                        model: Some(&model),
+                        parsed_usage: Some(parsed_usage),
+                        delta: Some(delta),
+                        attribution: None,
+                        fingerprint: None,
+                        decision: DECISION_REJECTED,
+                        decision_reason: Some("missing event timestamp"),
+                        superseded_by: None,
+                    }));
                     continue;
                 };
-                let cost = calculate_cost(&model, delta);
-                events.push(UsageEvent {
-                    request_id,
-                    fingerprint,
-                    session_id: session_id.clone(),
-                    profile: attribution.profile,
-                    account_label: attribution.account_label,
-                    official_source: attribution.official_source,
-                    model,
-                    delta,
-                    cost,
-                    status_code: 200,
-                    created_at_ms,
-                    data_source: official_data_source().to_string(),
+
+                let attribution = match attribution_for_event(
+                    event_time_ms,
+                    fallback_attribution,
+                    attribution_records,
+                    &mut summary.exclusions,
+                ) {
+                    AttributionLookup::Attributed(value) => value,
+                    AttributionLookup::CandidateUnattributed(reason) => {
+                        decisions.candidate = decisions.candidate.saturating_add(1);
+                        evidence.push(session_usage_evidence(SessionEvidenceInput {
+                            file,
+                            line_number: line_index + 1,
+                            line,
+                            request_id: &request_id,
+                            session_id: &session_id,
+                            event_index,
+                            event_time_ms: Some(event_time_ms),
+                            model: Some(&model),
+                            parsed_usage: Some(parsed_usage),
+                            delta: Some(delta),
+                            attribution: None,
+                            fingerprint: None,
+                            decision: DECISION_CANDIDATE,
+                            decision_reason: Some(reason),
+                            superseded_by: None,
+                        }));
+                        continue;
+                    }
+                    AttributionLookup::RejectedInvalid(reason) => {
+                        decisions.rejected = decisions.rejected.saturating_add(1);
+                        evidence.push(session_usage_evidence(SessionEvidenceInput {
+                            file,
+                            line_number: line_index + 1,
+                            line,
+                            request_id: &request_id,
+                            session_id: &session_id,
+                            event_index,
+                            event_time_ms: Some(event_time_ms),
+                            model: Some(&model),
+                            parsed_usage: Some(parsed_usage),
+                            delta: Some(delta),
+                            attribution: None,
+                            fingerprint: None,
+                            decision: DECISION_REJECTED,
+                            decision_reason: Some(reason),
+                            superseded_by: None,
+                        }));
+                        continue;
+                    }
+                };
+
+                let fingerprint =
+                    fingerprint_for_event(&attribution, &model, delta, Some(event_time_ms));
+                let (_, _, evidence_id) =
+                    session_evidence_identity(file, line_index + 1, line, &request_id);
+                if let Some((reason, superseded_by)) =
+                    dedupe.accept_or_reason(&request_id, &fingerprint, &evidence_id)
+                {
+                    summary.exclusions.duplicate_events =
+                        summary.exclusions.duplicate_events.saturating_add(1);
+                    decisions.superseded = decisions.superseded.saturating_add(1);
+                    evidence.push(session_usage_evidence(SessionEvidenceInput {
+                        file,
+                        line_number: line_index + 1,
+                        line,
+                        request_id: &request_id,
+                        session_id: &session_id,
+                        event_index,
+                        event_time_ms: Some(event_time_ms),
+                        model: Some(&model),
+                        parsed_usage: Some(parsed_usage),
+                        delta: Some(delta),
+                        attribution: Some(&attribution),
+                        fingerprint: Some(fingerprint),
+                        decision: DECISION_SUPERSEDED,
+                        decision_reason: Some(reason),
+                        superseded_by: Some(&superseded_by),
+                    }));
+                    continue;
+                }
+                let accepted_evidence = session_usage_evidence(SessionEvidenceInput {
+                    file,
+                    line_number: line_index + 1,
+                    line,
+                    request_id: &request_id,
+                    session_id: &session_id,
+                    event_index,
+                    event_time_ms: Some(event_time_ms),
+                    model: Some(&model),
+                    parsed_usage: Some(parsed_usage),
+                    delta: Some(delta),
+                    attribution: Some(&attribution),
+                    fingerprint: Some(fingerprint.clone()),
+                    decision: DECISION_ACCEPTED,
+                    decision_reason: Some(accepted_decision_reason(&attribution)),
+                    superseded_by: None,
                 });
+                let evidence_id = accepted_evidence.evidence_id.clone();
+                let cost = calculate_cost(&model, delta);
+                let decision = EvidenceClassifier::accept_session_evidence(accepted_evidence, cost);
+                evidence.push(decision.evidence);
+                if let Some(event) = decision.accepted {
+                    debug_assert_eq!(event.evidence_id, evidence_id);
+                    events.push(event);
+                    decisions.accepted = decisions.accepted.saturating_add(1);
+                }
+                if let Some(fact) = decision.fact {
+                    facts.push(fact);
+                }
             }
             _ => {}
         }
     }
 }
 
-fn parse_usage_counts(payload: &Value) -> Option<UsageCounts> {
+fn parse_usage_counts(payload: &Value) -> Option<ParsedUsage> {
     let info = payload.get("info")?;
-    let usage = info
-        .get("total_token_usage")
-        .or_else(|| info.get("last_token_usage"))?;
+    let (usage, usage_shape, usage_confidence) = if let Some(usage) = info.get("total_token_usage")
+    {
+        (usage, USAGE_SHAPE_CUMULATIVE_TOTAL_DELTA, CONFIDENCE_HIGH)
+    } else {
+        (
+            info.get("last_token_usage")?,
+            USAGE_SHAPE_LAST_TOKEN_USAGE,
+            CONFIDENCE_LOW,
+        )
+    };
     let input_tokens = usage.get("input_tokens")?.as_u64()?;
     let cached_input_tokens = usage
         .get("cached_input_tokens")
@@ -1568,17 +3815,21 @@ fn parse_usage_counts(payload: &Value) -> Option<UsageCounts> {
         .and_then(Value::as_u64)
         .unwrap_or(0)
         .min(input_tokens);
-    Some(UsageCounts {
-        input_tokens,
-        cached_input_tokens,
-        output_tokens: usage
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        reasoning_output_tokens: usage
-            .get("reasoning_output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
+    Some(ParsedUsage {
+        counts: UsageCounts {
+            input_tokens,
+            cached_input_tokens,
+            output_tokens: usage
+                .get("output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+            reasoning_output_tokens: usage
+                .get("reasoning_output_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        },
+        usage_shape,
+        usage_confidence,
     })
 }
 
@@ -1601,16 +3852,23 @@ fn usage_delta(previous: Option<UsageCounts>, current: UsageCounts) -> Option<Us
     })
 }
 
+#[allow(dead_code)]
 fn add_event_usage(
     accounts: &mut BTreeMap<String, AccountAggregate>,
     global_models: &mut BTreeMap<String, ModelAggregate>,
     event: &UsageEvent,
 ) {
     let account = accounts
-        .entry(event.profile.clone())
+        .entry(event.account_identity_key.clone())
         .or_insert_with(|| AccountAggregate {
+            profile: event.profile.clone(),
+            account_identity_key: Some(event.account_identity_key.clone()),
+            legacy_account_key: None,
             account_label: event.account_label.clone(),
             official_source: event.official_source.clone(),
+            ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
+            attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
+            attribution_window_id: None,
             ..AccountAggregate::default()
         });
     add_to_aggregate(&mut account.aggregate, event.delta, &event.cost.breakdown);
@@ -1623,6 +3881,41 @@ fn add_event_usage(
         global_models.entry(event.model.clone()).or_default(),
         event.delta,
         &event.cost,
+    );
+}
+
+fn add_fact_usage(
+    accounts: &mut BTreeMap<String, AccountAggregate>,
+    global_models: &mut BTreeMap<String, ModelAggregate>,
+    fact: &UsageFact,
+) {
+    let key = fact
+        .account_identity_key
+        .as_deref()
+        .or(fact.legacy_account_key.as_deref())
+        .unwrap_or(&fact.profile)
+        .to_string();
+    let account = accounts.entry(key).or_insert_with(|| AccountAggregate {
+        profile: fact.profile.clone(),
+        account_identity_key: fact.account_identity_key.clone(),
+        legacy_account_key: fact.legacy_account_key.clone(),
+        account_label: fact.account_label.clone(),
+        official_source: fact.official_source.clone(),
+        ledger_layer: fact.ledger_layer.clone(),
+        attribution_kind: fact.attribution_kind.clone(),
+        attribution_window_id: fact.attribution_window_id.clone(),
+        ..AccountAggregate::default()
+    });
+    add_to_aggregate(&mut account.aggregate, fact.delta, &fact.cost.breakdown);
+    add_to_model(
+        account.models.entry(fact.model.clone()).or_default(),
+        fact.delta,
+        &fact.cost,
+    );
+    add_to_model(
+        global_models.entry(fact.model.clone()).or_default(),
+        fact.delta,
+        &fact.cost,
     );
 }
 
@@ -1817,11 +4110,16 @@ fn strip_date_suffix(value: &str) -> String {
     value.to_string()
 }
 
-fn account_to_summary(profile: String, account: AccountAggregate) -> OpenAiUsageAccountSummary {
+fn account_to_summary(account: AccountAggregate) -> OpenAiUsageAccountSummary {
     OpenAiUsageAccountSummary {
-        profile,
+        profile: account.profile,
+        account_identity_key: account.account_identity_key,
+        legacy_account_key: account.legacy_account_key,
         account_label: account.account_label,
         official_source: account.official_source,
+        ledger_layer: account.ledger_layer,
+        attribution_kind: account.attribution_kind,
+        attribution_window_id: account.attribution_window_id,
         request_count: account.aggregate.requests,
         tokens: account.aggregate.tokens,
         cost: account.aggregate.cost,
@@ -1911,6 +4209,16 @@ mod tests {
     fn write_session(codex_home: &Path, body: &str) {
         let session_dir = codex_home
             .join("sessions")
+            .join("2999")
+            .join("01")
+            .join("01");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(session_dir.join("rollout-test.jsonl"), body).unwrap();
+    }
+
+    fn write_archived_session(codex_home: &Path, body: &str) {
+        let session_dir = codex_home
+            .join("archived_sessions")
             .join("2999")
             .join("01")
             .join("01");
@@ -2035,6 +4343,7 @@ mod tests {
                 observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
                 profile: Some("a".to_string()),
                 account_label: Some("acct_A".to_string()),
+                account_identity_key: Some("acct_key_a".to_string()),
                 openai_base_url: None,
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
@@ -2048,6 +4357,7 @@ mod tests {
                 observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
                 profile: Some("b".to_string()),
                 account_label: Some("acct_B".to_string()),
+                account_identity_key: Some("acct_key_b".to_string()),
                 openai_base_url: None,
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
@@ -2086,6 +4396,7 @@ mod tests {
                 observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
                 profile: Some("a".to_string()),
                 account_label: Some("acct_A".to_string()),
+                account_identity_key: Some("acct_key_a".to_string()),
                 openai_base_url: None,
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
@@ -2099,6 +4410,7 @@ mod tests {
                 observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
                 profile: Some("b".to_string()),
                 account_label: Some("acct_B".to_string()),
+                account_identity_key: Some("acct_key_b".to_string()),
                 openai_base_url: None,
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
@@ -2211,6 +4523,522 @@ mod tests {
         assert_eq!(second.tokens.input_tokens, 150);
         assert_eq!(second.tokens.output_tokens, 15);
         let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn evidence_ledger_records_accepted_decisions_and_versions() {
+        let codex_home = temp_codex_home("evidence-ledger");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-evidence"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":30,"output_tokens":15,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+        assert_eq!(summary.exclusions.accepted_events, 2);
+        assert_eq!(summary.exclusions.candidate_events, 0);
+        assert_eq!(summary.exclusions.superseded_events, 0);
+
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let accepted_evidence = conn
+            .query_row(
+                "SELECT COUNT(*) FROM openai_usage_evidence WHERE decision = 'accepted'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(accepted_evidence, 2);
+        let accepted_events_with_evidence = conn
+            .query_row(
+                "SELECT COUNT(*) FROM openai_usage_events WHERE evidence_id IS NOT NULL AND source_type = ?1",
+                [SOURCE_CODEX_SESSION_JSONL],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(accepted_events_with_evidence, 2);
+        let accepted_events_with_account_key = conn
+            .query_row(
+                "SELECT COUNT(*) FROM openai_usage_events WHERE account_identity_key IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(accepted_events_with_account_key, 2);
+        let versions = conn
+            .query_row(
+                "SELECT parser_version, classifier_version, dedupe_version, pricing_version, ledger_schema_version, layer_classifier_version, attribution_backfill_version FROM openai_usage_sync_state WHERE id = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(versions.0, EVIDENCE_PARSER_VERSION);
+        assert_eq!(versions.1, EVIDENCE_CLASSIFIER_VERSION);
+        assert_eq!(versions.2, EVIDENCE_DEDUPE_VERSION);
+        assert_eq!(versions.3, PRICING_VERSION);
+        assert_eq!(versions.4, LEDGER_SCHEMA_VERSION);
+        assert_eq!(versions.5, LAYER_CLASSIFIER_VERSION);
+        assert_eq!(versions.6, ATTRIBUTION_BACKFILL_VERSION);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn auth_identity_change_rebuilds_and_removes_strict_accepted_totals() {
+        let codex_home = temp_codex_home("auth-signature-rebuild");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-auth"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let first = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+        assert_eq!(first.total_requests, 1);
+
+        fs::write(
+            codex_home.join("auth.json"),
+            r#"{"tokens":{"account_id":"acct_B_changed"}}"#,
+        )
+        .unwrap();
+        let second = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+
+        assert_eq!(second.total_requests, 0);
+        assert_eq!(second.exclusions.accepted_events, 0);
+        assert!(second.exclusions.candidate_events > 0);
+        assert!(second.exclusions.candidate_unattributed_events > 0);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let accepted_events = conn
+            .query_row("SELECT COUNT(*) FROM openai_usage_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(accepted_events, 0);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn official_attribution_without_account_key_becomes_legacy_fact_not_strict() {
+        let codex_home = temp_codex_home("legacy-attribution-no-key");
+        fs::create_dir_all(&codex_home).unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("legacy".to_string()),
+                account_label: Some("legacy".to_string()),
+                account_identity_key: None,
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-legacy"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+
+        assert_eq!(summary.total_requests, 0);
+        assert_eq!(summary.exclusions.accepted_events, 1);
+        assert_eq!(summary.exclusions.strict_proven_events, 0);
+        assert_eq!(summary.exclusions.legacy_profile_attributed_events, 1);
+        assert_eq!(summary.exclusions.unattributed, 0);
+        assert_eq!(
+            summary
+                .layer_summaries
+                .iter()
+                .find(|layer| layer.ledger_layer == LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED)
+                .map(|layer| layer.request_count),
+            Some(1)
+        );
+        let legacy = load_openai_usage_summary(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_LEGACY.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(legacy.total_requests, 1);
+        let combined = load_openai_usage_summary(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(combined.total_requests, 1);
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(dashboard.summary.total_requests, 0);
+        assert_eq!(dashboard.logs.total, 0);
+        assert_eq!(dashboard.account_summary.len(), 1);
+        assert_eq!(dashboard.account_summary[0].profile, "legacy");
+        assert_eq!(
+            dashboard.account_summary[0].ledger_layer,
+            LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED
+        );
+        assert_eq!(dashboard.account_summary[0].request_count, 1);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let strict_events = conn
+            .query_row("SELECT COUNT(*) FROM openai_usage_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(strict_events, 0);
+        let legacy_facts = conn
+            .query_row(
+                "SELECT COUNT(*) FROM openai_usage_facts WHERE ledger_layer = 'legacy_profile_attributed' AND account_identity_key IS NULL AND legacy_account_key LIKE 'legacy_profile:legacy:%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(legacy_facts, 1);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn sessions_without_attribution_are_recorded_as_candidate_evidence() {
+        let codex_home = temp_codex_home("no-attribution-evidence");
+        fs::create_dir_all(&codex_home).unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-none"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+
+        assert_eq!(summary.total_requests, 0);
+        assert_eq!(summary.exclusions.accepted_events, 0);
+        assert_eq!(summary.exclusions.candidate_events, 1);
+        assert_eq!(summary.exclusions.candidate_unattributed_events, 1);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let candidate = conn
+            .query_row(
+                "SELECT decision, ledger_layer, decision_reason FROM openai_usage_evidence",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(candidate.0, DECISION_CANDIDATE);
+        assert_eq!(candidate.1, LEDGER_LAYER_CANDIDATE_UNATTRIBUTED);
+        assert_eq!(candidate.2, "no attribution record covered this event");
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn duplicate_archived_session_writes_superseded_evidence_without_key_collision() {
+        let codex_home = temp_codex_home("archived-session-dedupe");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let body = [
+            r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-dup"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":30,"output_tokens":15,"reasoning_output_tokens":0}}}}"#,
+        ]
+        .join("\n");
+        write_session(&codex_home, &body);
+        write_archived_session(&codex_home, &body);
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.exclusions.accepted_events, 2);
+        assert_eq!(summary.exclusions.superseded_events, 2);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let superseded_rows = conn
+            .query_row(
+                "SELECT COUNT(*) FROM openai_usage_evidence WHERE decision = 'superseded' AND superseded_by IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(superseded_rows, 2);
+        let total_evidence = conn
+            .query_row("SELECT COUNT(*) FROM openai_usage_evidence", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap();
+        assert_eq!(total_evidence, 4);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn legacy_nullable_account_key_events_table_is_rebuilt() {
+        let codex_home = temp_codex_home("legacy-nullable-account-key");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let ledger_path = get_openai_usage_ledger_path(Some(&codex_home));
+        fs::create_dir_all(ledger_path.parent().unwrap()).unwrap();
+        let legacy_conn = Connection::open(&ledger_path).unwrap();
+        legacy_conn
+            .execute_batch(
+                r#"
+                CREATE TABLE openai_usage_events (
+                    request_id TEXT PRIMARY KEY,
+                    fingerprint TEXT NOT NULL UNIQUE,
+                    account_identity_key TEXT
+                );
+                "#,
+            )
+            .unwrap();
+        drop(legacy_conn);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-schema"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+
+        assert_eq!(summary.total_requests, 1);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        assert!(
+            table_column_not_null(&conn, "openai_usage_events", "account_identity_key").unwrap()
+        );
+        let account_key = conn
+            .query_row(
+                "SELECT account_identity_key FROM openai_usage_events",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap();
+        assert!(!account_key.is_empty());
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn legacy_evidence_table_without_layer_columns_is_migrated_before_indexing() {
+        let codex_home = temp_codex_home("legacy-evidence-layer-migration");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let ledger_path = get_openai_usage_ledger_path(Some(&codex_home));
+        fs::create_dir_all(ledger_path.parent().unwrap()).unwrap();
+        let legacy_conn = Connection::open(&ledger_path).unwrap();
+        legacy_conn
+            .execute_batch(
+                r#"
+                CREATE TABLE openai_usage_evidence (
+                    evidence_id TEXT PRIMARY KEY,
+                    request_id TEXT,
+                    fingerprint TEXT,
+                    session_id TEXT,
+                    source_type TEXT NOT NULL,
+                    source_priority INTEGER NOT NULL,
+                    source_locator TEXT NOT NULL,
+                    source_hash TEXT NOT NULL,
+                    parser_version TEXT NOT NULL,
+                    event_started_at_ms INTEGER,
+                    event_completed_at_ms INTEGER,
+                    observed_at_ms INTEGER,
+                    turn_index INTEGER,
+                    response_id TEXT,
+                    previous_response_id TEXT,
+                    model TEXT,
+                    request_model TEXT,
+                    pricing_model TEXT,
+                    usage_shape TEXT NOT NULL,
+                    usage_confidence TEXT NOT NULL,
+                    input_tokens INTEGER,
+                    cached_input_tokens INTEGER,
+                    output_tokens INTEGER,
+                    reasoning_output_tokens INTEGER,
+                    raw_usage_json TEXT,
+                    profile TEXT,
+                    account_identity_key TEXT,
+                    account_label TEXT,
+                    identity_source TEXT,
+                    identity_observed_at_ms INTEGER,
+                    account_confidence TEXT NOT NULL,
+                    effective_base_url TEXT,
+                    official_source TEXT,
+                    official_confidence TEXT NOT NULL,
+                    status_code INTEGER,
+                    decision TEXT NOT NULL,
+                    decision_reason TEXT,
+                    superseded_by TEXT,
+                    created_at_ms INTEGER NOT NULL
+                );
+                "#,
+            )
+            .unwrap();
+        drop(legacy_conn);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-evidence-schema"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+
+        assert_eq!(summary.total_requests, 1);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let columns = table_columns(&conn, "openai_usage_evidence").unwrap();
+        assert!(columns.contains("ledger_layer"));
+        assert!(columns.contains("legacy_account_key"));
+        let index_count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_openai_usage_evidence_layer'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn last_token_usage_is_accepted_with_low_usage_confidence() {
+        let codex_home = temp_codex_home("last-token-usage");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-last"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":5,"output_tokens":3,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let summary = load_openai_usage_summary(Some(&codex_home), None).unwrap();
+        assert_eq!(summary.total_requests, 1);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let row = conn
+            .query_row(
+                "SELECT usage_shape, usage_confidence FROM openai_usage_evidence WHERE decision = 'accepted'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, USAGE_SHAPE_LAST_TOKEN_USAGE);
+        assert_eq!(row.1, CONFIDENCE_LOW);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn ccswitch_rows_are_candidate_evidence_not_accepted_events() {
+        let temp = temp_codex_home("ccswitch-evidence");
+        fs::create_dir_all(&temp).unwrap();
+        let db_path = temp.join("cc-switch.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE proxy_request_logs (
+                request_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                model TEXT,
+                request_model TEXT,
+                pricing_model TEXT,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                status_code INTEGER,
+                session_id TEXT,
+                data_source TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE TABLE usage_daily_rollups (
+                date TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                model TEXT,
+                request_model TEXT,
+                pricing_model TEXT,
+                request_count INTEGER NOT NULL,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL
+            );
+            INSERT INTO proxy_request_logs VALUES
+              ('proxy-1','openai','codex','gpt-5.3-codex','gpt-5.3-codex','gpt-5.3-codex',10,2,4,200,'s-proxy','proxy',32503680000),
+              ('session-1','_codex_session','codex','gpt-5.3-codex','gpt-5.3-codex',NULL,20,3,5,200,'s-session','codex_session',32503680001);
+            INSERT INTO usage_daily_rollups VALUES
+              ('2999-01-01','codex','openai','gpt-5.3-codex','gpt-5.3-codex','gpt-5.3-codex',2,30,5,9);
+            "#,
+        )
+        .unwrap();
+
+        let mut evidence = Vec::new();
+        collect_ccswitch_proxy_request_evidence(&conn, &db_path, &mut evidence).unwrap();
+        collect_ccswitch_rollup_evidence(&conn, &db_path, &mut evidence).unwrap();
+
+        assert_eq!(evidence.len(), 3);
+        assert!(evidence
+            .iter()
+            .all(|entry| entry.decision == DECISION_CANDIDATE));
+        assert!(evidence
+            .iter()
+            .any(|entry| entry.source_type == SOURCE_CCSWITCH_PROXY));
+        assert!(evidence
+            .iter()
+            .any(|entry| entry.source_type == SOURCE_CCSWITCH_CODEX_SESSION));
+        assert!(evidence
+            .iter()
+            .any(|entry| entry.source_type == SOURCE_CCSWITCH_ROLLUP));
+        assert!(evidence
+            .iter()
+            .all(|entry| entry.account_confidence == CONFIDENCE_UNPROVEN));
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn future_response_source_has_highest_priority_without_collecting_rows() {
+        let adapter = FutureOpenAiResponseUsageAdapter;
+        assert_eq!(adapter.source_type(), SOURCE_OPENAI_RESPONSE_USAGE);
+        assert!(source_priority(adapter.source_type()) > source_priority(SOURCE_CCSWITCH_PROXY));
+        assert!(adapter.collect(Path::new("unused")).unwrap().is_empty());
     }
 
     #[test]

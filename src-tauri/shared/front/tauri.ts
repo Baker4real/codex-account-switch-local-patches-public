@@ -240,13 +240,6 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     reasoning_output_tokens: 28_000,
     real_total_tokens: 978_000,
   };
-  const totalTokens = {
-    input_tokens: primaryTokens.input_tokens + secondaryTokens.input_tokens,
-    cached_input_tokens: primaryTokens.cached_input_tokens + secondaryTokens.cached_input_tokens,
-    output_tokens: primaryTokens.output_tokens + secondaryTokens.output_tokens,
-    reasoning_output_tokens: primaryTokens.reasoning_output_tokens + secondaryTokens.reasoning_output_tokens,
-    real_total_tokens: primaryTokens.real_total_tokens + secondaryTokens.real_total_tokens,
-  };
   const primaryCost = {
     input_cost_micros: 1_190_000,
     cached_input_cost_micros: 196_000,
@@ -261,28 +254,25 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     total_cost_micros: 1_863_800,
     unpriced_tokens: 0,
   };
-  const totalCost = {
-    input_cost_micros: primaryCost.input_cost_micros + secondaryCost.input_cost_micros,
-    cached_input_cost_micros:
-      primaryCost.cached_input_cost_micros + secondaryCost.cached_input_cost_micros,
-    output_cost_micros: primaryCost.output_cost_micros + secondaryCost.output_cost_micros,
-    total_cost_micros: primaryCost.total_cost_micros + secondaryCost.total_cost_micros,
-    unpriced_tokens: 0,
-  };
   const generatedAt = Date.now();
   return {
     generated_at_ms: generatedAt,
     attribution_since_ms: generatedAt - 6 * 60 * 60 * 1000,
     range_start_ms: generatedAt - 24 * 60 * 60 * 1000,
     range_end_ms: generatedAt,
-    total_requests: 30,
-    tokens: totalTokens,
-    cost: totalCost,
-    cache_hit_rate: totalTokens.cached_input_tokens / totalTokens.input_tokens,
+    total_requests: 18,
+    tokens: primaryTokens,
+    cost: primaryCost,
+    cache_hit_rate: primaryTokens.cached_input_tokens / primaryTokens.input_tokens,
     accounts: [{
       profile: previewCurrentCard.folder_name,
+      account_identity_key: "acct_preview",
+      legacy_account_key: null,
       account_label: previewCurrentCard.account_label,
       official_source: "OpenAI default",
+      ledger_layer: "strict_proven",
+      attribution_kind: "strict_account",
+      attribution_window_id: null,
       request_count: 18,
       tokens: primaryTokens,
       cost: primaryCost,
@@ -294,34 +284,12 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
         priced: true,
         pricing_note: null,
       }],
-    }, {
-      profile: "preview-alt",
-      account_label: "preview.secondary@example.com",
-      official_source: "OpenAI default",
-      request_count: 12,
-      tokens: secondaryTokens,
-      cost: secondaryCost,
-      models: [{
-        model: "gpt-5.4",
-        request_count: 12,
-        tokens: secondaryTokens,
-        cost: secondaryCost,
-        priced: true,
-        pricing_note: null,
-      }],
     }],
     models: [{
       model: "gpt-5.3-codex",
       request_count: 18,
       tokens: primaryTokens,
       cost: primaryCost,
-      priced: true,
-      pricing_note: null,
-    }, {
-      model: "gpt-5.4",
-      request_count: 12,
-      tokens: secondaryTokens,
-      cost: secondaryCost,
       priced: true,
       pricing_note: null,
     }],
@@ -333,7 +301,27 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
       missing_model: 0,
       invalid_delta: 0,
       malformed_lines: 0,
+      accepted_events: 65,
+      candidate_events: 0,
+      rejected_events: 9,
+      superseded_events: 2,
+      strict_proven_events: 18,
+      legacy_profile_attributed_events: 12,
+      candidate_unattributed_events: 0,
+      rejected_invalid_events: 9,
     },
+    scope: "strict",
+    layer_summaries: [{
+      ledger_layer: "strict_proven",
+      request_count: 18,
+      tokens: primaryTokens,
+      cost: primaryCost,
+    }, {
+      ledger_layer: "legacy_profile_attributed",
+      request_count: 12,
+      tokens: secondaryTokens,
+      cost: secondaryCost,
+    }],
     pricing_source: "OpenAI API pricing",
     pricing_checked_at: "2026-07-07",
   };
@@ -377,6 +365,9 @@ function previewOpenAiUsageLogs(): OpenAiUsageRequestLogPage {
     profile: previewCurrentCard.folder_name,
     account_label: previewCurrentCard.account_label,
     official_source: "OpenAI default",
+    ledger_layer: "strict_proven",
+    attribution_kind: "strict_account",
+    attribution_window_id: null,
     model: "gpt-5.3-codex",
     tokens: {
       input_tokens: 80_000 + index * 1_000,
@@ -391,6 +382,7 @@ function previewOpenAiUsageLogs(): OpenAiUsageRequestLogPage {
     status_code: 200,
     created_at_ms: Date.now() - index * 60_000,
     data_source: "codex_session",
+    usage_confidence: "high",
   }));
   return {
     data: rows,

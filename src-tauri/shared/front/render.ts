@@ -68,6 +68,7 @@ export const elements = {
   settingsCheckUpdateButton: requiredElement<HTMLButtonElement>("settings-check-update-button"),
   usageRefreshButton: optionalElement<HTMLButtonElement>("usage-refresh-button"),
   usageRangeSelect: optionalElement<HTMLSelectElement>("usage-range-select"),
+  usageScopeSelect: optionalElement<HTMLSelectElement>("usage-scope-select"),
   usageStartInput: optionalElement<HTMLInputElement>("usage-start-input"),
   usageEndInput: optionalElement<HTMLInputElement>("usage-end-input"),
   usageLiveEndCheckbox: optionalElement<HTMLInputElement>("usage-live-end-checkbox"),
@@ -882,7 +883,8 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
   }
 
   const accountTable = buildUsageAccountTable(state.usageAccountSummary);
-  if (!summary || summary.total_requests === 0) {
+  const hasLayerUsage = (summary?.layer_summaries ?? []).some((layer) => layer.request_count > 0);
+  if (!summary || (summary.total_requests === 0 && !hasLayerUsage)) {
     const hasActiveUsageFilter = Boolean(
       state.usageProfileFilter ||
         state.usageModelFilter ||
@@ -916,14 +918,15 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
     elements.usageAccountPanel.innerHTML = accountTable;
   }
   elements.usageSummaryPanel.innerHTML = `
+    ${buildUsageLayerSummaryCards(summary)}
     <div class="usage-hero-grid">
       <article class="usage-hero-card usage-hero-card--wide">
-        <span>${t(state.locale, "usageRealTokens")}</span>
+        <span>${t(state.locale, "usageLocalTokens")}</span>
         <strong>${formatInteger(summary.tokens.real_total_tokens)}</strong>
         <small>${t(state.locale, "usageAttributionSince")}: ${formatDateTimeMs(summary.attribution_since_ms)}</small>
       </article>
       <article class="usage-hero-card">
-        <span>${t(state.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageEstimatedCost")}</span>
+        <span>${t(state.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageNonOfficialEstimate")}</span>
         <strong>${formatUsageCost(summary.cost)}</strong>
         <small>${summary.pricing_source} · ${summary.pricing_checked_at}</small>
       </article>
@@ -960,6 +963,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
 function renderUsageControls(summary: OpenAiUsageSummary | null): void {
   if (
     !elements.usageRangeSelect ||
+    !elements.usageScopeSelect ||
     !elements.usageLiveEndCheckbox ||
     !elements.usageRefreshIntervalSelect ||
     !elements.usageStartInput ||
@@ -970,6 +974,7 @@ function renderUsageControls(summary: OpenAiUsageSummary | null): void {
     return;
   }
   elements.usageRangeSelect.value = state.usageRangePreset;
+  elements.usageScopeSelect.value = state.usageScope;
   elements.usageLiveEndCheckbox.checked = state.usageLiveEnd;
   elements.usageRefreshIntervalSelect.value = String(state.usageRefreshIntervalMs);
   elements.usageStartInput.value = formatDateTimeLocalInput(state.usageCustomStartDate);
@@ -1039,6 +1044,78 @@ function formatDateTimeLocalInput(value: number | null): string {
   ].join("");
 }
 
+function buildUsageLayerSummaryCards(summary: OpenAiUsageSummary): string {
+  const strict = findUsageLayer(summary, "strict_proven");
+  const legacy = findUsageLayer(summary, "legacy_profile_attributed");
+  return `
+    <div class="usage-hero-grid">
+      ${buildUsageLayerCard("usageStrictProven", strict)}
+      ${buildUsageLayerCard("usageLegacyProfileAttributed", legacy)}
+    </div>
+  `;
+}
+
+function findUsageLayer(summary: OpenAiUsageSummary, ledgerLayer: string) {
+  return summary.layer_summaries.find((layer) => layer.ledger_layer === ledgerLayer) ?? {
+    ledger_layer: ledgerLayer,
+    request_count: 0,
+    tokens: {
+      input_tokens: 0,
+      cached_input_tokens: 0,
+      output_tokens: 0,
+      reasoning_output_tokens: 0,
+      real_total_tokens: 0,
+    },
+    cost: {
+      input_cost_micros: 0,
+      cached_input_cost_micros: 0,
+      output_cost_micros: 0,
+      total_cost_micros: 0,
+      unpriced_tokens: 0,
+    },
+  };
+}
+
+function buildUsageLayerCard(labelKey: MessageKey, layer: ReturnType<typeof findUsageLayer>): string {
+  return `
+    <article class="usage-hero-card">
+      <span>${t(state.locale, labelKey)}</span>
+      <strong>${formatInteger(layer.tokens.real_total_tokens)}</strong>
+      <small>${formatInteger(layer.request_count)} ${t(state.locale, "usageRequests")} · ${formatUsageCost(layer.cost)}</small>
+    </article>
+  `;
+}
+
+function formatUsageLayerLabel(layer: string): string {
+  switch (layer) {
+    case "strict_proven":
+      return t(state.locale, "usageStrictProven");
+    case "legacy_profile_attributed":
+      return t(state.locale, "usageLegacyProfileAttributed");
+    case "candidate_unattributed":
+      return t(state.locale, "usageCandidateUnattributed");
+    case "rejected_invalid":
+      return t(state.locale, "usageRejectedInvalid");
+    case "superseded":
+      return t(state.locale, "usageSupersededLayer");
+    default:
+      return layer;
+  }
+}
+
+function formatUsageAttributionKind(kind: string): string {
+  switch (kind) {
+    case "strict_account":
+      return t(state.locale, "usageStrictAccount");
+    case "legacy_profile":
+      return t(state.locale, "usageLegacyProfile");
+    case "unattributed":
+      return t(state.locale, "usageUnattributedEvidence");
+    default:
+      return kind;
+  }
+}
+
 function buildUsageTokenMetric(labelKey: MessageKey, value: number): string {
   return `
     <article class="usage-token-card">
@@ -1060,6 +1137,8 @@ function buildUsageAccountTable(accounts: OpenAiUsageAccountSummary[]): string {
     <tr${selectedClass}>
       <td>${escapeHtml(account.profile)}</td>
       <td>${escapeHtml(account.account_label ?? "--")}</td>
+      <td>${escapeHtml(formatUsageLayerLabel(account.ledger_layer))}</td>
+      <td>${escapeHtml(formatUsageAttributionKind(account.attribution_kind))}</td>
       <td>${escapeHtml(account.official_source)}</td>
       <td>${formatInteger(account.request_count)}</td>
       <td>${formatInteger(account.tokens.real_total_tokens)}</td>
@@ -1076,6 +1155,8 @@ function buildUsageAccountTable(accounts: OpenAiUsageAccountSummary[]): string {
             <tr>
               <th>${t(state.locale, "usageProfile")}</th>
               <th>${t(state.locale, "usageAccount")}</th>
+              <th>${t(state.locale, "usageLedgerLayer")}</th>
+              <th>${t(state.locale, "usageAttributionKind")}</th>
               <th>${t(state.locale, "usageOfficialSource")}</th>
               <th>${t(state.locale, "usageRequests")}</th>
               <th>${t(state.locale, "usageTokens")}</th>
@@ -1171,6 +1252,8 @@ function buildUsageLogsTable(): string {
       <td><code>${escapeHtml(log.request_id)}</code></td>
       <td>${formatDateTimeMs(log.created_at_ms)}</td>
       <td>${escapeHtml(log.account_label ?? log.profile)}</td>
+      <td>${escapeHtml(formatUsageLayerLabel(log.ledger_layer))}</td>
+      <td>${escapeHtml(log.usage_confidence)}</td>
       <td>${escapeHtml(log.model)}</td>
       <td>${formatInteger(log.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(log.cost)}</td>
@@ -1198,13 +1281,15 @@ function buildUsageLogsTable(): string {
               <th>${t(state.locale, "usageRequestId")}</th>
               <th>${t(state.locale, "usageCreatedAt")}</th>
               <th>${t(state.locale, "usageAccount")}</th>
+              <th>${t(state.locale, "usageLedgerLayer")}</th>
+              <th>${t(state.locale, "usageDataQuality")}</th>
               <th>${t(state.locale, "usageModel")}</th>
               <th>${t(state.locale, "usageTokens")}</th>
               <th>${t(state.locale, "usageCost")}</th>
               <th>${t(state.locale, "usageDataSource")}</th>
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="7">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="9">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
         </table>
       </div>
     </article>
@@ -1236,8 +1321,24 @@ function buildUsageEvidenceMarkup(summary: OpenAiUsageSummary | null): string {
     missing_model: 0,
     invalid_delta: 0,
     malformed_lines: 0,
+    accepted_events: 0,
+    candidate_events: 0,
+    rejected_events: 0,
+    superseded_events: 0,
+    strict_proven_events: 0,
+    legacy_profile_attributed_events: 0,
+    candidate_unattributed_events: 0,
+    rejected_invalid_events: 0,
   };
   const items: Array<[MessageKey, number]> = [
+    ["usageStrictProven", exclusions.strict_proven_events],
+    ["usageLegacyProfileAttributed", exclusions.legacy_profile_attributed_events],
+    ["usageCandidateUnattributed", exclusions.candidate_unattributed_events],
+    ["usageRejectedInvalid", exclusions.rejected_invalid_events],
+    ["usageAcceptedEvents", exclusions.accepted_events],
+    ["usageCandidateEvents", exclusions.candidate_events],
+    ["usageRejectedEvents", exclusions.rejected_events],
+    ["usageSupersededEvents", exclusions.superseded_events],
     ["usageDuplicateEvents", exclusions.duplicate_events],
     ["usageNonOfficialBaseUrl", exclusions.non_official_base_url],
     ["usageUnprovenHistory", exclusions.unproven_history],
@@ -1248,7 +1349,7 @@ function buildUsageEvidenceMarkup(summary: OpenAiUsageSummary | null): string {
   ];
   return `
     <article class="usage-evidence-card">
-      <h3>${t(state.locale, "usageEvidence")}</h3>
+      <h3>${t(state.locale, "usageDataQuality")}</h3>
       <div class="usage-evidence-grid">
         ${items.map(([label, value]) => `
           <span>

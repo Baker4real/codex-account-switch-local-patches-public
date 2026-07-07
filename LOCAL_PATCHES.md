@@ -64,7 +64,7 @@ Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dl
 替换前停止远端正在运行的 `codex_switch` 进程，替换后校验远端目标文件 SHA-256
 与本机构建产物一致。已知远端 `home` 的桌面入口曾位于
 `D:\Desktop\codex_switch.exe.lnk`，验证过的安装根目录是
-`D:\Codex\apps\codex_switch`；仍要以实时解析到的快捷方式目标为准。
+该快捷方式 `TargetPath` 所在目录；仍要以实时解析到的快捷方式目标为准。
 
 已沉淀的远端桌面覆盖入口：
 
@@ -81,13 +81,13 @@ npm run deploy:windows:remote-desktop
   和 `release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll`
   读取本机构建产物并计算 SHA-256。
 - `-InspectOnly` 只解析远端快捷方式和当前哈希，不上传、不覆盖；正式执行会
-  上传到远端 `D:\Codex\.tmp\codex-account-switch-deploy\<timestamp>`，
+  上传到远端 `$env:CODEX_REMOTE_STAGE_ROOT\<timestamp>`，
   由远端脚本备份旧文件、停止 `codex_switch`、覆盖 exe+dll 并复核哈希。
 - 脚本不保存密码。它复用调用环境里的 `SSH_ASKPASS`，或本机 D 盘 evidence
   目录中已有的 `ssh-askpass-home.cmd`；缺少非交互认证时，先按
   `codex-gsd-codex-c-skill` 里跑通的 DPAPI/SSH_ASKPASS 模式恢复连接。
 - 每次运行的 stdout/stderr、inspect 和 deploy JSON 会落在
-  `D:\Codex\.codex\run-evidence\codex-account-switch\remote-desktop-deploy-*`，
+  `$env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT\remote-desktop-deploy-*`，
   用于事后追踪和回滚定位。
 
 `npm run test:rust:windows-gnu` 只用于当前 `rustc` host 是

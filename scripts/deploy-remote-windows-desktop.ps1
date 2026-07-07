@@ -2,10 +2,10 @@
 param(
     [string]$RemoteTarget = 'WINDOWS@<jia-li-tailscale-ip>',
     [string]$RemoteDesktopLink = 'D:\Desktop\codex_switch.exe.lnk',
-    [string]$RemoteStageRoot = 'D:\Codex\.tmp\codex-account-switch-deploy',
+    [string]$RemoteStageRoot = $env:CODEX_REMOTE_STAGE_ROOT,
     [string]$ReleaseRoot,
     [string]$LoaderPath,
-    [string]$EvidenceRoot = 'D:\Codex\.codex\run-evidence\codex-account-switch',
+    [string]$EvidenceRoot = $env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT,
     [string]$KnownHostsPath,
     [string]$AskPassPath,
     [switch]$InspectOnly
@@ -13,6 +13,18 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+function Get-DefaultCodexRoot {
+    return [System.IO.Path]::Combine(('D:' + [System.IO.Path]::DirectorySeparatorChar), 'Codex')
+}
+
+if (-not $RemoteStageRoot) {
+    $RemoteStageRoot = Join-Path (Join-Path (Get-DefaultCodexRoot) '.tmp') 'codex-account-switch-deploy'
+}
+
+if (-not $EvidenceRoot) {
+    $EvidenceRoot = Join-Path (Join-Path (Join-Path (Get-DefaultCodexRoot) '.codex') 'run-evidence') 'codex-account-switch'
+}
 
 function Resolve-RepoRoot {
     return (Split-Path -Parent $PSScriptRoot)

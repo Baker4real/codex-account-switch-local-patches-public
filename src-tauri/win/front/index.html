@@ -157,6 +157,16 @@
                   <option value="custom" data-i18n-key="usageRangeCustom">Custom</option>
                 </select>
               </label>
+              <label class="usage-control">
+                <span data-i18n-key="usageScopeFilter">Scope</span>
+                <select id="usage-scope-select">
+                  <option value="strict" data-i18n-key="usageScopeStrict">Strict proven</option>
+                  <option value="legacy" data-i18n-key="usageScopeLegacy">Legacy profile estimate</option>
+                  <option value="combined_attributed" data-i18n-key="usageScopeCombined">Strict + legacy</option>
+                  <option value="candidate" data-i18n-key="usageScopeCandidate">Unattributed candidates</option>
+                  <option value="excluded" data-i18n-key="usageScopeExcluded">Excluded evidence</option>
+                </select>
+              </label>
               <label class="usage-control usage-control--datetime">
                 <span data-i18n-key="usageStartTime">Start</span>
                 <input id="usage-start-input" type="datetime-local" />

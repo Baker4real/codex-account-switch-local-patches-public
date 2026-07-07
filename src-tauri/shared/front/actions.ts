@@ -179,6 +179,7 @@ function resolveUsageQuery(): OpenAiUsageQuery {
     profile: state.usageProfileFilter,
     model: state.usageModelFilter,
     status_code: state.usageStatusCodeFilter,
+    scope: state.usageScope,
   };
 }
 
@@ -1201,6 +1202,14 @@ export function bootstrap(): void {
     if (state.usageRangePreset === "custom") {
       ensureUsageCustomRange();
     }
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageScopeSelect?.addEventListener("change", () => {
+    if (!elements.usageScopeSelect) {
+      return;
+    }
+    state.usageScope = elements.usageScopeSelect.value as typeof state.usageScope;
     state.usageLogsPage = 1;
     void refreshUsageData();
   });

@@ -124,8 +124,13 @@ export interface OpenAiUsageModelSummary {
 
 export interface OpenAiUsageAccountSummary {
   profile: string;
+  account_identity_key?: string | null;
+  legacy_account_key?: string | null;
   account_label: string | null;
   official_source: string;
+  ledger_layer: string;
+  attribution_kind: string;
+  attribution_window_id?: string | null;
   request_count: number;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
@@ -140,6 +145,21 @@ export interface OpenAiUsageExclusions {
   missing_model: number;
   invalid_delta: number;
   malformed_lines: number;
+  accepted_events: number;
+  candidate_events: number;
+  rejected_events: number;
+  superseded_events: number;
+  strict_proven_events: number;
+  legacy_profile_attributed_events: number;
+  candidate_unattributed_events: number;
+  rejected_invalid_events: number;
+}
+
+export interface OpenAiUsageLayerSummary {
+  ledger_layer: string;
+  request_count: number;
+  tokens: OpenAiUsageTokenTotals;
+  cost: OpenAiUsageCostBreakdown;
 }
 
 export interface OpenAiUsageSummary {
@@ -154,6 +174,8 @@ export interface OpenAiUsageSummary {
   accounts: OpenAiUsageAccountSummary[];
   models: OpenAiUsageModelSummary[];
   exclusions: OpenAiUsageExclusions;
+  scope: OpenAiUsageScope;
+  layer_summaries: OpenAiUsageLayerSummary[];
   pricing_source: string;
   pricing_checked_at: string;
 }
@@ -165,9 +187,11 @@ export interface OpenAiUsageQuery {
   account_label?: string | null;
   model?: string | null;
   status_code?: number | null;
+  scope?: OpenAiUsageScope | null;
 }
 
 export type OpenAiUsageRangePreset = "today" | "1d" | "7d" | "14d" | "30d" | "custom";
+export type OpenAiUsageScope = "strict" | "legacy" | "combined_attributed" | "candidate" | "excluded";
 
 export interface OpenAiUsageTrendPoint {
   date: string;
@@ -183,6 +207,9 @@ export interface OpenAiUsageRequestLog {
   profile: string;
   account_label: string | null;
   official_source: string;
+  ledger_layer: string;
+  attribution_kind: string;
+  attribution_window_id?: string | null;
   model: string;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
@@ -191,6 +218,7 @@ export interface OpenAiUsageRequestLog {
   status_code: number;
   created_at_ms: number;
   data_source: string;
+  usage_confidence: string;
 }
 
 export interface OpenAiUsageRequestLogPage {

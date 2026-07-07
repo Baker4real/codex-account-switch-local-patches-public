@@ -14,6 +14,7 @@ pub const OPENAI_USAGE_ATTRIBUTION_FILENAME: &str = "openai_usage_attribution.js
 pub const OPENAI_USAGE_LEDGER_FILENAME: &str = "openai_usage.sqlite";
 pub const PROFILES_INDEX_FILENAME: &str = "profiles.json";
 pub const PROFILE_METADATA_FILENAME: &str = "profile.json";
+pub const USAGE_EVIDENCE_DIRNAME: &str = "usage_evidence";
 pub const REFRESH_RUNTIME_DIRNAME: &str = "refresh_runtime";
 pub const LOGIN_RUNTIME_DIRNAME: &str = "login_runtime";
 pub const SWITCH_LOCK_FILENAME: &str = ".switch.lock";
@@ -146,7 +147,7 @@ pub fn is_profile_dir(path: &Path) -> bool {
 
     !matches!(
         name,
-        "_autosave" | WINDOWS_RUNTIME_DIRNAME | MACOS_RUNTIME_DIRNAME
+        "_autosave" | WINDOWS_RUNTIME_DIRNAME | MACOS_RUNTIME_DIRNAME | USAGE_EVIDENCE_DIRNAME
     ) && validate_profile_name(name).is_ok()
 }
 
@@ -191,7 +192,9 @@ pub fn autosave_timestamp() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_profile_dir, MACOS_RUNTIME_DIRNAME, WINDOWS_RUNTIME_DIRNAME};
+    use super::{
+        is_profile_dir, MACOS_RUNTIME_DIRNAME, USAGE_EVIDENCE_DIRNAME, WINDOWS_RUNTIME_DIRNAME,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -210,14 +213,17 @@ mod tests {
         let profile_dir = root.join("a");
         let windows_runtime_dir = root.join(WINDOWS_RUNTIME_DIRNAME);
         let macos_runtime_dir = root.join(MACOS_RUNTIME_DIRNAME);
+        let usage_evidence_dir = root.join(USAGE_EVIDENCE_DIRNAME);
 
         fs::create_dir_all(&profile_dir).unwrap();
         fs::create_dir_all(&windows_runtime_dir).unwrap();
         fs::create_dir_all(&macos_runtime_dir).unwrap();
+        fs::create_dir_all(&usage_evidence_dir).unwrap();
 
         assert!(is_profile_dir(&profile_dir));
         assert!(!is_profile_dir(&windows_runtime_dir));
         assert!(!is_profile_dir(&macos_runtime_dir));
+        assert!(!is_profile_dir(&usage_evidence_dir));
 
         let _ = fs::remove_dir_all(&root);
     }

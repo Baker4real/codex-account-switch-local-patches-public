@@ -293,8 +293,13 @@ pub struct OpenAiUsageModelSummary {
 #[serde(default)]
 pub struct OpenAiUsageAccountSummary {
     pub profile: String,
+    pub account_identity_key: Option<String>,
+    pub legacy_account_key: Option<String>,
     pub account_label: Option<String>,
     pub official_source: String,
+    pub ledger_layer: String,
+    pub attribution_kind: String,
+    pub attribution_window_id: Option<String>,
     pub request_count: u64,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
@@ -311,6 +316,23 @@ pub struct OpenAiUsageExclusions {
     pub missing_model: u64,
     pub invalid_delta: u64,
     pub malformed_lines: u64,
+    pub accepted_events: u64,
+    pub candidate_events: u64,
+    pub rejected_events: u64,
+    pub superseded_events: u64,
+    pub strict_proven_events: u64,
+    pub legacy_profile_attributed_events: u64,
+    pub candidate_unattributed_events: u64,
+    pub rejected_invalid_events: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageLayerSummary {
+    pub ledger_layer: String,
+    pub request_count: u64,
+    pub tokens: OpenAiUsageTokenTotals,
+    pub cost: OpenAiUsageCostBreakdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -327,6 +349,8 @@ pub struct OpenAiUsageSummary {
     pub accounts: Vec<OpenAiUsageAccountSummary>,
     pub models: Vec<OpenAiUsageModelSummary>,
     pub exclusions: OpenAiUsageExclusions,
+    pub scope: String,
+    pub layer_summaries: Vec<OpenAiUsageLayerSummary>,
     pub pricing_source: String,
     pub pricing_checked_at: String,
 }
@@ -340,6 +364,7 @@ pub struct OpenAiUsageQuery {
     pub account_label: Option<String>,
     pub model: Option<String>,
     pub status_code: Option<u16>,
+    pub scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -360,6 +385,9 @@ pub struct OpenAiUsageRequestLog {
     pub profile: String,
     pub account_label: Option<String>,
     pub official_source: String,
+    pub ledger_layer: String,
+    pub attribution_kind: String,
+    pub attribution_window_id: Option<String>,
     pub model: String,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
@@ -368,6 +396,7 @@ pub struct OpenAiUsageRequestLog {
     pub status_code: u16,
     pub created_at_ms: u64,
     pub data_source: String,
+    pub usage_confidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

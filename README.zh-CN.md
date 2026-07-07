@@ -132,7 +132,7 @@ Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msv
 
 替换本机安装目录时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
 
-本地补丁版构建完成后，如需同步到已配置的远端 Windows 桌面入口，先用 `npm run deploy:windows:remote-desktop -- -InspectOnly` 只读确认远端快捷方式目标，再用 `npm run deploy:windows:remote-desktop` 上传并覆盖同一目标目录里的 `codex_switch.exe` 与 `WebView2Loader.dll`。该流程会写入 `D:\Codex\.codex\run-evidence\codex-account-switch\remote-desktop-deploy-*` 作为部署证据；详细规则见 `LOCAL_PATCHES.md`。
+本地补丁版构建完成后，如需同步到已配置的远端 Windows 桌面入口，先用 `npm run deploy:windows:remote-desktop -- -InspectOnly` 只读确认远端快捷方式目标，再用 `npm run deploy:windows:remote-desktop` 上传并覆盖同一目标目录里的 `codex_switch.exe` 与 `WebView2Loader.dll`。该流程会写入 `$env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT\remote-desktop-deploy-*` 作为部署证据；未设置该环境变量时，脚本使用 D 盘 Codex evidence 默认根目录。详细规则见 `LOCAL_PATCHES.md`。
 
 ## 版本与发布
 
