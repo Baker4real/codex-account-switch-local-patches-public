@@ -8,13 +8,13 @@ use super::fs_ops::{
     autosave_auth, backup_root_state_to_profile, clear_active_markers, overlay_directory_contents,
     set_active_marker,
 };
+use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{get_backup_root, get_codex_home, is_profile_dir, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::{
     detect_unmanaged_live_account, resolve_backup_target, resolve_current_profile,
 };
 use super::profiles_index::reload_profiles_index_after_mutation;
-use super::openai_usage::record_current_openai_usage_attribution;
 
 pub(crate) fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard> {
     acquire_process_lock(

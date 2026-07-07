@@ -26,11 +26,11 @@ use super::metadata::{
     load_auth_metadata_from_path, sync_profile_metadata_from_auth,
     sync_root_metadata_if_current_profile,
 };
+use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
 use super::profiles_index::reload_profiles_index_after_mutation;
-use super::openai_usage::record_current_openai_usage_attribution;
 use super::runtime_isolation::{
     clear_runtime_auth_state, prune_runtime_extra_features, seed_runtime_shared_assets,
     RUNTIME_AUTH_FILENAME,

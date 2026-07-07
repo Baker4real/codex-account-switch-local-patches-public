@@ -118,7 +118,10 @@ struct AttributionRecord {
 impl AttributionRecord {
     fn context(&self) -> Option<AttributionContext> {
         self.is_official_openai.then(|| AttributionContext {
-            profile: self.profile.clone().unwrap_or_else(|| "unknown".to_string()),
+            profile: self
+                .profile
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             account_label: self.account_label.clone(),
             official_source: self
                 .official_source
@@ -146,7 +149,11 @@ pub fn load_openai_usage_summary(codex_home: Option<&Path>) -> AppResult<OpenAiU
         .filter(|record| record.is_official_openai)
         .map(|record| record.observed_at_ms)
         .min()
-        .or_else(|| fallback_attribution.as_ref().map(|record| record.attribution_since_ms));
+        .or_else(|| {
+            fallback_attribution
+                .as_ref()
+                .map(|record| record.attribution_since_ms)
+        });
     summary.attribution_since_ms = earliest_attribution;
     if fallback_attribution.is_none() && attribution_records.is_empty() {
         return Ok(summary);
@@ -263,7 +270,10 @@ fn append_attribution_record(codex_home: &Path, record: &AttributionRecord) -> A
         fs::create_dir_all(parent).map_err(|error| {
             AppError::new(
                 "OPENAI_USAGE_ATTRIBUTION_DIR_FAILED",
-                format!("Failed to create usage attribution dir {}: {error}", parent.display()),
+                format!(
+                    "Failed to create usage attribution dir {}: {error}",
+                    parent.display()
+                ),
             )
         })?;
     }
@@ -280,13 +290,19 @@ fn append_attribution_record(codex_home: &Path, record: &AttributionRecord) -> A
         .map_err(|error| {
             AppError::new(
                 "OPENAI_USAGE_ATTRIBUTION_OPEN_FAILED",
-                format!("Failed to open usage attribution log {}: {error}", path.display()),
+                format!(
+                    "Failed to open usage attribution log {}: {error}",
+                    path.display()
+                ),
             )
         })?;
     writeln!(file, "{serialized}").map_err(|error| {
         AppError::new(
             "OPENAI_USAGE_ATTRIBUTION_WRITE_FAILED",
-            format!("Failed to write usage attribution log {}: {error}", path.display()),
+            format!(
+                "Failed to write usage attribution log {}: {error}",
+                path.display()
+            ),
         )
     })
 }
@@ -510,7 +526,9 @@ fn process_session_file(
                     .filter(|value| !value.is_empty());
             }
             "event_msg" => {
-                if payload.and_then(|value| value.get("type")).and_then(Value::as_str)
+                if payload
+                    .and_then(|value| value.get("type"))
+                    .and_then(Value::as_str)
                     != Some("token_count")
                 {
                     continue;
@@ -628,8 +646,16 @@ fn add_usage(
             ..AccountAggregate::default()
         });
     add_to_aggregate(&mut account.aggregate, delta, &cost.breakdown);
-    add_to_model(account.models.entry(model.to_string()).or_default(), delta, &cost);
-    add_to_model(global_models.entry(model.to_string()).or_default(), delta, &cost);
+    add_to_model(
+        account.models.entry(model.to_string()).or_default(),
+        delta,
+        &cost,
+    );
+    add_to_model(
+        global_models.entry(model.to_string()).or_default(),
+        delta,
+        &cost,
+    );
 }
 
 fn total_account_aggregate(accounts: &BTreeMap<String, AccountAggregate>) -> Aggregate {
@@ -694,13 +720,18 @@ fn add_to_aggregate(
     cost: &OpenAiUsageCostBreakdown,
 ) {
     aggregate.requests = aggregate.requests.saturating_add(1);
-    aggregate.tokens.input_tokens = aggregate.tokens.input_tokens.saturating_add(delta.input_tokens);
+    aggregate.tokens.input_tokens = aggregate
+        .tokens
+        .input_tokens
+        .saturating_add(delta.input_tokens);
     aggregate.tokens.cached_input_tokens = aggregate
         .tokens
         .cached_input_tokens
         .saturating_add(delta.cached_input_tokens);
-    aggregate.tokens.output_tokens =
-        aggregate.tokens.output_tokens.saturating_add(delta.output_tokens);
+    aggregate.tokens.output_tokens = aggregate
+        .tokens
+        .output_tokens
+        .saturating_add(delta.output_tokens);
     aggregate.tokens.reasoning_output_tokens = aggregate
         .tokens
         .reasoning_output_tokens
@@ -750,8 +781,10 @@ fn calculate_cost(model: &str, delta: UsageCounts) -> CalculatedCost {
         };
     };
     let input_cost = cost_micros(fresh_input, pricing.input_micros_per_million);
-    let cached_input_cost =
-        cost_micros(delta.cached_input_tokens, pricing.cached_input_micros_per_million);
+    let cached_input_cost = cost_micros(
+        delta.cached_input_tokens,
+        pricing.cached_input_micros_per_million,
+    );
     let output_cost = cost_micros(delta.output_tokens, pricing.output_micros_per_million);
     CalculatedCost {
         breakdown: OpenAiUsageCostBreakdown {
@@ -892,12 +925,24 @@ mod tests {
             format!(r#"{{"account_label":"acct_A",{base_url_field}"plan_name":"Pro"}}"#),
         )
         .unwrap();
-        fs::write(codex_home.join("account_backup").join(".current_profile"), "a\n").unwrap();
-        fs::write(profile_dir.join(super::super::paths::ACTIVE_MARKER_FILE), "").unwrap();
+        fs::write(
+            codex_home.join("account_backup").join(".current_profile"),
+            "a\n",
+        )
+        .unwrap();
+        fs::write(
+            profile_dir.join(super::super::paths::ACTIVE_MARKER_FILE),
+            "",
+        )
+        .unwrap();
     }
 
     fn write_session(codex_home: &Path, body: &str) {
-        let session_dir = codex_home.join("sessions").join("2999").join("01").join("01");
+        let session_dir = codex_home
+            .join("sessions")
+            .join("2999")
+            .join("01")
+            .join("01");
         fs::create_dir_all(&session_dir).unwrap();
         fs::write(session_dir.join("rollout-test.jsonl"), body).unwrap();
     }
