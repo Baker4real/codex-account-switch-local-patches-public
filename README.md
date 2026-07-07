@@ -19,7 +19,7 @@
 
 跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，并在 UI 标明额度来源与观测时间；只有没有实时来源时才退回本地 sessions/jsonl 观测。
 
-当前本地补丁版还提供 **OpenAI 官方 token 使用统计**：从 Codex 本地 session JSONL 的 `token_count` 事件重建 `account_backup/openai_usage.sqlite`，只把有效 `base_url` 可证明为官方 OpenAI 路径的记录计入官方消耗，并按账号、模型、时间范围、请求日志和价格估算展示。未知价格模型只显示未定价，不会当作 `$0`。
+当前本地补丁版还提供 **OpenAI 官方 token 使用统计**：从 Codex 本地 session JSONL 的 `token_count` 事件重建 `account_backup/openai_usage.sqlite`，只把有效 `base_url` 可证明为官方 OpenAI 路径的记录计入官方消耗，并按账号、模型、时间范围、请求日志和价格估算展示。账号分类随时间范围变化，选择某个账号或模型后不会让其他同范围候选从下拉里消失。未知价格模型只显示未定价，不会当作 `$0`。
 
 当前版本 **v1.5.12**（详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases)）。
 
@@ -30,7 +30,7 @@
 - **授权缓存状态**：账号卡片和当前账号面板会显示 refresh token / 授权缓存健康状态、可观察到的到期时间或上次刷新时间；当官方登录缓存没有暴露 refresh token 到期时间时，只提示授权缓存建议刷新，不把它误写成固定到期时间。
 - **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 profile metadata 显式设置 `login_browser: "edge"` 的账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
 - **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号；per-card 刷新会优先用现有 `access_token` 拉官方 usage，只有 access token 过期或被 401 拒绝时才消耗 `refresh_token`。切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。5 小时或周额度低于 20% 时只提示风险，不自动切换账号。
-- **使用统计页**：导航位于「账号」和「设置」之间，按账号和模型展示真实 token 增量、fresh input / cached input / output、缓存命中率、价格估算、趋势图、请求日志和数据源证据；默认 1 秒刷新，可按今天、近 24 小时、近 7/14/30 天或自定义时间筛选。
+- **使用统计页**：导航位于「账号」和「设置」之间，按账号和模型展示真实 token 增量、fresh input / cached input / output、缓存命中率、价格估算、趋势图、请求日志和数据源证据；默认 1 秒刷新，可按今天、近 24 小时、近 7/14/30 天或自定义时间筛选。账号分类表位于时间选择下方、摘要卡片前，账号和模型下拉候选随当前时间范围及其他筛选变化，但不会因选择自身而折叠成单项。
 - **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
 - **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
 - **跨平台原生 Tauri**：macOS arm64 / x64 与 Windows x64 提供原生窗口、原生标题栏 / 关闭按钮，配套 5 套浅色 / 深色主题与中英文界面。
@@ -165,7 +165,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### 「使用统计」里的 token 和费用怎么算
 
-使用统计只读取本机 Codex `sessions` / `archived_sessions` 里的 `token_count` 累计值，并按同一 session 内相邻事件做差分，避免把累计总量重复相加。只有有效 Base URL 能证明是官方 OpenAI 路径的记录才进入官方消耗；第三方 proxy、自定义兼容 API、无法证明历史归属的记录会显示在排除统计里。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
+使用统计只读取本机 Codex `sessions` / `archived_sessions` 里的 `token_count` 累计值，并按同一 session 内相邻事件做差分，避免把累计总量重复相加。只有有效 Base URL 能证明是官方 OpenAI 路径的记录才进入官方消耗；第三方 proxy、自定义兼容 API、无法证明历史归属的记录会显示在排除统计里。账号分类和模型候选按当前时间范围重算；账号筛选不会把账号候选压成当前账号，模型筛选同理。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
 
 ### per-card「登录」按钮为什么有时变成「取消」
 

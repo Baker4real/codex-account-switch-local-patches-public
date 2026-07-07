@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust Tauri commands, existing shared TypeScript frontend, existing CSS shell, Codex JSONL session files.
 
-**Status:** Implementation completed on 2026-07-07 in commit `c0d3098`; Playwright/Edge visual smoke evidence was not captured in this plan.
+**Status:** Initial parity implementation completed on 2026-07-07 in commit `c0d3098`; usage facet self-collapse follow-up completed in commit `61db517`. Playwright/Edge visual smoke evidence was not captured in this plan.
 
 ## Global Constraints
 
@@ -55,6 +55,7 @@
 - [x] Add Usage query types and Tauri wrappers.
 - [x] Add time range, live-end, account/model filters, refresh interval, and logs state.
 - [x] Wire usage controls and route-scoped 1s auto-refresh.
+- [x] Keep account/model filter options scoped to the selected time range and other filters without collapsing on their own selected value.
 
 ### Task 3: Frontend Render And Styling
 
@@ -68,6 +69,7 @@
 
 - [x] Render CC Switch parity controls.
 - [x] Render hero, trend chart, logs/account/model tabs, detail rows, and evidence panel.
+- [x] Move the account classification table below the time controls and before the summary cards.
 - [x] Preserve compact desktop styling and responsive behavior.
 
 ### Task 4: Verification And Review

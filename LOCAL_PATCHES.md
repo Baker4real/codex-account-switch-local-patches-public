@@ -121,6 +121,10 @@ npm run deploy:windows:remote-desktop
   source signature 必须覆盖 session JSONL、归属记录、profile metadata、
   active marker 和价格版本，确保历史归属或价格表变化后能重新同步。
   未知模型 token 可以展示，但费用必须保持未定价，不得显示为 `$0`。
+- 使用统计账号/模型 facet 必须按当前时间范围重算：账号候选清除账号自身筛选
+  但保留时间、模型和状态筛选；模型候选清除模型自身筛选但保留时间、账号和
+  状态筛选。账号分类表应位于时间选择下方、摘要卡片前，选择一个账号后不能
+  让其他同范围账号从下拉中消失。
 - 本地 Windows MSVC 构建必须使用 `npm run tauri:build:windows:portable`；
   该 wrapper 默认使用环境或系统 `rustup`，需要本机固定路径时通过
   `CODEX_SWITCH_RUSTUP_BIN` / `CODEX_SWITCH_CARGO_HOME` /
