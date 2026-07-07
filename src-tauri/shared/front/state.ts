@@ -1,4 +1,9 @@
-import type { ProfilesSnapshotResponse, QuotaSummary, ShellRoute } from "@front-shared/types";
+import type {
+  OpenAiUsageSummary,
+  ProfilesSnapshotResponse,
+  QuotaSummary,
+  ShellRoute,
+} from "@front-shared/types";
 import type { Locale } from "@front-shared/i18n";
 import type { ThemeId } from "@front-shared/theme";
 
@@ -14,4 +19,7 @@ export const state = {
   pageSize: 8,
   snapshot: null as ProfilesSnapshotResponse | null,
   currentQuota: null as QuotaSummary | null,
+  usageSummary: null as OpenAiUsageSummary | null,
+  usageLoaded: false,
+  usageLoadError: null as string | null,
 };

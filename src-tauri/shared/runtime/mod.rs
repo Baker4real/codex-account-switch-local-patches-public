@@ -7,6 +7,7 @@ pub mod fs_ops;
 pub mod login_cancel;
 pub mod login_runtime;
 pub mod metadata;
+pub mod openai_usage;
 pub mod paths;
 pub mod process_lock;
 pub mod profiles;

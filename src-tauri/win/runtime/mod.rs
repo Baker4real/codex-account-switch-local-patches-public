@@ -9,8 +9,8 @@ pub mod refresh_runtime;
 pub mod switch;
 
 pub use crate::shared::{
-    config, fs_ops, login_runtime, metadata, paths, profiles, runtime_isolation, session_files,
-    session_usage,
+    config, fs_ops, login_runtime, metadata, openai_usage, paths, profiles, runtime_isolation,
+    session_files, session_usage,
 };
 
 pub mod actions {

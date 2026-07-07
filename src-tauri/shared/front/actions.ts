@@ -22,6 +22,7 @@ import {
   deleteProfile,
   getCodexCliStatus,
   getCurrentLiveQuota,
+  getOpenAiUsageSummary,
   getProfilesSnapshot,
   loginCurrentProfile,
   openCodex,
@@ -50,6 +51,7 @@ import {
   applyLocale,
   elements,
   renderCurrentCard,
+  renderOpenAiUsage,
   renderPaging,
   renderProfiles,
   renderShellOverview,
@@ -90,6 +92,7 @@ function rerenderDashboard(): void {
   renderCurrentCard(dashboard);
   renderPaging(dashboard.paging);
   renderShellOverview(dashboard);
+  renderOpenAiUsage(state.usageSummary);
 }
 
 let renameSourceProfile: string | null = null;
@@ -251,12 +254,40 @@ async function refreshAllData(showError = true): Promise<void> {
 
     applySnapshot(snapshot);
     applyCurrentQuota(currentQuota);
+    try {
+      state.usageSummary = await getOpenAiUsageSummary();
+      state.usageLoaded = true;
+      state.usageLoadError = null;
+    } catch (usageError) {
+      state.usageLoaded = true;
+      state.usageLoadError = usageError instanceof Error
+        ? usageError.message
+        : t(state.locale, "usageLoadFailed");
+    }
     await reconcileSnapshotAfterCurrentQuota(currentQuota);
     rerenderDashboard();
     maybePromptUnmanagedAccount(state.snapshot?.unmanaged_live_account ?? null);
   } catch (error) {
     if (showError) {
       showToast(error instanceof Error ? error.message : "Failed to load dashboard.", true);
+    }
+  }
+}
+
+async function refreshUsageSummary(showError = true): Promise<void> {
+  try {
+    state.usageSummary = await getOpenAiUsageSummary();
+    state.usageLoaded = true;
+    state.usageLoadError = null;
+    rerenderDashboard();
+  } catch (error) {
+    state.usageLoaded = true;
+    state.usageLoadError = error instanceof Error
+      ? error.message
+      : t(state.locale, "usageLoadFailed");
+    rerenderDashboard();
+    if (showError) {
+      showToast(error instanceof Error ? error.message : t(state.locale, "usageLoadFailed"), true);
     }
   }
 }
@@ -997,6 +1028,7 @@ export function bootstrap(): void {
   window.addEventListener("hashchange", () => {
     state.route = routeFromLocation();
     renderShellRoute();
+    renderOpenAiUsage(state.usageSummary);
   });
 
   elements.previousPageButton.addEventListener("click", () => {
@@ -1021,6 +1053,9 @@ export function bootstrap(): void {
   });
   elements.settingsCheckUpdateButton.addEventListener("click", () => {
     void handleCheckUpdate();
+  });
+  elements.usageRefreshButton.addEventListener("click", () => {
+    void refreshUsageSummary();
   });
   elements.updateDialogLaterButton.addEventListener("click", () => {
     elements.updateDialog.close();

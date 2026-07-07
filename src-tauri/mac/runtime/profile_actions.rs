@@ -12,6 +12,7 @@ use crate::shared::login_runtime::login_profile_with_home;
 use crate::shared::metadata::{
     load_profile_metadata, save_profile_metadata, sync_profile_openai_base_url,
 };
+use crate::shared::openai_usage::record_current_openai_usage_attribution;
 use crate::shared::paths::{
     get_backup_root, get_codex_home, validate_profile_name, ACTIVE_MARKER_FILE, CONTACT_URL,
     RELEASES_URL, XIAOHONGSHU_URL,
@@ -89,6 +90,7 @@ pub fn update_profile_base_url(profile_name: &str, openai_base_url: &str) -> App
     sync_profile_openai_base_url(&profile_name, normalized_base_url, Some(&codex_home))?;
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
         sync_root_openai_base_url_from_profile_metadata(&profile_name, Some(&codex_home))?;
+        record_current_openai_usage_attribution(Some(&codex_home))?;
     }
     reload_profiles_index_after_mutation(Some(&codex_home))?;
 

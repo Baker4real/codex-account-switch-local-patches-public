@@ -1,6 +1,8 @@
 import type {
   CurrentCard,
   DashboardViewModel,
+  OpenAiUsageCostBreakdown,
+  OpenAiUsageSummary,
   PagingInfo,
   ProfileCard,
   QuotaConfidence,
@@ -18,7 +20,7 @@ import { state } from "@front-shared/state";
 import { getThemeOption, isThemeId } from "@front-shared/theme";
 
 const isWindowsUiTarget = __CODEX_UI_TARGET__ === "windows";
-const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "settings", "guide"];
+const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "usage", "settings", "guide"];
 const LOW_QUOTA_THRESHOLD_PERCENT = 20;
 
 function isShellRoute(value: string): value is ShellRoute {
@@ -57,6 +59,9 @@ export const elements = {
   openCodexButton: requiredElement<HTMLButtonElement>("open-codex-button"),
   settingsGithubButton: requiredElement<HTMLButtonElement>("settings-github-button"),
   settingsCheckUpdateButton: requiredElement<HTMLButtonElement>("settings-check-update-button"),
+  usageRefreshButton: requiredElement<HTMLButtonElement>("usage-refresh-button"),
+  usageSummaryPanel: requiredElement<HTMLDivElement>("usage-summary-panel"),
+  usageDetailPanel: requiredElement<HTMLDivElement>("usage-detail-panel"),
   settingsUpdateUrlInput: requiredElement<HTMLInputElement>("settings-update-url-input"),
   settingsVersionValue: requiredElement<HTMLSpanElement>("settings-version-value"),
   updateDialog: requiredElement<HTMLDialogElement>("update-dialog"),
@@ -186,6 +191,50 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat(state.locale).format(value);
+}
+
+function formatCostMicros(value: number): string {
+  return new Intl.NumberFormat(state.locale, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
+  }).format(value / 1_000_000);
+}
+
+function formatUsageCost(cost: OpenAiUsageCostBreakdown): string {
+  if (cost.unpriced_tokens > 0 && cost.total_cost_micros === 0) {
+    return "N/A";
+  }
+  if (cost.unpriced_tokens > 0) {
+    return `${formatCostMicros(cost.total_cost_micros)} ${t(state.locale, "usageCostPartial")}`;
+  }
+  return formatCostMicros(cost.total_cost_micros);
+}
+
+function formatRate(value: number | null): string {
+  if (value == null) {
+    return "--";
+  }
+  return new Intl.NumberFormat(state.locale, {
+    style: "percent",
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function formatDateTimeMs(value: number | null): string {
+  if (value == null) {
+    return "--";
+  }
+  return new Intl.DateTimeFormat(state.locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
 function defaultQuotaProvenance(): QuotaProvenance {
@@ -776,6 +825,185 @@ export function renderShellOverview(dashboard: DashboardViewModel | null): void 
   elements.dashboardProfileCount.textContent = String(profiles.length);
   elements.dashboardReadyCount.textContent = String(readyCount);
   elements.dashboardMissingCount.textContent = String(Math.max(0, missingCount));
+}
+
+export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
+  if (state.usageLoadError) {
+    elements.usageSummaryPanel.innerHTML = `
+      <article class="usage-empty-state usage-empty-state--error">
+        <strong>${t(state.locale, "usageLoadFailed")}</strong>
+        <p>${escapeHtml(state.usageLoadError)}</p>
+      </article>
+    `;
+    elements.usageDetailPanel.innerHTML = "";
+    return;
+  }
+
+  if (!state.usageLoaded) {
+    elements.usageSummaryPanel.innerHTML = `
+      <article class="usage-empty-state">
+        <strong>${t(state.locale, "usageLoading")}</strong>
+      </article>
+    `;
+    elements.usageDetailPanel.innerHTML = "";
+    return;
+  }
+
+  if (!summary || summary.total_requests === 0) {
+    elements.usageSummaryPanel.innerHTML = `
+      <article class="usage-empty-state">
+        <strong>${t(state.locale, "usageNoAttribution")}</strong>
+        <p>${t(state.locale, "usageNoAttributionCopy")}</p>
+      </article>
+    `;
+    elements.usageDetailPanel.innerHTML = buildUsageEvidenceMarkup(summary);
+    return;
+  }
+
+  elements.usageSummaryPanel.innerHTML = `
+    <div class="usage-hero-grid">
+      <article class="usage-hero-card usage-hero-card--wide">
+        <span>${t(state.locale, "usageRealTokens")}</span>
+        <strong>${formatInteger(summary.tokens.real_total_tokens)}</strong>
+        <small>${t(state.locale, "usageAttributionSince")}: ${formatDateTimeMs(summary.attribution_since_ms)}</small>
+      </article>
+      <article class="usage-hero-card">
+        <span>${t(state.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageEstimatedCost")}</span>
+        <strong>${formatUsageCost(summary.cost)}</strong>
+        <small>${summary.pricing_source} · ${summary.pricing_checked_at}</small>
+      </article>
+      <article class="usage-hero-card">
+        <span>${t(state.locale, "usageRequests")}</span>
+        <strong>${formatInteger(summary.total_requests)}</strong>
+        <small>${t(state.locale, "usageUnpriced")}: ${formatInteger(summary.cost.unpriced_tokens)}</small>
+      </article>
+      <article class="usage-hero-card">
+        <span>${t(state.locale, "usageCacheHitRate")}</span>
+        <strong>${formatRate(summary.cache_hit_rate)}</strong>
+        <small>${t(state.locale, "usageCachedInput")}: ${formatInteger(summary.tokens.cached_input_tokens)}</small>
+      </article>
+    </div>
+
+    <div class="usage-token-grid">
+      ${buildUsageTokenMetric("usageInput", summary.tokens.input_tokens)}
+      ${buildUsageTokenMetric("usageCachedInput", summary.tokens.cached_input_tokens)}
+      ${buildUsageTokenMetric("usageOutput", summary.tokens.output_tokens)}
+      ${buildUsageTokenMetric("usageReasoning", summary.tokens.reasoning_output_tokens)}
+    </div>
+  `;
+
+  elements.usageDetailPanel.innerHTML = `
+    ${buildUsageAccountTable(summary)}
+    ${buildUsageModelTable(summary)}
+    ${buildUsageEvidenceMarkup(summary)}
+  `;
+}
+
+function buildUsageTokenMetric(labelKey: MessageKey, value: number): string {
+  return `
+    <article class="usage-token-card">
+      <span>${t(state.locale, labelKey)}</span>
+      <strong>${formatInteger(value)}</strong>
+    </article>
+  `;
+}
+
+function buildUsageAccountTable(summary: OpenAiUsageSummary): string {
+  const rows = summary.accounts.map((account) => `
+    <tr>
+      <td>${escapeHtml(account.profile)}</td>
+      <td>${escapeHtml(account.account_label ?? "--")}</td>
+      <td>${escapeHtml(account.official_source)}</td>
+      <td>${formatInteger(account.tokens.real_total_tokens)}</td>
+      <td>${formatUsageCost(account.cost)}</td>
+    </tr>
+  `).join("");
+  return `
+    <article class="usage-table-card">
+      <h3>${t(state.locale, "usageAccounts")}</h3>
+      <div class="usage-table-scroll">
+        <table class="usage-table">
+          <thead>
+            <tr>
+              <th>${t(state.locale, "usageProfile")}</th>
+              <th>${t(state.locale, "usageAccount")}</th>
+              <th>${t(state.locale, "usageOfficialSource")}</th>
+              <th>${t(state.locale, "usageTokens")}</th>
+              <th>${t(state.locale, "usageCost")}</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function buildUsageModelTable(summary: OpenAiUsageSummary): string {
+  const rows = summary.models.map((model) => `
+    <tr>
+      <td>${escapeHtml(model.model)}</td>
+      <td>${formatInteger(model.tokens.input_tokens)}</td>
+      <td>${formatInteger(model.tokens.cached_input_tokens)}</td>
+      <td>${formatInteger(model.tokens.output_tokens)}</td>
+      <td>${formatUsageCost(model.cost)}</td>
+      <td>${model.priced ? t(state.locale, "usagePriced") : t(state.locale, "usageNotPriced")}</td>
+    </tr>
+  `).join("");
+  return `
+    <article class="usage-table-card">
+      <h3>${t(state.locale, "usageModels")}</h3>
+      <div class="usage-table-scroll">
+        <table class="usage-table">
+          <thead>
+            <tr>
+              <th>${t(state.locale, "usageModel")}</th>
+              <th>${t(state.locale, "usageInput")}</th>
+              <th>${t(state.locale, "usageCachedInput")}</th>
+              <th>${t(state.locale, "usageOutput")}</th>
+              <th>${t(state.locale, "usageCost")}</th>
+              <th>${t(state.locale, "usagePricing")}</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function buildUsageEvidenceMarkup(summary: OpenAiUsageSummary | null): string {
+  const exclusions = summary?.exclusions ?? {
+    duplicate_events: 0,
+    non_official_base_url: 0,
+    unproven_history: 0,
+    unattributed: 0,
+    missing_model: 0,
+    invalid_delta: 0,
+    malformed_lines: 0,
+  };
+  const items: Array<[MessageKey, number]> = [
+    ["usageDuplicateEvents", exclusions.duplicate_events],
+    ["usageNonOfficialBaseUrl", exclusions.non_official_base_url],
+    ["usageUnprovenHistory", exclusions.unproven_history],
+    ["usageUnattributed", exclusions.unattributed],
+    ["usageMissingModel", exclusions.missing_model],
+    ["usageInvalidDelta", exclusions.invalid_delta],
+    ["usageMalformedLines", exclusions.malformed_lines],
+  ];
+  return `
+    <article class="usage-evidence-card">
+      <h3>${t(state.locale, "usageEvidence")}</h3>
+      <div class="usage-evidence-grid">
+        ${items.map(([label, value]) => `
+          <span>
+            <em>${t(state.locale, label)}</em>
+            <strong>${formatInteger(value)}</strong>
+          </span>
+        `).join("")}
+      </div>
+    </article>
+  `;
 }
 
 export function renderCurrentCard(dashboard: DashboardViewModel): void {

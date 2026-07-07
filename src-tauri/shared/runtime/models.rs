@@ -258,6 +258,75 @@ pub struct CurrentQuotaResponse {
     pub quota: Option<QuotaSummary>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageTokenTotals {
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+    pub reasoning_output_tokens: u64,
+    pub real_total_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageCostBreakdown {
+    pub input_cost_micros: u64,
+    pub cached_input_cost_micros: u64,
+    pub output_cost_micros: u64,
+    pub total_cost_micros: u64,
+    pub unpriced_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageModelSummary {
+    pub model: String,
+    pub tokens: OpenAiUsageTokenTotals,
+    pub cost: OpenAiUsageCostBreakdown,
+    pub priced: bool,
+    pub pricing_note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageAccountSummary {
+    pub profile: String,
+    pub account_label: Option<String>,
+    pub official_source: String,
+    pub tokens: OpenAiUsageTokenTotals,
+    pub cost: OpenAiUsageCostBreakdown,
+    pub models: Vec<OpenAiUsageModelSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageExclusions {
+    pub duplicate_events: u64,
+    pub non_official_base_url: u64,
+    pub unproven_history: u64,
+    pub unattributed: u64,
+    pub missing_model: u64,
+    pub invalid_delta: u64,
+    pub malformed_lines: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageSummary {
+    pub generated_at_ms: u64,
+    pub attribution_since_ms: Option<u64>,
+    pub total_requests: u64,
+    pub tokens: OpenAiUsageTokenTotals,
+    pub cost: OpenAiUsageCostBreakdown,
+    pub cache_hit_rate: Option<f64>,
+    pub accounts: Vec<OpenAiUsageAccountSummary>,
+    pub models: Vec<OpenAiUsageModelSummary>,
+    pub exclusions: OpenAiUsageExclusions,
+    pub pricing_source: String,
+    pub pricing_checked_at: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfilePayload {
     pub profile: String,

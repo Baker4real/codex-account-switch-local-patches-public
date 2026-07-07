@@ -28,3 +28,7 @@ codex_history/
 docs/*
 !docs/agents/
 !docs/agents/**
+!docs/plans/
+!docs/plans/**
+!docs/specs/
+!docs/specs/**

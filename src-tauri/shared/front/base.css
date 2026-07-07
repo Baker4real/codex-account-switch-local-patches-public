@@ -1571,6 +1571,156 @@ html[data-theme] .toast.is-error {
   margin-bottom: 18px;
 }
 
+.usage-stage {
+  display: grid;
+  gap: 18px;
+}
+
+.usage-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.usage-summary-panel,
+.usage-detail-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.usage-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.usage-hero-card,
+.usage-token-card,
+.usage-table-card,
+.usage-evidence-card,
+.usage-empty-state {
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  background: var(--card-background);
+  box-shadow: var(--card-shadow);
+}
+
+.usage-hero-card,
+.usage-token-card {
+  min-height: 92px;
+  padding: 16px;
+  display: grid;
+  align-content: space-between;
+  gap: 8px;
+}
+
+.usage-hero-card span,
+.usage-token-card span,
+.usage-hero-card small {
+  color: var(--muted-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.usage-hero-card strong {
+  color: var(--heading);
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-token-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.usage-token-card strong {
+  color: var(--heading);
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-table-card,
+.usage-evidence-card,
+.usage-empty-state {
+  padding: 16px;
+}
+
+.usage-table-card h3,
+.usage-evidence-card h3,
+.usage-empty-state strong {
+  margin: 0 0 12px;
+  color: var(--heading);
+  font-size: 15px;
+}
+
+.usage-empty-state p {
+  margin: 0;
+  color: var(--muted-text);
+  line-height: 1.6;
+}
+
+.usage-table-scroll {
+  overflow-x: auto;
+}
+
+.usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 680px;
+  font-size: 13px;
+}
+
+.usage-table th,
+.usage-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid var(--card-border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.usage-table th {
+  color: var(--muted-text);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.usage-table td {
+  color: var(--body);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.usage-evidence-grid span {
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 6px;
+}
+
+.usage-evidence-grid em {
+  color: var(--muted-text);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.usage-evidence-grid strong {
+  color: var(--heading);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+
 .guide-mark {
   width: 64px;
   height: 64px;
@@ -1754,6 +1904,16 @@ html[data-theme] .toast.is-error {
 
   .route-tab {
     flex: 1 1 120px;
+  }
+
+  .usage-header {
+    display: grid;
+  }
+
+  .usage-hero-grid,
+  .usage-token-grid,
+  .usage-evidence-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .control-stack.control-stack--grid,
@@ -2938,6 +3098,12 @@ button.pager-pill:disabled {
   .current-actions,
   .theme-options,
   .dialog-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-hero-grid,
+  .usage-token-grid,
+  .usage-evidence-grid {
     grid-template-columns: 1fr;
   }
 

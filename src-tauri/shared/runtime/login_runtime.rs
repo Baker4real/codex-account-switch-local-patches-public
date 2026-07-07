@@ -30,6 +30,7 @@ use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
 use super::profiles_index::reload_profiles_index_after_mutation;
+use super::openai_usage::record_current_openai_usage_attribution;
 use super::runtime_isolation::{
     clear_runtime_auth_state, prune_runtime_extra_features, seed_runtime_shared_assets,
     RUNTIME_AUTH_FILENAME,
@@ -182,6 +183,9 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
     let metadata = sync_profile_metadata_from_auth(&profile_name, None, Some(&codex_home))?;
     sync_root_metadata_if_current_profile(&profile_name, &metadata, Some(&codex_home))?;
     reload_profiles_index_after_mutation(Some(&codex_home))?;
+    if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
+        record_current_openai_usage_attribution(Some(&codex_home))?;
+    }
 
     // Best-effort: keep the runtime dir around so the next login on this
     // machine re-uses the seeded models_cache / version pin and skips

@@ -14,6 +14,7 @@ use super::profiles::{
     detect_unmanaged_live_account, resolve_backup_target, resolve_current_profile,
 };
 use super::profiles_index::reload_profiles_index_after_mutation;
+use super::openai_usage::record_current_openai_usage_attribution;
 
 pub(crate) fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<ProcessLockGuard> {
     acquire_process_lock(
@@ -64,6 +65,7 @@ pub(crate) fn switch_profile_with_home_locked<H: PlatformHooks + ?Sized>(
     hooks.sync_root_openai_base_url_for_profile(&profile_name, Some(codex_home))?;
     set_active_marker(&profile_name, &backup_root)?;
     reload_profiles_index_after_mutation(Some(codex_home))?;
+    record_current_openai_usage_attribution(Some(codex_home))?;
     let warnings = hooks.reopen_codex_app_if_needed(app_was_running, Some(codex_home));
 
     Ok(SwitchResponse {
@@ -105,6 +107,7 @@ pub fn sync_root_state_to_current_profile_with_home(
 
     backup_root_state_to_profile(&target, &codex_home, &backup_root)?;
     reload_profiles_index_after_mutation(Some(&codex_home))?;
+    record_current_openai_usage_attribution(Some(&codex_home))?;
     Ok(Some(target))
 }
 

@@ -7,6 +7,7 @@ import type {
   CommandError,
   CurrentCard,
   CurrentQuotaResponse,
+  OpenAiUsageSummary,
   ProfileCard,
   ProfilesSnapshotResponse,
   QuotaConfidence,
@@ -218,6 +219,101 @@ let previewSnapshot: ProfilesSnapshotResponse = {
   unmanaged_live_account: null,
 };
 
+function previewOpenAiUsageSummary(): OpenAiUsageSummary {
+  const input = 1_800_000;
+  const cached = 1_120_000;
+  const output = 115_000;
+  const totalCost = 2_765_000;
+  return {
+    generated_at_ms: Date.now(),
+    attribution_since_ms: Date.now() - 6 * 60 * 60 * 1000,
+    total_requests: 18,
+    tokens: {
+      input_tokens: input,
+      cached_input_tokens: cached,
+      output_tokens: output,
+      reasoning_output_tokens: 42_000,
+      real_total_tokens: input + output,
+    },
+    cost: {
+      input_cost_micros: 1_190_000,
+      cached_input_cost_micros: 196_000,
+      output_cost_micros: 1_379_000,
+      total_cost_micros: totalCost,
+      unpriced_tokens: 0,
+    },
+    cache_hit_rate: cached / input,
+    accounts: [{
+      profile: previewCurrentCard.folder_name,
+      account_label: previewCurrentCard.account_label,
+      official_source: "OpenAI default",
+      tokens: {
+        input_tokens: input,
+        cached_input_tokens: cached,
+        output_tokens: output,
+        reasoning_output_tokens: 42_000,
+        real_total_tokens: input + output,
+      },
+      cost: {
+        input_cost_micros: 1_190_000,
+        cached_input_cost_micros: 196_000,
+        output_cost_micros: 1_379_000,
+        total_cost_micros: totalCost,
+        unpriced_tokens: 0,
+      },
+      models: [{
+        model: "gpt-5.3-codex",
+        tokens: {
+          input_tokens: input,
+          cached_input_tokens: cached,
+          output_tokens: output,
+          reasoning_output_tokens: 42_000,
+          real_total_tokens: input + output,
+        },
+        cost: {
+          input_cost_micros: 1_190_000,
+          cached_input_cost_micros: 196_000,
+          output_cost_micros: 1_379_000,
+          total_cost_micros: totalCost,
+          unpriced_tokens: 0,
+        },
+        priced: true,
+        pricing_note: null,
+      }],
+    }],
+    models: [{
+      model: "gpt-5.3-codex",
+      tokens: {
+        input_tokens: input,
+        cached_input_tokens: cached,
+        output_tokens: output,
+        reasoning_output_tokens: 42_000,
+        real_total_tokens: input + output,
+      },
+      cost: {
+        input_cost_micros: 1_190_000,
+        cached_input_cost_micros: 196_000,
+        output_cost_micros: 1_379_000,
+        total_cost_micros: totalCost,
+        unpriced_tokens: 0,
+      },
+      priced: true,
+      pricing_note: null,
+    }],
+    exclusions: {
+      duplicate_events: 2,
+      non_official_base_url: 0,
+      unproven_history: 7,
+      unattributed: 0,
+      missing_model: 0,
+      invalid_delta: 0,
+      malformed_lines: 0,
+    },
+    pricing_source: "OpenAI API pricing",
+    pricing_checked_at: "2026-07-07",
+  };
+}
+
 function mockAction(message: string, path: string | null = null): Promise<ActionResponse> {
   return Promise.resolve({
     ok: true,
@@ -266,6 +362,8 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
         } as T;
       case "refresh_all_oauth_profile_plans_silent":
         return 0 as T;
+      case "get_openai_usage_summary":
+        return clone(previewOpenAiUsageSummary()) as T;
       case "switch_profile": {
         const profile = (args?.payload as { profile?: string } | undefined)?.profile ?? previewCurrentCard.folder_name;
         const next = previewSnapshot.profiles.find((entry) => entry.folder_name === profile);
@@ -454,6 +552,10 @@ export function refreshActiveProfileQuotaSilent(): Promise<CurrentQuotaResponse>
 
 export function refreshAllOauthProfilePlansSilent(): Promise<number> {
   return invokeCommand<number>("refresh_all_oauth_profile_plans_silent");
+}
+
+export function getOpenAiUsageSummary(): Promise<OpenAiUsageSummary> {
+  return invokeCommand<OpenAiUsageSummary>("get_openai_usage_summary");
 }
 
 export function switchProfile(profile: string): Promise<SwitchResponse> {

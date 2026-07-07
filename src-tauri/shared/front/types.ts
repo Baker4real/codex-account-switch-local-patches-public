@@ -97,6 +97,63 @@ export interface CurrentQuotaResponse {
   quota: QuotaSummary | null;
 }
 
+export interface OpenAiUsageTokenTotals {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
+  reasoning_output_tokens: number;
+  real_total_tokens: number;
+}
+
+export interface OpenAiUsageCostBreakdown {
+  input_cost_micros: number;
+  cached_input_cost_micros: number;
+  output_cost_micros: number;
+  total_cost_micros: number;
+  unpriced_tokens: number;
+}
+
+export interface OpenAiUsageModelSummary {
+  model: string;
+  tokens: OpenAiUsageTokenTotals;
+  cost: OpenAiUsageCostBreakdown;
+  priced: boolean;
+  pricing_note: string | null;
+}
+
+export interface OpenAiUsageAccountSummary {
+  profile: string;
+  account_label: string | null;
+  official_source: string;
+  tokens: OpenAiUsageTokenTotals;
+  cost: OpenAiUsageCostBreakdown;
+  models: OpenAiUsageModelSummary[];
+}
+
+export interface OpenAiUsageExclusions {
+  duplicate_events: number;
+  non_official_base_url: number;
+  unproven_history: number;
+  unattributed: number;
+  missing_model: number;
+  invalid_delta: number;
+  malformed_lines: number;
+}
+
+export interface OpenAiUsageSummary {
+  generated_at_ms: number;
+  attribution_since_ms: number | null;
+  total_requests: number;
+  tokens: OpenAiUsageTokenTotals;
+  cost: OpenAiUsageCostBreakdown;
+  cache_hit_rate: number | null;
+  accounts: OpenAiUsageAccountSummary[];
+  models: OpenAiUsageModelSummary[];
+  exclusions: OpenAiUsageExclusions;
+  pricing_source: string;
+  pricing_checked_at: string;
+}
+
 export interface SwitchResponse {
   ok: boolean;
   profile: string;
@@ -148,4 +205,4 @@ export interface CodexCliRedetectResult {
   status: CodexCliStatus;
 }
 
-export type ShellRoute = "dashboard" | "profiles" | "settings" | "guide";
+export type ShellRoute = "dashboard" | "profiles" | "usage" | "settings" | "guide";
