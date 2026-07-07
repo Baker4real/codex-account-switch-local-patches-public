@@ -10,6 +10,7 @@
 - Windows 本地补丁构建新增 `npm run deploy:windows:remote-desktop` 远端桌面覆盖入口：先解析远端 `.lnk` 的真实目标，上传同一份 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`，备份旧目标文件，停止远端进程并校验 SHA-256。
 - Login / refresh runtime 清理现在保留上游 `plugins` / `cache` / `sqlite` 共享行为，只 prune 隔离功能状态，拒绝不安全 prune 路径，并把 `_autosave` 保持为追加式 timestamp 授权快照。备份保留必须走显式 dry-run / apply 清理流程。
 - Plan / quota 刷新不再把 `last_plan_check_ms` 超过 6 小时当作授权失效信号。卡片刷新和后台 bulk refresh 会先使用现有 `access_token` 查询官方 usage；只有 access token 过期、临近过期或 usage 返回 401 时才消耗 `refresh_token`，避免仍有效账号被提前提示重新登录。
+- 新增「使用统计」模块：位于「账号」和「设置」之间，从 Codex session JSONL 重建 `account_backup/openai_usage.sqlite`，只统计可证明为官方 OpenAI Base URL 的 token 增量，按账号、模型、时间范围、趋势、请求日志和数据源证据展示，并按模型价格估算费用；未知模型费用保持未定价，不当作 `$0`。
 
 ## 1.5.12 - 2026-05-29
 

@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust Tauri commands, existing shared TypeScript frontend, existing CSS shell, Codex JSONL session files.
 
+**Status:** Implementation completed on 2026-07-07 in commit `c0d3098`; Playwright/Edge visual smoke evidence was not captured in this plan.
+
 ## Global Constraints
 
 - Only count OpenAI official usage: default OpenAI path or `api.openai.com`; do not use `model_provider`.
@@ -32,10 +34,10 @@
 - Produces `OpenAiUsageQuery`, `OpenAiUsageTrendPoint`, `OpenAiUsageRequestLog`, `OpenAiUsageRequestLogPage`, and `OpenAiUsageDataSourceSummary`.
 - Replaces `load_openai_usage_summary(codex_home)` with `load_openai_usage_summary(codex_home, query)`.
 
-- [ ] Add query/filter/result structs.
-- [ ] Refactor JSONL parsing to return canonical events before aggregation.
-- [ ] Add summary, trends, account/model stats, logs, details, and data-source commands.
-- [ ] Add SQLite ledger rebuild, source-signature invalidation, and unit tests for time filters, official HTTPS filtering, dashboard aggregation, and idempotent dedupe.
+- [x] Add query/filter/result structs.
+- [x] Refactor JSONL parsing to return canonical events before aggregation.
+- [x] Add summary, trends, account/model stats, logs, details, and data-source commands.
+- [x] Add SQLite ledger rebuild, source-signature invalidation, and unit tests for time filters, official HTTPS filtering, dashboard aggregation, and idempotent dedupe.
 
 ### Task 2: Frontend State, API, And Controls
 
@@ -50,9 +52,9 @@
 - Consumes backend query/result structs.
 - Produces Usage page state: range, account filter, model filter, refresh interval, logs page.
 
-- [ ] Add Usage query types and Tauri wrappers.
-- [ ] Add time range, live-end, account/model filters, refresh interval, and logs state.
-- [ ] Wire usage controls and route-scoped 1s auto-refresh.
+- [x] Add Usage query types and Tauri wrappers.
+- [x] Add time range, live-end, account/model filters, refresh interval, and logs state.
+- [x] Wire usage controls and route-scoped 1s auto-refresh.
 
 ### Task 3: Frontend Render And Styling
 
@@ -64,19 +66,19 @@
 **Interfaces:**
 - Consumes `OpenAiUsageSummary`, trend points, logs, account/model arrays, data-source summaries.
 
-- [ ] Render CC Switch parity controls.
-- [ ] Render hero, trend chart, logs/account/model tabs, detail rows, and evidence panel.
-- [ ] Preserve compact desktop styling and responsive behavior.
+- [x] Render CC Switch parity controls.
+- [x] Render hero, trend chart, logs/account/model tabs, detail rows, and evidence panel.
+- [x] Preserve compact desktop styling and responsive behavior.
 
 ### Task 4: Verification And Review
 
 **Files:**
 - Modify only if tests reveal a bug.
 
-- [ ] Run `cargo fmt --check`.
-- [ ] Run `cargo test --manifest-path src-tauri/Cargo.toml openai_usage --lib -- --nocapture`.
-- [ ] Run `npm run build`.
-- [ ] Run `npm run check:rust:windows`.
-- [ ] Run `npm run tauri:build:windows:portable` before replacing installed Windows artifacts.
+- [x] Run `cargo fmt --check`.
+- [x] Run `cargo test --manifest-path src-tauri/Cargo.toml openai_usage --lib -- --nocapture`.
+- [x] Run `npm run build`.
+- [x] Run `npm run check:rust:windows`.
+- [x] Run `npm run tauri:build:windows:portable` before replacing installed Windows artifacts.
 - [ ] Run Playwright/Edge visual smoke if dev server is available.
-- [ ] Run multi-agent adversarial review before commit.
+- [x] Run multi-agent adversarial review before commit.

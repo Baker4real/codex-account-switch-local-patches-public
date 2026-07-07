@@ -115,6 +115,12 @@ npm run deploy:windows:remote-desktop
   runtime 目录，避免 Codex 升级后应用继续指向已删除 runtime。
 - 账号页 quota 读数必须保留 provenance 元数据，避免把低可信度 fallback
   或本地 session 观测结果展示得像官方 ChatGPT API 读数。
+- OpenAI 使用统计必须以有效 `base_url` 作为官方来源门禁，不得用
+  `model_provider` 反推官方来源；只统计默认官方路径或 HTTPS
+  `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建 ledger，
+  source signature 必须覆盖 session JSONL、归属记录、profile metadata、
+  active marker 和价格版本，确保历史归属或价格表变化后能重新同步。
+  未知模型 token 可以展示，但费用必须保持未定价，不得显示为 `$0`。
 - 本地 Windows MSVC 构建必须使用 `npm run tauri:build:windows:portable`；
   该 wrapper 默认使用环境或系统 `rustup`，需要本机固定路径时通过
   `CODEX_SWITCH_RUSTUP_BIN` / `CODEX_SWITCH_CARGO_HOME` /

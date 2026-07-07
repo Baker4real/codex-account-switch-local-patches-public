@@ -19,6 +19,8 @@
 
 跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，并在 UI 标明额度来源与观测时间；只有没有实时来源时才退回本地 sessions/jsonl 观测。
 
+当前本地补丁版还提供 **OpenAI 官方 token 使用统计**：从 Codex 本地 session JSONL 的 `token_count` 事件重建 `account_backup/openai_usage.sqlite`，只把有效 `base_url` 可证明为官方 OpenAI 路径的记录计入官方消耗，并按账号、模型、时间范围、请求日志和价格估算展示。未知价格模型只显示未定价，不会当作 `$0`。
+
 当前版本 **v1.5.12**（详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases)）。
 
 ## 能做什么
@@ -28,6 +30,7 @@
 - **授权缓存状态**：账号卡片和当前账号面板会显示 refresh token / 授权缓存健康状态、可观察到的到期时间或上次刷新时间；当官方登录缓存没有暴露 refresh token 到期时间时，只提示授权缓存建议刷新，不把它误写成固定到期时间。
 - **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 profile metadata 显式设置 `login_browser: "edge"` 的账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
 - **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号；per-card 刷新会优先用现有 `access_token` 拉官方 usage，只有 access token 过期或被 401 拒绝时才消耗 `refresh_token`。切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。5 小时或周额度低于 20% 时只提示风险，不自动切换账号。
+- **使用统计页**：导航位于「账号」和「设置」之间，按账号和模型展示真实 token 增量、fresh input / cached input / output、缓存命中率、价格估算、趋势图、请求日志和数据源证据；默认 1 秒刷新，可按今天、近 24 小时、近 7/14/30 天或自定义时间筛选。
 - **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
 - **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
 - **跨平台原生 Tauri**：macOS arm64 / x64 与 Windows x64 提供原生窗口、原生标题栏 / 关闭按钮，配套 5 套浅色 / 深色主题与中英文界面。
@@ -61,6 +64,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，只有 profile metadata 显式设置 `login_browser: "edge"` 的账号会打开 Edge；其他账号走普通登录浏览器行为。
 5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。
 6. 需要清空 quota cache 或重新拉计划 / 额度时，点对应账号的「刷新」。刷新会先用现有 `access_token` 查询官方 usage；只有 access token 过期或后端返回 401 时才走 OAuth refresh。
+7. 需要查看真实 token 消耗时，进入「使用统计」页。统计只读取本机 Codex session 记录和 profile 元数据；自定义第三方 Base URL、无法证明历史归属或未知官方来源的记录会进入排除计数，不会混入官方 OpenAI 消耗。
 
 ## 仓库结构
 
@@ -159,6 +163,10 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 不会真发 ChatGPT 对话请求。Plan 数据来自 `id_token` claims；quota 走 ChatGPT Web API `account/rateLimits/read`（HTTP GET），或 Codex 0.130+ 的 `app-server` JSON-RPC fallback。没有 LLM 调用，不消耗用户额度。
 
+### 「使用统计」里的 token 和费用怎么算
+
+使用统计只读取本机 Codex `sessions` / `archived_sessions` 里的 `token_count` 累计值，并按同一 session 内相邻事件做差分，避免把累计总量重复相加。只有有效 Base URL 能证明是官方 OpenAI 路径的记录才进入官方消耗；第三方 proxy、自定义兼容 API、无法证明历史归属的记录会显示在排除统计里。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
+
 ### per-card「登录」按钮为什么有时变成「取消」
 
 普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版中，profile metadata 显式设置 `login_browser: "edge"` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
@@ -181,6 +189,7 @@ App 暂未做 Apple Developer 代码签名 / notarization。第一次启动按�
 
 - 账号备份：`~/.codex/account_backup/<别名>/`（macOS / Linux）/ `%USERPROFILE%\.codex\account_backup\<别名>\`（Windows）
 - 应用运行时状态：Windows 为 `%CODEX_HOME%\account_backup\windows\`（`install_state.json`、`quota_cache.json`、可再生成的 login runtime / refresh runtime）；macOS 为 `~/.codex/account_backup/macos/`
+- OpenAI 使用统计 ledger：`%CODEX_HOME%\account_backup\openai_usage.sqlite` / `~/.codex/account_backup/openai_usage.sqlite`。这是可重建的本地事实表，源 session、profile 归属或价格表变化时会重新同步。
 - Codex 当前账号状态：`~/.codex/auth.json` + `~/.codex/profile.json`；`config.toml` 中的 Base URL 可能由 profile 元数据同步
 
 ## 技术栈
@@ -228,7 +237,7 @@ source ~/.zshrc
 
 本项目专注 **OpenAI Codex CLI 多账号管理**，**不是** OpenAI 官方项目，也不复用其商标 / Logo / 发布身份。
 
-所有账号凭据 / OAuth token 仅保存在本机 `~/.codex/account_backup/`（Unix 0600 + atomic write）；plan / quota 通过 HTTPS 直连 `chatgpt.com` / `api.openai.com`，不经任何第三方中转。
+所有账号凭据 / OAuth token 仅保存在本机 `~/.codex/account_backup/`（Unix 0600 + atomic write）；plan / quota 通过 HTTPS 直连 `chatgpt.com` / `api.openai.com`，不经任何第三方中转。使用统计只读本机 session JSONL 与 profile 元数据，不上传请求内容。
 
 ChatGPT OAuth `id_token` / `access_token` 仅用于读取计划与 rate-limit 元数据，不会向模型发起任何对话请求，因此不会消耗用户额度。
 
