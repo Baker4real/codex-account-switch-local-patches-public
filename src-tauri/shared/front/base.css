@@ -1583,7 +1583,65 @@ html[data-theme] .toast.is-error {
   gap: 16px;
 }
 
+.usage-control-bar {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.1fr) repeat(2, minmax(170px, 1fr)) minmax(110px, auto) repeat(3, minmax(140px, 1fr));
+  gap: 10px;
+  align-items: end;
+}
+
+.usage-control,
+.usage-live-toggle {
+  min-width: 0;
+}
+
+.usage-control {
+  display: grid;
+  gap: 6px;
+}
+
+.usage-control span,
+.usage-live-toggle span {
+  color: var(--muted-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.usage-control select,
+.usage-control input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  background: var(--field-background);
+  color: var(--body);
+  padding: 0 10px;
+  font: inherit;
+}
+
+.usage-control input:disabled,
+.usage-control select:disabled {
+  opacity: 0.62;
+}
+
+.usage-live-toggle {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--field-border);
+  border-radius: 8px;
+  background: var(--field-background);
+}
+
+.usage-live-toggle input {
+  width: 16px;
+  height: 16px;
+}
+
 .usage-summary-panel,
+.usage-trend-panel,
 .usage-detail-panel {
   display: grid;
   gap: 14px;
@@ -1692,6 +1750,79 @@ html[data-theme] .toast.is-error {
 .usage-table td {
   color: var(--body);
   font-variant-numeric: tabular-nums;
+}
+
+.usage-table code {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  color: var(--body);
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.usage-card-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.usage-card-title-row h3 {
+  margin: 0;
+}
+
+.usage-card-title-row span,
+.usage-log-pager span,
+.usage-muted {
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.usage-trend-list {
+  display: grid;
+  gap: 8px;
+}
+
+.usage-trend-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 120px) minmax(140px, 1fr) minmax(88px, auto) minmax(84px, auto);
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.usage-trend-row span,
+.usage-trend-row small {
+  color: var(--muted-text);
+}
+
+.usage-trend-row strong {
+  color: var(--heading);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-trend-track {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--field-background);
+}
+
+.usage-trend-track em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary-background);
+}
+
+.usage-log-pager {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .usage-evidence-grid {
@@ -1910,10 +2041,22 @@ html[data-theme] .toast.is-error {
     display: grid;
   }
 
+  .usage-control-bar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .usage-hero-grid,
   .usage-token-grid,
   .usage-evidence-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage-trend-row {
+    grid-template-columns: minmax(86px, 110px) minmax(120px, 1fr) minmax(72px, auto);
+  }
+
+  .usage-trend-row small {
+    display: none;
   }
 
   .control-stack.control-stack--grid,
@@ -1932,6 +2075,12 @@ html[data-theme] .toast.is-error {
   }
 
   .theme-options {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1120px) {
+  .usage-control-bar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -3103,8 +3252,23 @@ button.pager-pill:disabled {
 
   .usage-hero-grid,
   .usage-token-grid,
-  .usage-evidence-grid {
+  .usage-evidence-grid,
+  .usage-control-bar {
     grid-template-columns: 1fr;
+  }
+
+  .usage-card-title-row,
+  .usage-log-pager {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .usage-trend-row {
+    grid-template-columns: 1fr;
+  }
+
+  .usage-trend-row strong {
+    text-align: left;
   }
 
   .dialog-actions {

@@ -145,7 +145,53 @@
               <button id="usage-refresh-button" class="pager-pill" type="button" data-i18n-key="usageRefresh">Refresh usage</button>
             </div>
 
+            <div class="usage-control-bar">
+              <label class="usage-control">
+                <span data-i18n-key="usageTimeRange">Time range</span>
+                <select id="usage-range-select">
+                  <option value="1d" data-i18n-key="usageRangeLast24Hours">Last 24 hours</option>
+                  <option value="today" data-i18n-key="usageRangeToday">Today</option>
+                  <option value="7d" data-i18n-key="usageRangeLast7Days">Last 7 days</option>
+                  <option value="14d" data-i18n-key="usageRangeLast14Days">Last 14 days</option>
+                  <option value="30d" data-i18n-key="usageRangeLast30Days">Last 30 days</option>
+                  <option value="custom" data-i18n-key="usageRangeCustom">Custom</option>
+                </select>
+              </label>
+              <label class="usage-control usage-control--datetime">
+                <span data-i18n-key="usageStartTime">Start</span>
+                <input id="usage-start-input" type="datetime-local" />
+              </label>
+              <label class="usage-control usage-control--datetime">
+                <span data-i18n-key="usageEndTime">End</span>
+                <input id="usage-end-input" type="datetime-local" />
+              </label>
+              <label class="usage-live-toggle">
+                <input id="usage-live-end-checkbox" type="checkbox" checked />
+                <span data-i18n-key="usageLiveEnd">Live end</span>
+              </label>
+              <label class="usage-control">
+                <span data-i18n-key="usageAccountFilter">Account</span>
+                <select id="usage-account-filter"></select>
+              </label>
+              <label class="usage-control">
+                <span data-i18n-key="usageModelFilter">Model</span>
+                <select id="usage-model-filter"></select>
+              </label>
+              <label class="usage-control">
+                <span data-i18n-key="usageRefreshInterval">Refresh</span>
+                <select id="usage-refresh-interval-select">
+                  <option value="0" data-i18n-key="usageRefreshOff">Off</option>
+                  <option value="1000">1s</option>
+                  <option value="5000">5s</option>
+                  <option value="10000">10s</option>
+                  <option value="30000">30s</option>
+                  <option value="60000">60s</option>
+                </select>
+              </label>
+            </div>
+
             <div id="usage-summary-panel" class="usage-summary-panel"></div>
+            <div id="usage-trend-panel" class="usage-trend-panel"></div>
             <div id="usage-detail-panel" class="usage-detail-panel"></div>
           </section>
         </section>

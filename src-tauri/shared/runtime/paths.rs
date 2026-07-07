@@ -11,6 +11,7 @@ pub const DEFAULT_PROFILES: [&str; 4] = ["a", "b", "c", "d"];
 pub const INSTALL_STATE_FILENAME: &str = "install_state.json";
 pub const QUOTA_CACHE_FILENAME: &str = "quota_cache.json";
 pub const OPENAI_USAGE_ATTRIBUTION_FILENAME: &str = "openai_usage_attribution.jsonl";
+pub const OPENAI_USAGE_LEDGER_FILENAME: &str = "openai_usage.sqlite";
 pub const PROFILES_INDEX_FILENAME: &str = "profiles.json";
 pub const PROFILE_METADATA_FILENAME: &str = "profile.json";
 pub const REFRESH_RUNTIME_DIRNAME: &str = "refresh_runtime";
@@ -99,6 +100,10 @@ pub fn get_profiles_index_path(codex_home: Option<&Path>) -> PathBuf {
 
 pub fn get_openai_usage_attribution_path(codex_home: Option<&Path>) -> PathBuf {
     get_backup_root(codex_home).join(OPENAI_USAGE_ATTRIBUTION_FILENAME)
+}
+
+pub fn get_openai_usage_ledger_path(codex_home: Option<&Path>) -> PathBuf {
+    get_backup_root(codex_home).join(OPENAI_USAGE_LEDGER_FILENAME)
 }
 
 pub fn get_switch_lock_path(codex_home: Option<&Path>) -> PathBuf {

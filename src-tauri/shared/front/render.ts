@@ -2,6 +2,7 @@ import type {
   CurrentCard,
   DashboardViewModel,
   OpenAiUsageCostBreakdown,
+  OpenAiUsageRequestLog,
   OpenAiUsageSummary,
   PagingInfo,
   ProfileCard,
@@ -40,6 +41,11 @@ function requiredElement<T extends HTMLElement>(id: string): T {
   return element as T;
 }
 
+function optionalElement<T extends HTMLElement>(id: string): T | null {
+  const element = document.getElementById(id);
+  return element instanceof HTMLElement ? element as T : null;
+}
+
 const hasDeleteProfileUi = document.getElementById("delete-profile-dialog") instanceof HTMLDialogElement;
 
 export const elements = {
@@ -59,9 +65,17 @@ export const elements = {
   openCodexButton: requiredElement<HTMLButtonElement>("open-codex-button"),
   settingsGithubButton: requiredElement<HTMLButtonElement>("settings-github-button"),
   settingsCheckUpdateButton: requiredElement<HTMLButtonElement>("settings-check-update-button"),
-  usageRefreshButton: requiredElement<HTMLButtonElement>("usage-refresh-button"),
-  usageSummaryPanel: requiredElement<HTMLDivElement>("usage-summary-panel"),
-  usageDetailPanel: requiredElement<HTMLDivElement>("usage-detail-panel"),
+  usageRefreshButton: optionalElement<HTMLButtonElement>("usage-refresh-button"),
+  usageRangeSelect: optionalElement<HTMLSelectElement>("usage-range-select"),
+  usageStartInput: optionalElement<HTMLInputElement>("usage-start-input"),
+  usageEndInput: optionalElement<HTMLInputElement>("usage-end-input"),
+  usageLiveEndCheckbox: optionalElement<HTMLInputElement>("usage-live-end-checkbox"),
+  usageAccountFilter: optionalElement<HTMLSelectElement>("usage-account-filter"),
+  usageModelFilter: optionalElement<HTMLSelectElement>("usage-model-filter"),
+  usageRefreshIntervalSelect: optionalElement<HTMLSelectElement>("usage-refresh-interval-select"),
+  usageSummaryPanel: optionalElement<HTMLDivElement>("usage-summary-panel"),
+  usageTrendPanel: optionalElement<HTMLDivElement>("usage-trend-panel"),
+  usageDetailPanel: optionalElement<HTMLDivElement>("usage-detail-panel"),
   settingsUpdateUrlInput: requiredElement<HTMLInputElement>("settings-update-url-input"),
   settingsVersionValue: requiredElement<HTMLSpanElement>("settings-version-value"),
   updateDialog: requiredElement<HTMLDialogElement>("update-dialog"),
@@ -828,6 +842,10 @@ export function renderShellOverview(dashboard: DashboardViewModel | null): void 
 }
 
 export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
+  if (!elements.usageSummaryPanel || !elements.usageTrendPanel || !elements.usageDetailPanel) {
+    return;
+  }
+  renderUsageControls(summary);
   if (state.usageLoadError) {
     elements.usageSummaryPanel.innerHTML = `
       <article class="usage-empty-state usage-empty-state--error">
@@ -835,6 +853,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
         <p>${escapeHtml(state.usageLoadError)}</p>
       </article>
     `;
+    elements.usageTrendPanel.innerHTML = "";
     elements.usageDetailPanel.innerHTML = "";
     return;
   }
@@ -845,6 +864,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
         <strong>${t(state.locale, "usageLoading")}</strong>
       </article>
     `;
+    elements.usageTrendPanel.innerHTML = "";
     elements.usageDetailPanel.innerHTML = "";
     return;
   }
@@ -856,6 +876,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
         <p>${t(state.locale, "usageNoAttributionCopy")}</p>
       </article>
     `;
+    elements.usageTrendPanel.innerHTML = buildUsageTrendMarkup();
     elements.usageDetailPanel.innerHTML = buildUsageEvidenceMarkup(summary);
     return;
   }
@@ -875,7 +896,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
       <article class="usage-hero-card">
         <span>${t(state.locale, "usageRequests")}</span>
         <strong>${formatInteger(summary.total_requests)}</strong>
-        <small>${t(state.locale, "usageUnpriced")}: ${formatInteger(summary.cost.unpriced_tokens)}</small>
+        <small>${t(state.locale, "usageUpdatedAt")}: ${formatDateTimeMs(summary.generated_at_ms)}</small>
       </article>
       <article class="usage-hero-card">
         <span>${t(state.locale, "usageCacheHitRate")}</span>
@@ -892,11 +913,83 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
     </div>
   `;
 
+  elements.usageTrendPanel.innerHTML = buildUsageTrendMarkup();
   elements.usageDetailPanel.innerHTML = `
+    ${buildUsageLogsTable()}
     ${buildUsageAccountTable(summary)}
     ${buildUsageModelTable(summary)}
+    ${buildUsageDataSourceMarkup()}
     ${buildUsageEvidenceMarkup(summary)}
   `;
+}
+
+function renderUsageControls(summary: OpenAiUsageSummary | null): void {
+  if (
+    !elements.usageRangeSelect ||
+    !elements.usageLiveEndCheckbox ||
+    !elements.usageRefreshIntervalSelect ||
+    !elements.usageStartInput ||
+    !elements.usageEndInput ||
+    !elements.usageAccountFilter ||
+    !elements.usageModelFilter
+  ) {
+    return;
+  }
+  elements.usageRangeSelect.value = state.usageRangePreset;
+  elements.usageLiveEndCheckbox.checked = state.usageLiveEnd;
+  elements.usageRefreshIntervalSelect.value = String(state.usageRefreshIntervalMs);
+  elements.usageStartInput.value = formatDateTimeLocalInput(state.usageCustomStartDate);
+  elements.usageEndInput.value = formatDateTimeLocalInput(state.usageCustomEndDate);
+  const custom = state.usageRangePreset === "custom";
+  elements.usageStartInput.disabled = !custom;
+  elements.usageEndInput.disabled = !custom || state.usageLiveEnd;
+  elements.usageLiveEndCheckbox.disabled = !custom;
+
+  const accounts = new Map<string, string>();
+  for (const account of summary?.accounts ?? []) {
+    accounts.set(account.profile, account.account_label ?? account.profile);
+  }
+  if (state.usageProfileFilter && !accounts.has(state.usageProfileFilter)) {
+    accounts.set(state.usageProfileFilter, state.usageProfileFilter);
+  }
+  elements.usageAccountFilter.innerHTML = [
+    `<option value="">${t(state.locale, "usageAllAccounts")}</option>`,
+    ...Array.from(accounts.entries()).map(([profile, label]) => (
+      `<option value="${escapeHtml(profile)}">${escapeHtml(label)}</option>`
+    )),
+  ].join("");
+  elements.usageAccountFilter.value = state.usageProfileFilter ?? "";
+
+  const models = new Set((summary?.models ?? []).map((model) => model.model));
+  if (state.usageModelFilter) {
+    models.add(state.usageModelFilter);
+  }
+  elements.usageModelFilter.innerHTML = [
+    `<option value="">${t(state.locale, "usageAllModels")}</option>`,
+    ...Array.from(models).map((model) => (
+      `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
+    )),
+  ].join("");
+  elements.usageModelFilter.value = state.usageModelFilter ?? "";
+}
+
+function formatDateTimeLocalInput(value: number | null): string {
+  if (value == null) {
+    return "";
+  }
+  const date = new Date(value);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    "-",
+    pad(date.getMonth() + 1),
+    "-",
+    pad(date.getDate()),
+    "T",
+    pad(date.getHours()),
+    ":",
+    pad(date.getMinutes()),
+  ].join("");
 }
 
 function buildUsageTokenMetric(labelKey: MessageKey, value: number): string {
@@ -914,6 +1007,7 @@ function buildUsageAccountTable(summary: OpenAiUsageSummary): string {
       <td>${escapeHtml(account.profile)}</td>
       <td>${escapeHtml(account.account_label ?? "--")}</td>
       <td>${escapeHtml(account.official_source)}</td>
+      <td>${formatInteger(account.request_count)}</td>
       <td>${formatInteger(account.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(account.cost)}</td>
     </tr>
@@ -928,6 +1022,7 @@ function buildUsageAccountTable(summary: OpenAiUsageSummary): string {
               <th>${t(state.locale, "usageProfile")}</th>
               <th>${t(state.locale, "usageAccount")}</th>
               <th>${t(state.locale, "usageOfficialSource")}</th>
+              <th>${t(state.locale, "usageRequests")}</th>
               <th>${t(state.locale, "usageTokens")}</th>
               <th>${t(state.locale, "usageCost")}</th>
             </tr>
@@ -943,6 +1038,7 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
   const rows = summary.models.map((model) => `
     <tr>
       <td>${escapeHtml(model.model)}</td>
+      <td>${formatInteger(model.request_count)}</td>
       <td>${formatInteger(model.tokens.input_tokens)}</td>
       <td>${formatInteger(model.tokens.cached_input_tokens)}</td>
       <td>${formatInteger(model.tokens.output_tokens)}</td>
@@ -958,6 +1054,7 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
           <thead>
             <tr>
               <th>${t(state.locale, "usageModel")}</th>
+              <th>${t(state.locale, "usageRequests")}</th>
               <th>${t(state.locale, "usageInput")}</th>
               <th>${t(state.locale, "usageCachedInput")}</th>
               <th>${t(state.locale, "usageOutput")}</th>
@@ -968,6 +1065,109 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
           <tbody>${rows}</tbody>
         </table>
       </div>
+    </article>
+  `;
+}
+
+function buildUsageTrendMarkup(): string {
+  const points = state.usageTrends;
+  const maxTokens = Math.max(1, ...points.map((point) => point.tokens.real_total_tokens));
+  const rows = points.map((point) => {
+    const pct = Math.max(2, Math.round((point.tokens.real_total_tokens / maxTokens) * 100));
+    return `
+      <div class="usage-trend-row">
+        <span>${escapeHtml(formatTrendLabel(point.bucket_start_ms))}</span>
+        <div class="usage-trend-track">
+          <em style="width:${pct}%"></em>
+        </div>
+        <strong>${formatInteger(point.tokens.real_total_tokens)}</strong>
+        <small>${formatUsageCost(point.cost)}</small>
+      </div>
+    `;
+  }).join("");
+  return `
+    <article class="usage-table-card usage-trend-card">
+      <div class="usage-card-title-row">
+        <h3>${t(state.locale, "usageTrends")}</h3>
+        <span>${t(state.locale, "usageRefreshInterval")}: ${formatRefreshInterval(state.usageRefreshIntervalMs)}</span>
+      </div>
+      <div class="usage-trend-list">${rows || `<p class="usage-muted">${t(state.locale, "usageNoAttribution")}</p>`}</div>
+    </article>
+  `;
+}
+
+function formatTrendLabel(value: number): string {
+  return new Intl.DateTimeFormat(state.locale, {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatRefreshInterval(value: number): string {
+  return value > 0 ? `${value / 1000}s` : t(state.locale, "usageRefreshOff");
+}
+
+function buildUsageLogsTable(): string {
+  const page = state.usageLogs;
+  const rows = (page?.data ?? []).map((log: OpenAiUsageRequestLog) => `
+    <tr>
+      <td><code>${escapeHtml(log.request_id)}</code></td>
+      <td>${formatDateTimeMs(log.created_at_ms)}</td>
+      <td>${escapeHtml(log.account_label ?? log.profile)}</td>
+      <td>${escapeHtml(log.model)}</td>
+      <td>${formatInteger(log.tokens.real_total_tokens)}</td>
+      <td>${formatUsageCost(log.cost)}</td>
+      <td>${escapeHtml(log.data_source)}</td>
+    </tr>
+  `).join("");
+  const currentPage = page?.page ?? state.usageLogsPage;
+  const pageSize = page?.page_size ?? state.usageLogsPageSize;
+  const total = page?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  return `
+    <article class="usage-table-card">
+      <div class="usage-card-title-row">
+        <h3>${t(state.locale, "usageRequestLogs")}</h3>
+        <div class="usage-log-pager">
+          <button class="pager-pill" type="button" data-usage-log-page="${Math.max(1, currentPage - 1)}" ${currentPage <= 1 ? "disabled" : ""}>${t(state.locale, "previous")}</button>
+          <span>${currentPage} / ${totalPages}</span>
+          <button class="pager-pill" type="button" data-usage-log-page="${Math.min(totalPages, currentPage + 1)}" ${currentPage >= totalPages ? "disabled" : ""}>${t(state.locale, "next")}</button>
+        </div>
+      </div>
+      <div class="usage-table-scroll">
+        <table class="usage-table">
+          <thead>
+            <tr>
+              <th>${t(state.locale, "usageRequestId")}</th>
+              <th>${t(state.locale, "usageCreatedAt")}</th>
+              <th>${t(state.locale, "usageAccount")}</th>
+              <th>${t(state.locale, "usageModel")}</th>
+              <th>${t(state.locale, "usageTokens")}</th>
+              <th>${t(state.locale, "usageCost")}</th>
+              <th>${t(state.locale, "usageDataSource")}</th>
+            </tr>
+          </thead>
+          <tbody>${rows || `<tr><td colspan="7">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
+        </table>
+      </div>
+    </article>
+  `;
+}
+
+function buildUsageDataSourceMarkup(): string {
+  const rows = state.usageDataSources.map((source) => `
+    <span>
+      <em>${escapeHtml(source.data_source)}</em>
+      <strong>${formatInteger(source.request_count)}</strong>
+      <small>${formatUsageCost(source.cost)}</small>
+    </span>
+  `).join("");
+  return `
+    <article class="usage-evidence-card">
+      <h3>${t(state.locale, "usageDataSources")}</h3>
+      <div class="usage-evidence-grid">${rows || `<span><em>${t(state.locale, "usageNoAttribution")}</em><strong>0</strong></span>`}</div>
     </article>
   `;
 }

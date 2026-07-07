@@ -7,7 +7,13 @@ import type {
   CommandError,
   CurrentCard,
   CurrentQuotaResponse,
+  OpenAiUsageDashboard,
+  OpenAiUsageDataSourceSummary,
+  OpenAiUsageQuery,
+  OpenAiUsageRequestLog,
+  OpenAiUsageRequestLogPage,
   OpenAiUsageSummary,
+  OpenAiUsageTrendPoint,
   ProfileCard,
   ProfilesSnapshotResponse,
   QuotaConfidence,
@@ -224,9 +230,12 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
   const cached = 1_120_000;
   const output = 115_000;
   const totalCost = 2_765_000;
+  const generatedAt = Date.now();
   return {
-    generated_at_ms: Date.now(),
-    attribution_since_ms: Date.now() - 6 * 60 * 60 * 1000,
+    generated_at_ms: generatedAt,
+    attribution_since_ms: generatedAt - 6 * 60 * 60 * 1000,
+    range_start_ms: generatedAt - 24 * 60 * 60 * 1000,
+    range_end_ms: generatedAt,
     total_requests: 18,
     tokens: {
       input_tokens: input,
@@ -247,6 +256,7 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
       profile: previewCurrentCard.folder_name,
       account_label: previewCurrentCard.account_label,
       official_source: "OpenAI default",
+      request_count: 18,
       tokens: {
         input_tokens: input,
         cached_input_tokens: cached,
@@ -263,6 +273,7 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
       },
       models: [{
         model: "gpt-5.3-codex",
+        request_count: 18,
         tokens: {
           input_tokens: input,
           cached_input_tokens: cached,
@@ -283,6 +294,7 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     }],
     models: [{
       model: "gpt-5.3-codex",
+      request_count: 18,
       tokens: {
         input_tokens: input,
         cached_input_tokens: cached,
@@ -311,6 +323,84 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     },
     pricing_source: "OpenAI API pricing",
     pricing_checked_at: "2026-07-07",
+  };
+}
+
+function previewOpenAiUsageTrends(): OpenAiUsageTrendPoint[] {
+  const now = Date.now();
+  return Array.from({ length: 12 }, (_, index) => {
+    const input = 40_000 + index * 8_000;
+    const cached = Math.floor(input * 0.55);
+    const output = 4_000 + index * 600;
+    const cost = 60_000 + index * 8_000;
+    const bucket = now - (11 - index) * 60 * 60 * 1000;
+    return {
+      date: new Date(bucket).toISOString(),
+      bucket_start_ms: bucket,
+      request_count: index % 3 === 0 ? 2 : 1,
+      tokens: {
+        input_tokens: input,
+        cached_input_tokens: cached,
+        output_tokens: output,
+        reasoning_output_tokens: Math.floor(output * 0.3),
+        real_total_tokens: input + output,
+      },
+      cost: {
+        input_cost_micros: Math.floor(cost * 0.45),
+        cached_input_cost_micros: Math.floor(cost * 0.08),
+        output_cost_micros: Math.floor(cost * 0.47),
+        total_cost_micros: cost,
+        unpriced_tokens: 0,
+      },
+    };
+  });
+}
+
+function previewOpenAiUsageLogs(): OpenAiUsageRequestLogPage {
+  const summary = previewOpenAiUsageSummary();
+  const rows: OpenAiUsageRequestLog[] = Array.from({ length: 8 }, (_, index) => ({
+    request_id: `preview-${index + 1}`,
+    session_id: "preview-session",
+    profile: previewCurrentCard.folder_name,
+    account_label: previewCurrentCard.account_label,
+    official_source: "OpenAI default",
+    model: "gpt-5.3-codex",
+    tokens: {
+      input_tokens: 80_000 + index * 1_000,
+      cached_input_tokens: 44_000 + index * 400,
+      output_tokens: 6_000 + index * 120,
+      reasoning_output_tokens: 2_000,
+      real_total_tokens: 86_000 + index * 1_120,
+    },
+    cost: summary.cost,
+    priced: true,
+    pricing_note: "OpenAI API pricing",
+    status_code: 200,
+    created_at_ms: Date.now() - index * 60_000,
+    data_source: "codex_session",
+  }));
+  return {
+    data: rows,
+    total: rows.length,
+    page: 1,
+    page_size: 20,
+  };
+}
+
+function previewOpenAiUsageDataSources(): OpenAiUsageDataSourceSummary[] {
+  return [{
+    data_source: "codex_session",
+    request_count: 18,
+    cost: previewOpenAiUsageSummary().cost,
+  }];
+}
+
+function previewOpenAiUsageDashboard(): OpenAiUsageDashboard {
+  return {
+    summary: previewOpenAiUsageSummary(),
+    trends: previewOpenAiUsageTrends(),
+    logs: previewOpenAiUsageLogs(),
+    data_sources: previewOpenAiUsageDataSources(),
   };
 }
 
@@ -362,8 +452,20 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
         } as T;
       case "refresh_all_oauth_profile_plans_silent":
         return 0 as T;
+      case "get_openai_usage_dashboard":
+        return clone(previewOpenAiUsageDashboard()) as T;
       case "get_openai_usage_summary":
         return clone(previewOpenAiUsageSummary()) as T;
+      case "get_openai_usage_trends":
+        return clone(previewOpenAiUsageTrends()) as T;
+      case "get_openai_usage_request_logs":
+        return clone(previewOpenAiUsageLogs()) as T;
+      case "get_openai_usage_request_detail": {
+        const requestId = args?.requestId as string | undefined;
+        return (previewOpenAiUsageLogs().data.find((row) => row.request_id === requestId) ?? null) as T;
+      }
+      case "get_openai_usage_data_sources":
+        return clone(previewOpenAiUsageDataSources()) as T;
       case "switch_profile": {
         const profile = (args?.payload as { profile?: string } | undefined)?.profile ?? previewCurrentCard.folder_name;
         const next = previewSnapshot.profiles.find((entry) => entry.folder_name === profile);
@@ -554,8 +656,52 @@ export function refreshAllOauthProfilePlansSilent(): Promise<number> {
   return invokeCommand<number>("refresh_all_oauth_profile_plans_silent");
 }
 
-export function getOpenAiUsageSummary(): Promise<OpenAiUsageSummary> {
-  return invokeCommand<OpenAiUsageSummary>("get_openai_usage_summary");
+export function getOpenAiUsageDashboard(
+  query: OpenAiUsageQuery | undefined,
+  page: number,
+  pageSize: number,
+): Promise<OpenAiUsageDashboard> {
+  return invokeCommand<OpenAiUsageDashboard>("get_openai_usage_dashboard", {
+    query: query ?? null,
+    page,
+    pageSize,
+  });
+}
+
+export function getOpenAiUsageSummary(query?: OpenAiUsageQuery): Promise<OpenAiUsageSummary> {
+  return invokeCommand<OpenAiUsageSummary>("get_openai_usage_summary", { query: query ?? null });
+}
+
+export function getOpenAiUsageTrends(query?: OpenAiUsageQuery): Promise<OpenAiUsageTrendPoint[]> {
+  return invokeCommand<OpenAiUsageTrendPoint[]>("get_openai_usage_trends", { query: query ?? null });
+}
+
+export function getOpenAiUsageRequestLogs(
+  query: OpenAiUsageQuery | undefined,
+  page: number,
+  pageSize: number,
+): Promise<OpenAiUsageRequestLogPage> {
+  return invokeCommand<OpenAiUsageRequestLogPage>("get_openai_usage_request_logs", {
+    query: query ?? null,
+    page,
+    pageSize,
+  });
+}
+
+export function getOpenAiUsageRequestDetail(
+  requestId: string,
+): Promise<OpenAiUsageRequestLog | null> {
+  return invokeCommand<OpenAiUsageRequestLog | null>("get_openai_usage_request_detail", {
+    requestId,
+  });
+}
+
+export function getOpenAiUsageDataSources(
+  query?: OpenAiUsageQuery,
+): Promise<OpenAiUsageDataSourceSummary[]> {
+  return invokeCommand<OpenAiUsageDataSourceSummary[]>("get_openai_usage_data_sources", {
+    query: query ?? null,
+  });
 }
 
 export function switchProfile(profile: string): Promise<SwitchResponse> {

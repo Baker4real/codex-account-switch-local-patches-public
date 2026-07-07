@@ -115,6 +115,7 @@ export interface OpenAiUsageCostBreakdown {
 
 export interface OpenAiUsageModelSummary {
   model: string;
+  request_count: number;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
   priced: boolean;
@@ -125,6 +126,7 @@ export interface OpenAiUsageAccountSummary {
   profile: string;
   account_label: string | null;
   official_source: string;
+  request_count: number;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
   models: OpenAiUsageModelSummary[];
@@ -143,6 +145,8 @@ export interface OpenAiUsageExclusions {
 export interface OpenAiUsageSummary {
   generated_at_ms: number;
   attribution_since_ms: number | null;
+  range_start_ms: number | null;
+  range_end_ms: number | null;
   total_requests: number;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
@@ -152,6 +156,61 @@ export interface OpenAiUsageSummary {
   exclusions: OpenAiUsageExclusions;
   pricing_source: string;
   pricing_checked_at: string;
+}
+
+export interface OpenAiUsageQuery {
+  start_date?: number | null;
+  end_date?: number | null;
+  profile?: string | null;
+  account_label?: string | null;
+  model?: string | null;
+  status_code?: number | null;
+}
+
+export type OpenAiUsageRangePreset = "today" | "1d" | "7d" | "14d" | "30d" | "custom";
+
+export interface OpenAiUsageTrendPoint {
+  date: string;
+  bucket_start_ms: number;
+  request_count: number;
+  tokens: OpenAiUsageTokenTotals;
+  cost: OpenAiUsageCostBreakdown;
+}
+
+export interface OpenAiUsageRequestLog {
+  request_id: string;
+  session_id: string;
+  profile: string;
+  account_label: string | null;
+  official_source: string;
+  model: string;
+  tokens: OpenAiUsageTokenTotals;
+  cost: OpenAiUsageCostBreakdown;
+  priced: boolean;
+  pricing_note: string | null;
+  status_code: number;
+  created_at_ms: number;
+  data_source: string;
+}
+
+export interface OpenAiUsageRequestLogPage {
+  data: OpenAiUsageRequestLog[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface OpenAiUsageDataSourceSummary {
+  data_source: string;
+  request_count: number;
+  cost: OpenAiUsageCostBreakdown;
+}
+
+export interface OpenAiUsageDashboard {
+  summary: OpenAiUsageSummary;
+  trends: OpenAiUsageTrendPoint[];
+  logs: OpenAiUsageRequestLogPage;
+  data_sources: OpenAiUsageDataSourceSummary[];
 }
 
 export interface SwitchResponse {

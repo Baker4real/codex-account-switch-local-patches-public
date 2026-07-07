@@ -22,7 +22,7 @@ import {
   deleteProfile,
   getCodexCliStatus,
   getCurrentLiveQuota,
-  getOpenAiUsageSummary,
+  getOpenAiUsageDashboard,
   getProfilesSnapshot,
   loginCurrentProfile,
   openCodex,
@@ -46,6 +46,7 @@ import type {
   CodexCliRedetectResult,
   CodexCliStatus,
   CurrentQuotaResponse,
+  OpenAiUsageQuery,
 } from "@front-shared/types";
 import {
   applyLocale,
@@ -75,6 +76,8 @@ function rerenderDashboard(): void {
   if (!dashboard) {
     renderPaging({ has_previous: false, has_next: false, page: 1, total_pages: 1 });
     renderShellOverview(null);
+    renderOpenAiUsage(state.usageSummary);
+    syncUsageAutoRefresh();
     return;
   }
 
@@ -93,6 +96,7 @@ function rerenderDashboard(): void {
   renderPaging(dashboard.paging);
   renderShellOverview(dashboard);
   renderOpenAiUsage(state.usageSummary);
+  syncUsageAutoRefresh();
 }
 
 let renameSourceProfile: string | null = null;
@@ -104,6 +108,99 @@ let cancelledLoginProfile: string | null = null;
 const LOGIN_CANCEL_RETRY_DELAY_MS = 250;
 const LOGIN_CANCEL_RETRY_LIMIT = 6;
 let lastUnmanagedAccountPrompt: string | null = null;
+let usageRefreshTimer: number | null = null;
+let usageRefreshTimerMs = 0;
+let usageRefreshInFlight = false;
+let usageRefreshQueued = false;
+
+function toUnixSeconds(valueMs: number): number {
+  return Math.floor(valueMs / 1000);
+}
+
+function parseDateTimeLocal(value: string): number | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function startOfTodayMs(nowMs: number): number {
+  const now = new Date(nowMs);
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function ensureUsageCustomRange(): void {
+  const nowMs = Date.now();
+  if (state.usageCustomStartDate == null) {
+    state.usageCustomStartDate = nowMs - 24 * 60 * 60 * 1000;
+  }
+  if (state.usageCustomEndDate == null) {
+    state.usageCustomEndDate = nowMs;
+  }
+}
+
+function resolveUsageQuery(): OpenAiUsageQuery {
+  const nowMs = Date.now();
+  let startMs: number | null = null;
+  let endMs: number | null = nowMs;
+
+  switch (state.usageRangePreset) {
+    case "today":
+      startMs = startOfTodayMs(nowMs);
+      break;
+    case "7d":
+      startMs = nowMs - 7 * 24 * 60 * 60 * 1000;
+      break;
+    case "14d":
+      startMs = nowMs - 14 * 24 * 60 * 60 * 1000;
+      break;
+    case "30d":
+      startMs = nowMs - 30 * 24 * 60 * 60 * 1000;
+      break;
+    case "custom":
+      ensureUsageCustomRange();
+      startMs = state.usageCustomStartDate;
+      endMs = state.usageLiveEnd ? nowMs : state.usageCustomEndDate;
+      break;
+    case "1d":
+    default:
+      startMs = nowMs - 24 * 60 * 60 * 1000;
+      break;
+  }
+
+  if (startMs != null && endMs != null && endMs < startMs) {
+    endMs = startMs;
+  }
+
+  return {
+    start_date: startMs == null ? null : toUnixSeconds(startMs),
+    end_date: endMs == null ? null : toUnixSeconds(endMs),
+    profile: state.usageProfileFilter,
+    model: state.usageModelFilter,
+    status_code: state.usageStatusCodeFilter,
+  };
+}
+
+function syncUsageAutoRefresh(): void {
+  const usageUiAvailable = elements.usageSummaryPanel != null;
+  const desiredMs = state.route === "usage" && usageUiAvailable ? state.usageRefreshIntervalMs : 0;
+  if (desiredMs === usageRefreshTimerMs) {
+    return;
+  }
+
+  if (usageRefreshTimer != null) {
+    window.clearInterval(usageRefreshTimer);
+    usageRefreshTimer = null;
+  }
+  usageRefreshTimerMs = desiredMs;
+
+  if (desiredMs > 0) {
+    usageRefreshTimer = window.setInterval(() => {
+      void refreshUsageData(false);
+    }, desiredMs);
+  }
+}
 
 function isRefreshPending(profile: string): boolean {
   return state.refreshActiveProfiles.includes(profile);
@@ -255,9 +352,7 @@ async function refreshAllData(showError = true): Promise<void> {
     applySnapshot(snapshot);
     applyCurrentQuota(currentQuota);
     try {
-      state.usageSummary = await getOpenAiUsageSummary();
-      state.usageLoaded = true;
-      state.usageLoadError = null;
+      await loadUsageData();
     } catch (usageError) {
       state.usageLoaded = true;
       state.usageLoadError = usageError instanceof Error
@@ -274,11 +369,36 @@ async function refreshAllData(showError = true): Promise<void> {
   }
 }
 
-async function refreshUsageSummary(showError = true): Promise<void> {
+async function loadUsageData(): Promise<void> {
+  const query = resolveUsageQuery();
+  const dashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
+
+  state.usageSummary = dashboard.summary;
+  state.usageTrends = dashboard.trends;
+  state.usageLogs = dashboard.logs;
+  state.usageDataSources = dashboard.data_sources;
+  const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / dashboard.logs.page_size));
+  if (dashboard.logs.page > totalPages) {
+    state.usageLogsPage = totalPages;
+    const clampedDashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
+    state.usageSummary = clampedDashboard.summary;
+    state.usageTrends = clampedDashboard.trends;
+    state.usageLogs = clampedDashboard.logs;
+    state.usageDataSources = clampedDashboard.data_sources;
+  }
+  state.usageLoaded = true;
+  state.usageLoadError = null;
+}
+
+async function refreshUsageData(showError = true): Promise<void> {
+  if (usageRefreshInFlight) {
+    usageRefreshQueued = true;
+    return;
+  }
+  usageRefreshInFlight = true;
+  usageRefreshQueued = false;
   try {
-    state.usageSummary = await getOpenAiUsageSummary();
-    state.usageLoaded = true;
-    state.usageLoadError = null;
+    await loadUsageData();
     rerenderDashboard();
   } catch (error) {
     state.usageLoaded = true;
@@ -288,6 +408,12 @@ async function refreshUsageSummary(showError = true): Promise<void> {
     rerenderDashboard();
     if (showError) {
       showToast(error instanceof Error ? error.message : t(state.locale, "usageLoadFailed"), true);
+    }
+  } finally {
+    usageRefreshInFlight = false;
+    if (usageRefreshQueued) {
+      usageRefreshQueued = false;
+      void refreshUsageData(showError);
     }
   }
 }
@@ -1026,9 +1152,7 @@ export function bootstrap(): void {
   renderShellRoute();
 
   window.addEventListener("hashchange", () => {
-    state.route = routeFromLocation();
-    renderShellRoute();
-    renderOpenAiUsage(state.usageSummary);
+    rerenderDashboard();
   });
 
   elements.previousPageButton.addEventListener("click", () => {
@@ -1054,8 +1178,87 @@ export function bootstrap(): void {
   elements.settingsCheckUpdateButton.addEventListener("click", () => {
     void handleCheckUpdate();
   });
-  elements.usageRefreshButton.addEventListener("click", () => {
-    void refreshUsageSummary();
+  elements.usageRefreshButton?.addEventListener("click", () => {
+    void refreshUsageData();
+  });
+  elements.usageRangeSelect?.addEventListener("change", () => {
+    if (!elements.usageRangeSelect) {
+      return;
+    }
+    state.usageRangePreset = elements.usageRangeSelect.value as typeof state.usageRangePreset;
+    if (state.usageRangePreset === "custom") {
+      ensureUsageCustomRange();
+    }
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageStartInput?.addEventListener("change", () => {
+    if (!elements.usageStartInput) {
+      return;
+    }
+    state.usageRangePreset = "custom";
+    state.usageCustomStartDate = parseDateTimeLocal(elements.usageStartInput.value);
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageEndInput?.addEventListener("change", () => {
+    if (!elements.usageEndInput) {
+      return;
+    }
+    state.usageRangePreset = "custom";
+    state.usageCustomEndDate = parseDateTimeLocal(elements.usageEndInput.value);
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageLiveEndCheckbox?.addEventListener("change", () => {
+    if (!elements.usageLiveEndCheckbox) {
+      return;
+    }
+    state.usageRangePreset = "custom";
+    state.usageLiveEnd = elements.usageLiveEndCheckbox.checked;
+    if (!state.usageLiveEnd && state.usageCustomEndDate == null) {
+      state.usageCustomEndDate = Date.now();
+    }
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageAccountFilter?.addEventListener("change", () => {
+    if (!elements.usageAccountFilter) {
+      return;
+    }
+    state.usageProfileFilter = elements.usageAccountFilter.value || null;
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageModelFilter?.addEventListener("change", () => {
+    if (!elements.usageModelFilter) {
+      return;
+    }
+    state.usageModelFilter = elements.usageModelFilter.value || null;
+    state.usageLogsPage = 1;
+    void refreshUsageData();
+  });
+  elements.usageRefreshIntervalSelect?.addEventListener("change", () => {
+    if (!elements.usageRefreshIntervalSelect) {
+      return;
+    }
+    const intervalMs = Number(elements.usageRefreshIntervalSelect.value);
+    state.usageRefreshIntervalMs = Number.isFinite(intervalMs) ? intervalMs : 0;
+    rerenderDashboard();
+  });
+  elements.usageDetailPanel?.addEventListener("click", (event) => {
+    const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>(
+      "[data-usage-log-page]",
+    );
+    if (!button || button.disabled) {
+      return;
+    }
+    const page = Number(button.dataset.usageLogPage);
+    if (!Number.isFinite(page) || page < 1 || page === state.usageLogsPage) {
+      return;
+    }
+    state.usageLogsPage = page;
+    void refreshUsageData();
   });
   elements.updateDialogLaterButton.addEventListener("click", () => {
     elements.updateDialog.close();

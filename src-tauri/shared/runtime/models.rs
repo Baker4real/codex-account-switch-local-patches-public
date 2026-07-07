@@ -282,6 +282,7 @@ pub struct OpenAiUsageCostBreakdown {
 #[serde(default)]
 pub struct OpenAiUsageModelSummary {
     pub model: String,
+    pub request_count: u64,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
     pub priced: bool,
@@ -294,6 +295,7 @@ pub struct OpenAiUsageAccountSummary {
     pub profile: String,
     pub account_label: Option<String>,
     pub official_source: String,
+    pub request_count: u64,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
     pub models: Vec<OpenAiUsageModelSummary>,
@@ -316,6 +318,8 @@ pub struct OpenAiUsageExclusions {
 pub struct OpenAiUsageSummary {
     pub generated_at_ms: u64,
     pub attribution_since_ms: Option<u64>,
+    pub range_start_ms: Option<u64>,
+    pub range_end_ms: Option<u64>,
     pub total_requests: u64,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
@@ -325,6 +329,71 @@ pub struct OpenAiUsageSummary {
     pub exclusions: OpenAiUsageExclusions,
     pub pricing_source: String,
     pub pricing_checked_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageQuery {
+    pub start_date: Option<i64>,
+    pub end_date: Option<i64>,
+    pub profile: Option<String>,
+    pub account_label: Option<String>,
+    pub model: Option<String>,
+    pub status_code: Option<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageTrendPoint {
+    pub date: String,
+    pub bucket_start_ms: u64,
+    pub request_count: u64,
+    pub tokens: OpenAiUsageTokenTotals,
+    pub cost: OpenAiUsageCostBreakdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageRequestLog {
+    pub request_id: String,
+    pub session_id: String,
+    pub profile: String,
+    pub account_label: Option<String>,
+    pub official_source: String,
+    pub model: String,
+    pub tokens: OpenAiUsageTokenTotals,
+    pub cost: OpenAiUsageCostBreakdown,
+    pub priced: bool,
+    pub pricing_note: Option<String>,
+    pub status_code: u16,
+    pub created_at_ms: u64,
+    pub data_source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageRequestLogPage {
+    pub data: Vec<OpenAiUsageRequestLog>,
+    pub total: u32,
+    pub page: u32,
+    pub page_size: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageDataSourceSummary {
+    pub data_source: String,
+    pub request_count: u64,
+    pub cost: OpenAiUsageCostBreakdown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageDashboard {
+    pub summary: OpenAiUsageSummary,
+    pub trends: Vec<OpenAiUsageTrendPoint>,
+    pub logs: OpenAiUsageRequestLogPage,
+    pub data_sources: Vec<OpenAiUsageDataSourceSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
