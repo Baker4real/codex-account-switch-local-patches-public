@@ -12,6 +12,8 @@
 - Plan / quota 刷新不再把 `last_plan_check_ms` 超过 6 小时当作授权失效信号。卡片刷新和后台 bulk refresh 会先使用现有 `access_token` 查询官方 usage；只有 access token 过期、临近过期或 usage 返回 401 时才消耗 `refresh_token`，避免仍有效账号被提前提示重新登录。
 - 新增「使用统计」模块：位于「账号」和「设置」之间，从 Codex session JSONL 重建 `account_backup/openai_usage.sqlite`，只统计可证明为官方 OpenAI Base URL 的 token 增量，按账号、模型、时间范围、趋势、请求日志和数据源证据展示，并按模型价格估算费用；未知模型费用保持未定价，不当作 `$0`。
 - 使用统计筛选不再自我折叠：账号分类表移到时间选择下方、摘要卡片前；账号候选清除账号自身筛选但保留时间和模型筛选，模型候选清除模型自身筛选但保留时间和账号筛选，选择一个账号或模型后仍可切换到同一时间范围内的其他候选。
+- OpenAI 使用统计升级为 evidence / facts / strict accepted events 分层账本：默认总额仍只读 strict proven，历史槽位归因估算同屏可见但不冒充官方账单；账号表按账号实体聚合，`account_identity_key` 优先，legacy label 只在能唯一桥接到同一 strict identity 时合并。
+- cc-switch 等只读外部证据冻结副本改放 `%CODEX_HOME%\usage_evidence\`，并显式排除 `account_backup\usage_evidence`，避免 evidence 目录被误识别成账号 profile。
 
 ## 1.5.12 - 2026-05-29
 

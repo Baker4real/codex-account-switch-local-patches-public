@@ -293,6 +293,8 @@ pub struct OpenAiUsageModelSummary {
 #[serde(default)]
 pub struct OpenAiUsageAccountSummary {
     pub profile: String,
+    pub profiles: Vec<String>,
+    pub account_group_key: Option<String>,
     pub account_identity_key: Option<String>,
     pub legacy_account_key: Option<String>,
     pub account_label: Option<String>,
@@ -361,6 +363,7 @@ pub struct OpenAiUsageQuery {
     pub start_date: Option<i64>,
     pub end_date: Option<i64>,
     pub profile: Option<String>,
+    pub account_group_key: Option<String>,
     pub account_label: Option<String>,
     pub model: Option<String>,
     pub status_code: Option<u16>,

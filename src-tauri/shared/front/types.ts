@@ -124,6 +124,8 @@ export interface OpenAiUsageModelSummary {
 
 export interface OpenAiUsageAccountSummary {
   profile: string;
+  profiles?: string[];
+  account_group_key?: string | null;
   account_identity_key?: string | null;
   legacy_account_key?: string | null;
   account_label: string | null;
@@ -184,6 +186,7 @@ export interface OpenAiUsageQuery {
   start_date?: number | null;
   end_date?: number | null;
   profile?: string | null;
+  account_group_key?: string | null;
   account_label?: string | null;
   model?: string | null;
   status_code?: number | null;

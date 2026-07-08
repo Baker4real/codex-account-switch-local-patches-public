@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, BTreeMap, HashMap, HashSet};
+use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -50,8 +50,10 @@ const LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED: &str = "legacy_profile_attributed"
 const LEDGER_LAYER_CANDIDATE_UNATTRIBUTED: &str = "candidate_unattributed";
 const LEDGER_LAYER_REJECTED_INVALID: &str = "rejected_invalid";
 const LEDGER_LAYER_SUPERSEDED: &str = "superseded";
+const LEDGER_LAYER_MIXED_ATTRIBUTED: &str = "mixed_attributed";
 const ATTRIBUTION_KIND_STRICT_ACCOUNT: &str = "strict_account";
 const ATTRIBUTION_KIND_LEGACY_PROFILE: &str = "legacy_profile";
+const ATTRIBUTION_KIND_MIXED_ACCOUNT: &str = "mixed_account";
 const ATTRIBUTION_KIND_UNATTRIBUTED: &str = "unattributed";
 const SCOPE_STRICT: &str = "strict";
 const SCOPE_LEGACY: &str = "legacy";
@@ -118,6 +120,8 @@ struct ModelAggregate {
 #[derive(Default)]
 struct AccountAggregate {
     profile: String,
+    profiles: BTreeSet<String>,
+    account_group_key: String,
     account_identity_key: Option<String>,
     legacy_account_key: Option<String>,
     account_label: Option<String>,
@@ -522,7 +526,7 @@ pub fn load_openai_usage_summary(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_usage_facts(&conn, &query)?;
+    let facts = load_filtered_usage_facts(&conn, &query)?;
     let summary = build_summary_from_facts(summary, &facts, &query);
     attach_layer_summaries(&conn, &query, summary)
 }
@@ -537,7 +541,7 @@ pub fn load_openai_usage_dashboard(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_usage_facts(&conn, &query)?;
+    let facts = load_filtered_usage_facts(&conn, &query)?;
     let account_query = account_visibility_query(&query);
     let account_facts = load_usage_facts(&conn, &account_query)?;
     let account_summary = build_summary_from_facts(
@@ -547,7 +551,7 @@ pub fn load_openai_usage_dashboard(
     )
     .accounts;
     let model_query = without_model_filter(&query);
-    let model_facts = load_usage_facts(&conn, &model_query)?;
+    let model_facts = load_filtered_usage_facts(&conn, &model_query)?;
     let model_options =
         build_summary_from_facts(new_usage_summary(&model_query), &model_facts, &model_query)
             .models;
@@ -605,6 +609,7 @@ fn query_with_scope(query: &OpenAiUsageQuery, scope: &str) -> OpenAiUsageQuery {
 fn without_account_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
     let mut next = query.clone();
     next.profile = None;
+    next.account_group_key = None;
     next.account_label = None;
     next
 }
@@ -630,9 +635,10 @@ fn build_summary_from_facts(
 ) -> OpenAiUsageSummary {
     let mut accounts: BTreeMap<String, AccountAggregate> = BTreeMap::new();
     let mut global_models: BTreeMap<String, ModelAggregate> = BTreeMap::new();
+    let label_identities = strict_label_identities(facts);
 
     for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
-        add_fact_usage(&mut accounts, &mut global_models, fact);
+        add_fact_usage(&mut accounts, &mut global_models, &label_identities, fact);
     }
 
     let total = total_account_aggregate(&accounts);
@@ -656,7 +662,7 @@ pub fn load_openai_usage_trends(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_usage_facts(&conn, &query)?;
+    let facts = load_filtered_usage_facts(&conn, &query)?;
     Ok(build_trends(&facts, &query))
 }
 
@@ -670,7 +676,7 @@ pub fn load_openai_usage_request_logs(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_usage_facts(&conn, &query)?;
+    let facts = load_filtered_usage_facts(&conn, &query)?;
     Ok(build_request_log_page(&facts, page, page_size))
 }
 
@@ -698,7 +704,7 @@ pub fn load_openai_usage_data_sources(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_usage_facts(&conn, &query)?;
+    let facts = load_filtered_usage_facts(&conn, &query)?;
     Ok(build_data_source_summaries(&facts))
 }
 
@@ -2657,13 +2663,40 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
     Ok(facts)
 }
 
+fn load_filtered_usage_facts(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+) -> AppResult<Vec<UsageFact>> {
+    let facts = load_usage_facts(conn, query)?;
+    Ok(filter_facts_by_account_group(facts, query))
+}
+
+fn filter_facts_by_account_group(
+    facts: Vec<UsageFact>,
+    query: &OpenAiUsageQuery,
+) -> Vec<UsageFact> {
+    let Some(selected_account_group_key) = query
+        .account_group_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return facts;
+    };
+    let label_identities = strict_label_identities(&facts);
+    facts
+        .into_iter()
+        .filter(|fact| account_group_key(fact, &label_identities) == selected_account_group_key)
+        .collect()
+}
+
 fn attach_layer_summaries(
     conn: &Connection,
     query: &OpenAiUsageQuery,
     mut summary: OpenAiUsageSummary,
 ) -> AppResult<OpenAiUsageSummary> {
     let layer_query = query_with_scope(query, SCOPE_COMBINED_ATTRIBUTED);
-    let facts = load_usage_facts(conn, &layer_query)?;
+    let facts = load_filtered_usage_facts(conn, &layer_query)?;
     summary.layer_summaries = build_layer_summaries(&facts, &layer_query);
     Ok(summary)
 }
@@ -3887,25 +3920,35 @@ fn add_event_usage(
 fn add_fact_usage(
     accounts: &mut BTreeMap<String, AccountAggregate>,
     global_models: &mut BTreeMap<String, ModelAggregate>,
+    label_identities: &BTreeMap<String, BTreeSet<String>>,
     fact: &UsageFact,
 ) {
-    let key = fact
-        .account_identity_key
-        .as_deref()
-        .or(fact.legacy_account_key.as_deref())
-        .unwrap_or(&fact.profile)
-        .to_string();
-    let account = accounts.entry(key).or_insert_with(|| AccountAggregate {
-        profile: fact.profile.clone(),
-        account_identity_key: fact.account_identity_key.clone(),
-        legacy_account_key: fact.legacy_account_key.clone(),
-        account_label: fact.account_label.clone(),
-        official_source: fact.official_source.clone(),
-        ledger_layer: fact.ledger_layer.clone(),
-        attribution_kind: fact.attribution_kind.clone(),
-        attribution_window_id: fact.attribution_window_id.clone(),
-        ..AccountAggregate::default()
-    });
+    let key = account_group_key(fact, label_identities);
+    let account = accounts
+        .entry(key.clone())
+        .or_insert_with(|| new_account_aggregate(key, fact));
+    account.profiles.insert(fact.profile.clone());
+    if account.account_identity_key.is_none() {
+        account.account_identity_key = fact.account_identity_key.clone();
+    }
+    if account.legacy_account_key.is_none() {
+        account.legacy_account_key = fact.legacy_account_key.clone();
+    }
+    if account.account_label.is_none() {
+        account.account_label = fact.account_label.clone();
+    }
+    if account.official_source != fact.official_source {
+        account.official_source = "Multiple OpenAI sources".to_string();
+    }
+    if account.ledger_layer != fact.ledger_layer {
+        account.ledger_layer = LEDGER_LAYER_MIXED_ATTRIBUTED.to_string();
+    }
+    if account.attribution_kind != fact.attribution_kind {
+        account.attribution_kind = ATTRIBUTION_KIND_MIXED_ACCOUNT.to_string();
+    }
+    if account.attribution_window_id != fact.attribution_window_id {
+        account.attribution_window_id = None;
+    }
     add_to_aggregate(&mut account.aggregate, fact.delta, &fact.cost.breakdown);
     add_to_model(
         account.models.entry(fact.model.clone()).or_default(),
@@ -3917,6 +3960,80 @@ fn add_fact_usage(
         fact.delta,
         &fact.cost,
     );
+}
+
+fn new_account_aggregate(account_group_key: String, fact: &UsageFact) -> AccountAggregate {
+    let mut profiles = BTreeSet::new();
+    profiles.insert(fact.profile.clone());
+    AccountAggregate {
+        profile: fact.profile.clone(),
+        profiles,
+        account_group_key,
+        account_identity_key: fact.account_identity_key.clone(),
+        legacy_account_key: fact.legacy_account_key.clone(),
+        account_label: fact.account_label.clone(),
+        official_source: fact.official_source.clone(),
+        ledger_layer: fact.ledger_layer.clone(),
+        attribution_kind: fact.attribution_kind.clone(),
+        attribution_window_id: fact.attribution_window_id.clone(),
+        ..AccountAggregate::default()
+    }
+}
+
+fn account_group_key(
+    fact: &UsageFact,
+    label_identities: &BTreeMap<String, BTreeSet<String>>,
+) -> String {
+    if let Some(value) = fact.account_identity_key.as_deref() {
+        return format!("identity:{value}");
+    }
+    normalized_account_label_key(fact.account_label.as_deref())
+        .map(|label_key| {
+            let identities = label_identities.get(&label_key);
+            match identities.and_then(single_btree_value) {
+                Some(identity) => format!("identity:{identity}"),
+                None => label_key,
+            }
+        })
+        .or_else(|| {
+            fact.legacy_account_key
+                .as_deref()
+                .map(|value| format!("legacy:{value}"))
+        })
+        .unwrap_or_else(|| format!("profile:{}", fact.profile))
+}
+
+fn strict_label_identities(facts: &[UsageFact]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut labels = BTreeMap::<String, BTreeSet<String>>::new();
+    for fact in facts {
+        let (Some(label_key), Some(identity)) = (
+            normalized_account_label_key(fact.account_label.as_deref()),
+            fact.account_identity_key.as_deref(),
+        ) else {
+            continue;
+        };
+        labels
+            .entry(label_key)
+            .or_default()
+            .insert(identity.to_string());
+    }
+    labels
+}
+
+fn single_btree_value(values: &BTreeSet<String>) -> Option<&str> {
+    (values.len() == 1)
+        .then(|| values.iter().next())
+        .flatten()
+        .map(String::as_str)
+}
+
+fn normalized_account_label_key(label: Option<&str>) -> Option<String> {
+    let value = label?.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return None;
+    }
+    let looks_like_account = value.contains('@') || value.starts_with("acct_");
+    looks_like_account.then(|| format!("label:{value}"))
 }
 
 fn total_account_aggregate(accounts: &BTreeMap<String, AccountAggregate>) -> Aggregate {
@@ -4111,8 +4228,16 @@ fn strip_date_suffix(value: &str) -> String {
 }
 
 fn account_to_summary(account: AccountAggregate) -> OpenAiUsageAccountSummary {
+    let profiles = account.profiles.into_iter().collect::<Vec<_>>();
+    let profile = if profiles.is_empty() {
+        account.profile
+    } else {
+        profiles.join(", ")
+    };
     OpenAiUsageAccountSummary {
-        profile: account.profile,
+        profile,
+        profiles,
+        account_group_key: Some(account.account_group_key),
         account_identity_key: account.account_identity_key,
         legacy_account_key: account.legacy_account_key,
         account_label: account.account_label,
@@ -4723,6 +4848,202 @@ mod tests {
             )
             .unwrap();
         assert_eq!(legacy_facts, 1);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_account_summary_merges_strict_and_legacy_by_account_label() {
+        let codex_home = temp_codex_home("account-label-merge");
+        fs::create_dir_all(&codex_home).unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("b".to_string()),
+                account_label: Some("same@example.com".to_string()),
+                account_identity_key: None,
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
+                profile: Some("c".to_string()),
+                account_label: Some("same@example.com".to_string()),
+                account_identity_key: Some("acct_same".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-merge"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":30,"output_tokens":16,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.summary.total_requests, 1);
+        assert_eq!(dashboard.logs.total, 1);
+        assert_eq!(dashboard.account_summary.len(), 1);
+        let account = &dashboard.account_summary[0];
+        assert_eq!(account.account_label.as_deref(), Some("same@example.com"));
+        assert_eq!(account.ledger_layer, LEDGER_LAYER_MIXED_ATTRIBUTED);
+        assert_eq!(account.attribution_kind, ATTRIBUTION_KIND_MIXED_ACCOUNT);
+        assert_eq!(account.request_count, 2);
+        assert_eq!(account.tokens.input_tokens, 160);
+        assert_eq!(account.profiles, vec!["b".to_string(), "c".to_string()]);
+        let filtered = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                account_group_key: account.account_group_key.clone(),
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+        assert_eq!(filtered.summary.total_requests, 2);
+        assert_eq!(filtered.logs.total, 2);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_account_summary_does_not_merge_distinct_strict_identities_with_same_label() {
+        let codex_home = temp_codex_home("same-label-distinct-identities");
+        fs::create_dir_all(&codex_home).unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("a".to_string()),
+                account_label: Some("shared@example.com".to_string()),
+                account_identity_key: Some("acct_one".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
+                profile: Some("b".to_string()),
+                account_label: Some("shared@example.com".to_string()),
+                account_identity_key: Some("acct_two".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-distinct"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":30,"output_tokens":16,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 2);
+        assert!(dashboard
+            .account_summary
+            .iter()
+            .all(|account| account.ledger_layer == LEDGER_LAYER_STRICT_PROVEN));
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_account_summary_merges_same_strict_identity_across_label_changes() {
+        let codex_home = temp_codex_home("same-identity-label-change");
+        fs::create_dir_all(&codex_home).unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("a".to_string()),
+                account_label: Some("old@example.com".to_string()),
+                account_identity_key: Some("acct_same".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
+                profile: Some("b".to_string()),
+                account_label: Some("new@example.com".to_string()),
+                account_identity_key: Some("acct_same".to_string()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+            },
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-same-id"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":30,"output_tokens":16,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        assert_eq!(dashboard.account_summary[0].request_count, 2);
+        assert_eq!(
+            dashboard.account_summary[0].profiles,
+            vec!["a".to_string(), "b".to_string()]
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 

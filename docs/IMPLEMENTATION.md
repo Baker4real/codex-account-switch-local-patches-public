@@ -11,6 +11,8 @@
 - macOS command shim: `~/.codex/bin/codex`
 - Windows runtime files: `%CODEX_HOME%\account_backup\windows\`
 - Windows command shim: `%CODEX_HOME%\bin\codex.cmd`
+- OpenAI usage ledger: `%CODEX_HOME%\account_backup\openai_usage.sqlite`
+- OpenAI usage source evidence: `%CODEX_HOME%\usage_evidence\`
 
 ## Runtime shape
 
@@ -162,6 +164,14 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - ChatGPT Web API 路径把 quota 标记为 `official`；Codex app-server JSON-RPC 路径标记为 `fallback`；session JSONL 解析标记为 `local_observation`，并在可用时附带来源文件 mtime。
 - `last_plan_check_ms` 的 6 小时窗口只控制后台 bulk plan refresh 是否再次查询 usage；它不是授权边界，不能因为 plan 缓存过期就强制 OAuth rotation。
 - 账号页在 quota 数值旁显示来源 badge 和观测年龄。5 小时或周额度剩余百分比低于或等于 20% 时只进入警示状态；账号切换仍必须由用户显式触发。
+
+## OpenAI 使用统计账本
+
+- `openai_usage.sqlite` 是可重建的本机 usage ledger，不是不可变审计账单；source signature 或 schema / classifier / dedupe / layer / pricing 版本变化时会重建。
+- `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据；`openai_usage_facts` 只投影可计量层；`openai_usage_events` 保持 strict accepted-only 兼容表。
+- 默认摘要、趋势和日志只读 strict proven。历史槽位归因进入 `legacy_profile_attributed` 估算层，同屏展示但不合并成官方账号账单；candidate、rejected 和 superseded 不进入费用总额。
+- 账号聚合按账号实体而不是 profile 槽位：`account_identity_key` 是最高优先级；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才桥接。两个不同 strict identity 即使 label 相同也不能合并。
+- cc-switch 只作为只读 source adapter。导入前把 DB 冻结到 `%CODEX_HOME%\usage_evidence\ccswitch\` 并记录 hash / mtime / SQL；该目录不属于 `account_backup`，必须从 profile 扫描中排除。
 
 ## 授权缓存状态
 

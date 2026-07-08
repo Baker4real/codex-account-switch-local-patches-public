@@ -308,10 +308,13 @@ account_identity_key = local_hash(account_id || email)
 规则：
 
 - `profile` 是槽位，不是账号身份。
-- `account_label` 是展示标签，不是账号身份。
+- `account_label` 是展示标签，不是账号身份；只能在没有 identity 的 legacy 记录上作为桥接线索使用。
 - 同一账号跨多个 profile 时应能按 `account_identity_key` 合并。
 - profile 改名不应切裂历史账号统计。
 - email/account id 原文不应作为 join 主键散落到查询层。
+- strict identity 永远优先于 label。两个不同 `account_identity_key` 即使 label 相同也不能合并。
+- legacy label 只有在当前 fact 集合中能唯一映射到一个 strict identity 时，才桥接到该账号实体；否则保留为 legacy/label 分组。
+- 查询层使用 `account_group_key` 做账号实体筛选，不能把合并账号再降级成单个 profile 筛选。
 
 ## cc-switch 的位置
 
@@ -319,7 +322,7 @@ cc-switch 只能作为 source adapter，不是主账本。
 
 导入规则：
 
-- 导入前先冻结 DB 副本到 D 盘 evidence 目录，记录 hash、mtime、SQL。
+- 导入前先冻结 DB 副本到 `%CODEX_HOME%\usage_evidence\` 下的 D 盘 evidence 目录，记录 hash、mtime、SQL；不能写入 `account_backup`，避免被 profile 扫描识别成账号。
 - `data_source='proxy'` 且能映射 provider/account 的 Codex 行，可以进入高置信 candidate 或 proven 检查。
 - `data_source='codex_session'`、`provider_id='_codex_session'` 只能提供 token/model/session/time 证据。
 - `usage_daily_rollups` 只能做 day/model/provider 聚合候选，不做请求级账号归因。

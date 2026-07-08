@@ -117,14 +117,22 @@ npm run deploy:windows:remote-desktop
   或本地 session 观测结果展示得像官方 ChatGPT API 读数。
 - OpenAI 使用统计必须以有效 `base_url` 作为官方来源门禁，不得用
   `model_provider` 反推官方来源；只统计默认官方路径或 HTTPS
-  `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建 ledger，
-  source signature 必须覆盖 session JSONL、归属记录、profile metadata、
-  active marker 和价格版本，确保历史归属或价格表变化后能重新同步。
-  未知模型 token 可以展示，但费用必须保持未定价，不得显示为 `$0`。
+  `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建分层 ledger，
+  保存 evidence、facts 和 strict accepted events。默认总额、趋势和日志只读
+  strict proven；历史槽位归因只能进入 `legacy_profile_attributed` 估算层；
+  candidate / rejected / superseded 不得进入费用总额。source signature 必须覆盖
+  session JSONL、归属记录、profile metadata、active marker、schema/layer/backfill
+  和价格版本，确保历史归属或价格表变化后能重新同步。未知模型 token 可以展示，
+  但费用必须保持未定价，不得显示为 `$0`。
 - 使用统计账号/模型 facet 必须按当前时间范围重算：账号候选清除账号自身筛选
   但保留时间、模型和状态筛选；模型候选清除模型自身筛选但保留时间、账号和
   状态筛选。账号分类表应位于时间选择下方、摘要卡片前，选择一个账号后不能
-  让其他同范围账号从下拉中消失。
+  让其他同范围账号从下拉中消失。账号筛选使用 `account_group_key`，不是单个
+  profile；账号聚合必须以 `account_identity_key` 为最高优先级，legacy label
+  只能在唯一映射到同一 strict identity 时桥接，不能合并两个不同 strict identity。
+- cc-switch 等外部只读证据冻结副本必须写到 `%CODEX_HOME%\usage_evidence\`，
+  不得写入 `account_backup`。`account_backup\usage_evidence` 是系统目录污染，
+  必须迁出或排除，不能出现在账号列表、Usage 账号表或 profile 扫描中。
 - 本地 Windows MSVC 构建必须使用 `npm run tauri:build:windows:portable`；
   该 wrapper 默认使用环境或系统 `rustup`，需要本机固定路径时通过
   `CODEX_SWITCH_RUSTUP_BIN` / `CODEX_SWITCH_CARGO_HOME` /

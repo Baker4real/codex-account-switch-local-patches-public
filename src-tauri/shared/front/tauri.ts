@@ -266,6 +266,8 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     cache_hit_rate: primaryTokens.cached_input_tokens / primaryTokens.input_tokens,
     accounts: [{
       profile: previewCurrentCard.folder_name,
+      profiles: [previewCurrentCard.folder_name],
+      account_group_key: "label:preview@example.com",
       account_identity_key: "acct_preview",
       legacy_account_key: null,
       account_label: previewCurrentCard.account_label,

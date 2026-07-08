@@ -176,7 +176,7 @@ function resolveUsageQuery(): OpenAiUsageQuery {
   return {
     start_date: startMs == null ? null : toUnixSeconds(startMs),
     end_date: endMs == null ? null : toUnixSeconds(endMs),
-    profile: state.usageProfileFilter,
+    account_group_key: state.usageProfileFilter,
     model: state.usageModelFilter,
     status_code: state.usageStatusCodeFilter,
     scope: state.usageScope,

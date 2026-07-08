@@ -989,7 +989,9 @@ function renderUsageControls(summary: OpenAiUsageSummary | null): void {
     : summary?.accounts ?? [];
   const accounts = new Map<string, string>();
   for (const account of accountOptions) {
-    accounts.set(account.profile, account.account_label ?? account.profile);
+    const accountKey = usageAccountFilterKey(account);
+    const profiles = usageAccountProfiles(account);
+    accounts.set(accountKey, account.account_label ?? profiles.join(", "));
   }
   if (state.usageProfileFilter && !accounts.has(state.usageProfileFilter)) {
     accounts.set(state.usageProfileFilter, state.usageProfileFilter);
@@ -1092,6 +1094,8 @@ function formatUsageLayerLabel(layer: string): string {
       return t(state.locale, "usageStrictProven");
     case "legacy_profile_attributed":
       return t(state.locale, "usageLegacyProfileAttributed");
+    case "mixed_attributed":
+      return t(state.locale, "usageMixedAttributed");
     case "candidate_unattributed":
       return t(state.locale, "usageCandidateUnattributed");
     case "rejected_invalid":
@@ -1109,6 +1113,8 @@ function formatUsageAttributionKind(kind: string): string {
       return t(state.locale, "usageStrictAccount");
     case "legacy_profile":
       return t(state.locale, "usageLegacyProfile");
+    case "mixed_account":
+      return t(state.locale, "usageMixedAccount");
     case "unattributed":
       return t(state.locale, "usageUnattributedEvidence");
     default:
@@ -1130,12 +1136,13 @@ function buildUsageAccountTable(accounts: OpenAiUsageAccountSummary[]): string {
     return "";
   }
   const rows = accounts.map((account) => {
-    const selectedClass = state.usageProfileFilter === account.profile
+    const profiles = usageAccountProfiles(account);
+    const selectedClass = state.usageProfileFilter === usageAccountFilterKey(account)
       ? ` class="usage-table-row--selected"`
       : "";
     return `
     <tr${selectedClass}>
-      <td>${escapeHtml(account.profile)}</td>
+      <td>${escapeHtml(profiles.join(", "))}</td>
       <td>${escapeHtml(account.account_label ?? "--")}</td>
       <td>${escapeHtml(formatUsageLayerLabel(account.ledger_layer))}</td>
       <td>${escapeHtml(formatUsageAttributionKind(account.attribution_kind))}</td>
@@ -1168,6 +1175,15 @@ function buildUsageAccountTable(accounts: OpenAiUsageAccountSummary[]): string {
       </div>
     </article>
   `;
+}
+
+function usageAccountProfiles(account: OpenAiUsageAccountSummary): string[] {
+  const profiles = account.profiles?.filter((profile) => profile.trim().length > 0) ?? [];
+  return profiles.length > 0 ? profiles : [account.profile];
+}
+
+function usageAccountFilterKey(account: OpenAiUsageAccountSummary): string {
+  return account.account_group_key ?? account.profile;
 }
 
 function buildUsageModelTable(summary: OpenAiUsageSummary): string {
