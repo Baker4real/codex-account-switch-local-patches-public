@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Hardened native profile switching so profile directories, markers, identities, and managed account files are validated before copy. Switch write-back now routes by live `auth.json` account identity instead of blindly trusting `.current_profile`, refuses unmanaged drift instead of overwriting a stale slot, manages only `auth.json` / `profile.json`, rejects symlink/reparse or directory-shaped managed entries, and ignores stale profile `skills` trees instead of overlaying live global Codex assets.
+- 当 live `CODEX_HOME` 账号不属于任何已保存账号卡片时，启动同步会清除 stale current-profile marker，账号页也不会继续把旧卡片显示为 current，并会暴露未管理账号提示。
 - Windows 本地补丁登录现在改为显式 profile metadata 路由：`login_browser` 设置为 `edge` 的目标账号无论在哪个 profile 槽位都通过 `codex app-server` 打开用户正常 Edge 状态；profile `b` / `c` 不再自带 Chrome / Edge 强制规则。定向 Edge flow 仍不传 `--user-data-dir` / `--new-window`，并保留写入前账号身份校验。
 - 账号卡片和当前账号面板现在显示本地授权缓存状态：可观察到 refresh token 到期字段时显示到期时间；官方未提供 refresh token 到期时间时，根据 Codex 官方约 8 天 token bundle stale 规则提示“建议刷新”。UI 文案改为单行状态 chip，去掉“点刷新 / 点登录”等容易误解的内联动作文字。
 - 账号页 quota 读数现在显示来源与新鲜度：官方 ChatGPT API、Codex app-server fallback、本地 session 观测或未知来源。5 小时 / 周额度低于或等于 20% 时只显示低额度提示，不自动切换账号。
