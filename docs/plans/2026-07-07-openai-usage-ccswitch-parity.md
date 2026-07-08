@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust Tauri commands, existing shared TypeScript frontend, existing CSS shell, Codex JSONL session files.
 
-**Status:** Initial parity implementation completed on 2026-07-07 in commit `c0d3098`; usage facet self-collapse follow-up completed in commit `61db517`. Playwright/Edge visual smoke evidence was not captured in this plan.
+**Status:** Initial parity implementation completed on 2026-07-07 in commit `c0d3098`; usage facet self-collapse follow-up completed in commit `61db517`; refresh/pagination/chart hardening completed on 2026-07-08 in commit `8a193e4`. Desktop/mobile browser smoke and Windows portable deploy were verified for the 2026-07-08 follow-up.
 
 ## Global Constraints
 
@@ -17,7 +17,7 @@
 - Preserve account attribution ledger and dedupe.
 - Unknown model prices must remain unpriced, not `$0.0000`.
 - Time filters use epoch seconds and local-time display.
-- Default refresh should make new usage visible within roughly one second while the Usage page is open.
+- Default refresh is 30 seconds while the Usage page is open; manual refresh must provide immediate busy or queued feedback.
 - One frontend refresh should call one backend dashboard command, so summary, trends, logs, and source stats share the same sync/query snapshot.
 
 ---
@@ -54,7 +54,7 @@
 
 - [x] Add Usage query types and Tauri wrappers.
 - [x] Add time range, live-end, account/model filters, refresh interval, and logs state.
-- [x] Wire usage controls and route-scoped 1s auto-refresh.
+- [x] Wire usage controls and route-scoped 30s auto-refresh with manual busy/queued feedback.
 - [x] Keep account/model filter options scoped to the selected time range and other filters without collapsing on their own selected value.
 
 ### Task 3: Frontend Render And Styling
@@ -82,5 +82,5 @@
 - [x] Run `npm run build`.
 - [x] Run `npm run check:rust:windows`.
 - [x] Run `npm run tauri:build:windows:portable` before replacing installed Windows artifacts.
-- [ ] Run Playwright/Edge visual smoke if dev server is available.
+- [x] Run browser visual smoke if dev server is available.
 - [x] Run multi-agent adversarial review before commit.
