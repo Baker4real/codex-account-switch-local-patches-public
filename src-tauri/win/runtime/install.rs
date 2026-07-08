@@ -608,11 +608,13 @@ mod tests {
 
     fn shell_command(script: &str) -> Command {
         if cfg!(target_os = "windows") {
-            let mut command = Command::new("cmd");
+            let program = std::env::var_os("COMSPEC")
+                .unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows\System32\cmd.exe"));
+            let mut command = Command::new(program);
             command.args(["/C", script]);
             command
         } else {
-            let mut command = Command::new("sh");
+            let mut command = Command::new("/bin/sh");
             command.args(["-c", script]);
             command
         }
