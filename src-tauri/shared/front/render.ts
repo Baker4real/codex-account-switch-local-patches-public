@@ -3,6 +3,7 @@ import type {
   DashboardViewModel,
   OpenAiUsageAccountSummary,
   OpenAiUsageCostBreakdown,
+  OpenAiUsageModelSummary,
   OpenAiUsageRangePreset,
   OpenAiUsageRequestLog,
   OpenAiUsageSummary,
@@ -1397,11 +1398,8 @@ function usageAccountFilterKey(account: OpenAiUsageAccountSummary): string {
 function buildUsageModelTable(summary: OpenAiUsageSummary): string {
   const rows = summary.models.map((model) => `
     <tr>
-      <td>${escapeHtml(model.model)}</td>
-      <td>${escapeHtml(formatUsageOptional(model.requested_model))}</td>
-      <td>${escapeHtml(formatUsageOptional(model.pricing_model))}</td>
-      <td>${escapeHtml(formatUsageOptional(model.model_reasoning_effort))}</td>
-      <td>${escapeHtml(formatUsageOptional(model.model_verbosity))}</td>
+      <td>${buildUsageModelSummaryCell(model)}</td>
+      <td>${buildUsageModelSummaryEvidenceCell(model)}</td>
       <td>${formatInteger(model.request_count)}</td>
       <td>${formatInteger(model.tokens.input_tokens)}</td>
       <td>${formatInteger(model.tokens.cached_input_tokens)}</td>
@@ -1414,14 +1412,11 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
     <article class="usage-table-card">
       <h3>${t(state.locale, "usageModels")}</h3>
       <div class="usage-table-scroll">
-        <table class="usage-table">
+        <table class="usage-table usage-model-table">
           <thead>
             <tr>
               <th>${t(state.locale, "usageModel")}</th>
-              <th>${t(state.locale, "usageRequestedModel")}</th>
-              <th>${t(state.locale, "usagePricingModel")}</th>
-              <th>${t(state.locale, "usageReasoningEffort")}</th>
-              <th>${t(state.locale, "usageVerbosity")}</th>
+              <th>${t(state.locale, "usageRequestEvidence")}</th>
               <th>${t(state.locale, "usageRequests")}</th>
               <th>${t(state.locale, "usageInput")}</th>
               <th>${t(state.locale, "usageCachedInput")}</th>
@@ -1434,6 +1429,25 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
         </table>
       </div>
     </article>
+  `;
+}
+
+function buildUsageModelSummaryCell(model: OpenAiUsageModelSummary): string {
+  return `
+    <div class="usage-table-stack usage-table-stack--model">
+      <strong title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</strong>
+      <small title="${escapeHtml(formatUsageOptional(model.requested_model))}">${t(state.locale, "usageRequestedModel")}: ${escapeHtml(formatUsageOptional(model.requested_model))}</small>
+      <small title="${escapeHtml(formatUsageOptional(model.pricing_model))}">${t(state.locale, "usagePricingModel")}: ${escapeHtml(formatUsageOptional(model.pricing_model))}</small>
+    </div>
+  `;
+}
+
+function buildUsageModelSummaryEvidenceCell(model: OpenAiUsageModelSummary): string {
+  return `
+    <div class="usage-table-stack usage-table-stack--evidence">
+      <strong>${t(state.locale, "usageReasoningEffort")}: ${escapeHtml(formatUsageOptional(model.model_reasoning_effort))}</strong>
+      <small>${t(state.locale, "usageVerbosity")}: ${escapeHtml(formatUsageOptional(model.model_verbosity))}</small>
+    </div>
   `;
 }
 
@@ -1504,6 +1518,9 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
   const pad = { top: 30, right: 78, bottom: 42, left: 58 };
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
+  const plotTop = pad.top + 24;
+  const plotBottom = pad.top + innerHeight;
+  const plotHeight = plotBottom - plotTop;
   const tokenSeries: UsageTrendSeries[] = [
     {
       key: "usageInput",
@@ -1550,8 +1567,8 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
   const tokenMax = Math.max(1, ...tokenSeries.flatMap((series) => points.map(series.value)));
   const costMax = Math.max(1, ...points.map(costSeries.value));
   const xFor = (index: number) => pad.left + (points.length === 1 ? innerWidth / 2 : (innerWidth * index) / (points.length - 1));
-  const yForTokens = (value: number) => pad.top + innerHeight - (value / tokenMax) * innerHeight;
-  const yForCost = (value: number) => pad.top + innerHeight - (value / costMax) * innerHeight;
+  const yForTokens = (value: number) => plotBottom - (value / tokenMax) * plotHeight;
+  const yForCost = (value: number) => plotBottom - (value / costMax) * plotHeight;
   const isHourly = usageTrendRangeDurationMs() <= 24 * 60 * 60 * 1000;
   const gradients = tokenSeries.map((series) => `
     <linearGradient id="${series.fillId}" x1="0" y1="0" x2="0" y2="1">
@@ -1568,7 +1585,7 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
       x: xFor(index),
       y: yForTokens(series.value(point)),
     }));
-    const line = buildSmoothUsagePath(coords);
+    const line = buildSmoothUsagePath(coords, { minY: plotTop, maxY: plotBottom });
     const area = `${line} L ${coords[coords.length - 1].x.toFixed(2)} ${(pad.top + innerHeight).toFixed(2)} L ${coords[0].x.toFixed(2)} ${(pad.top + innerHeight).toFixed(2)} Z`;
     return `<path class="usage-chart-area usage-chart-area--${series.className}" d="${area}" fill="url(#${series.fillId})"></path>`;
   }).join("");
@@ -1577,7 +1594,7 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
     const d = buildSmoothUsagePath(points.map((point, index) => ({
       x: xFor(index),
       y: yFor(series.value(point)),
-    })));
+    })), { minY: plotTop, maxY: plotBottom });
     return `<path class="usage-chart-line usage-chart-line--${series.className}${series.dashed ? " usage-chart-line--dashed" : ""}" d="${d}" style="--series-color:${series.color}"></path>`;
   }).join("");
   const markers = allSeries.map((series) => {
@@ -1624,7 +1641,10 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
   `;
 }
 
-function buildSmoothUsagePath(points: Array<{ x: number; y: number }>): string {
+function buildSmoothUsagePath(
+  points: Array<{ x: number; y: number }>,
+  bounds?: { minY: number; maxY: number },
+): string {
   if (points.length === 0) {
     return "";
   }
@@ -1638,12 +1658,19 @@ function buildSmoothUsagePath(points: Array<{ x: number; y: number }>): string {
     const previous = points[index - 1] ?? current;
     const after = points[index + 2] ?? next;
     const cp1x = current.x + (next.x - previous.x) / 6;
-    const cp1y = current.y + (next.y - previous.y) / 6;
+    const cp1y = clampUsageChartValue(current.y + (next.y - previous.y) / 6, bounds);
     const cp2x = next.x - (after.x - current.x) / 6;
-    const cp2y = next.y - (after.y - current.y) / 6;
+    const cp2y = clampUsageChartValue(next.y - (after.y - current.y) / 6, bounds);
     path.push(`C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${next.x.toFixed(2)} ${next.y.toFixed(2)}`);
   }
   return path.join(" ");
+}
+
+function clampUsageChartValue(value: number, bounds?: { minY: number; maxY: number }): number {
+  if (!bounds) {
+    return value;
+  }
+  return Math.min(bounds.maxY, Math.max(bounds.minY, value));
 }
 
 function buildUsageTrendAxisLabels(points: UsageTrendPoint[], isHourly: boolean): string {
@@ -1733,40 +1760,41 @@ function formatRefreshInterval(value: number): string {
 
 function buildUsageLogsTable(): string {
   const page = state.usageLogs;
-  const rows = (page?.data ?? []).map((log: OpenAiUsageRequestLog) => `
+  const currentPage = state.usageLogsLoading
+    ? state.usageLogsPage
+    : page?.page ?? state.usageLogsPage;
+  const pageSize = page?.page_size ?? state.usageLogsPageSize;
+  const total = page?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const rows = state.usageLogsLoading
+    ? `<tr><td colspan="10" class="usage-table-loading">${t(state.locale, "usageLoading")}</td></tr>`
+    : (page?.data ?? []).map((log: OpenAiUsageRequestLog) => `
     <tr>
       <td><code>${escapeHtml(log.request_id)}</code></td>
       <td>${formatDateTimeMs(log.created_at_ms)}</td>
-      <td>${escapeHtml(log.account_label ?? log.profile)}</td>
+      <td class="usage-table-cell--account" title="${escapeHtml(log.account_label ?? log.profile)}">${escapeHtml(log.account_label ?? log.profile)}</td>
       <td>${escapeHtml(formatUsageLayerLabel(log.ledger_layer))}</td>
-      <td>${escapeHtml(log.model)}</td>
-      <td>${escapeHtml(formatUsageOptional(log.requested_model))}</td>
-      <td>${escapeHtml(formatUsageOptional(log.pricing_model))}</td>
-      <td>${escapeHtml(formatUsageOptional(log.model_reasoning_effort))}</td>
-      <td>${escapeHtml(formatUsageOptional(log.model_verbosity))}</td>
-      <td>${escapeHtml(formatUsageDataQuality(log.usage_confidence))}</td>
+      <td>${buildUsageModelEvidenceCell(log)}</td>
+      <td>${buildUsageRequestEvidenceCell(log)}</td>
       <td>${formatInteger(log.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(log.cost)}</td>
       <td>${escapeHtml(formatUsagePricingCell(log.priced, log.pricing_tier, log.pricing_source_url))}</td>
       <td>${escapeHtml(log.data_source)}</td>
     </tr>
   `).join("");
-  const currentPage = page?.page ?? state.usageLogsPage;
-  const pageSize = page?.page_size ?? state.usageLogsPageSize;
-  const total = page?.total ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pagerDisabled = state.usageLogsLoading;
   return `
     <article class="usage-table-card">
       <div class="usage-card-title-row">
         <h3>${t(state.locale, "usageRequestLogs")}</h3>
         <div class="usage-log-pager">
-          <button class="pager-pill" type="button" data-usage-log-page="${Math.max(1, currentPage - 1)}" ${currentPage <= 1 ? "disabled" : ""}>${t(state.locale, "previous")}</button>
-          <span>${currentPage} / ${totalPages}</span>
-          <button class="pager-pill" type="button" data-usage-log-page="${Math.min(totalPages, currentPage + 1)}" ${currentPage >= totalPages ? "disabled" : ""}>${t(state.locale, "next")}</button>
+          <button class="pager-pill" type="button" data-usage-log-page="${Math.max(1, currentPage - 1)}" ${currentPage <= 1 || pagerDisabled ? "disabled" : ""}>${t(state.locale, "previous")}</button>
+          <span>${currentPage} / ${totalPages}${state.usageLogsLoading ? ` · ${t(state.locale, "usageLoading")}` : ""}</span>
+          <button class="pager-pill" type="button" data-usage-log-page="${Math.min(totalPages, currentPage + 1)}" ${currentPage >= totalPages || pagerDisabled ? "disabled" : ""}>${t(state.locale, "next")}</button>
         </div>
       </div>
       <div class="usage-table-scroll">
-        <table class="usage-table">
+        <table class="usage-table usage-log-table">
           <thead>
             <tr>
               <th>${t(state.locale, "usageRequestId")}</th>
@@ -1774,21 +1802,37 @@ function buildUsageLogsTable(): string {
               <th>${t(state.locale, "usageAccount")}</th>
               <th>${t(state.locale, "usageLedgerLayer")}</th>
               <th>${t(state.locale, "usageModel")}</th>
-              <th>${t(state.locale, "usageRequestedModel")}</th>
-              <th>${t(state.locale, "usagePricingModel")}</th>
-              <th>${t(state.locale, "usageReasoningEffort")}</th>
-              <th>${t(state.locale, "usageVerbosity")}</th>
-              <th>${t(state.locale, "usageDataQuality")}</th>
+              <th>${t(state.locale, "usageRequestEvidence")}</th>
               <th>${t(state.locale, "usageTokens")}</th>
               <th>${t(state.locale, "usageCost")}</th>
               <th>${t(state.locale, "usagePricing")}</th>
               <th>${t(state.locale, "usageDataSource")}</th>
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="14">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="10">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
         </table>
       </div>
     </article>
+  `;
+}
+
+function buildUsageModelEvidenceCell(log: OpenAiUsageRequestLog): string {
+  return `
+    <div class="usage-table-stack usage-table-stack--model">
+      <strong title="${escapeHtml(log.model)}">${escapeHtml(log.model)}</strong>
+      <small title="${escapeHtml(formatUsageOptional(log.requested_model))}">${t(state.locale, "usageRequestedModel")}: ${escapeHtml(formatUsageOptional(log.requested_model))}</small>
+      <small title="${escapeHtml(formatUsageOptional(log.pricing_model))}">${t(state.locale, "usagePricingModel")}: ${escapeHtml(formatUsageOptional(log.pricing_model))}</small>
+    </div>
+  `;
+}
+
+function buildUsageRequestEvidenceCell(log: OpenAiUsageRequestLog): string {
+  return `
+    <div class="usage-table-stack usage-table-stack--evidence">
+      <strong>${t(state.locale, "usageReasoningEffort")}: ${escapeHtml(formatUsageOptional(log.model_reasoning_effort))}</strong>
+      <small>${t(state.locale, "usageVerbosity")}: ${escapeHtml(formatUsageOptional(log.model_verbosity))}</small>
+      <small>${escapeHtml(formatUsageDataQuality(log.usage_confidence))}</small>
+    </div>
   `;
 }
 

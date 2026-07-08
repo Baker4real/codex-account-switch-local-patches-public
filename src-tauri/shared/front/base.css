@@ -1583,6 +1583,12 @@ html[data-theme] .toast.is-error {
   gap: 16px;
 }
 
+.usage-refresh-button {
+  min-width: 104px;
+  flex: none;
+  white-space: nowrap;
+}
+
 .usage-control-bar {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -2089,7 +2095,9 @@ html[data-theme] .toast.is-error {
 }
 
 .usage-table-scroll {
+  max-width: 100%;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .usage-table {
@@ -2097,6 +2105,10 @@ html[data-theme] .toast.is-error {
   border-collapse: collapse;
   min-width: 1040px;
   font-size: 13px;
+}
+
+.usage-log-table {
+  min-width: 1180px;
 }
 
 .usage-table th,
@@ -2126,6 +2138,51 @@ html[data-theme] .toast.is-error {
   text-overflow: ellipsis;
   vertical-align: bottom;
   white-space: nowrap;
+}
+
+.usage-table-cell--account {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-table-stack {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.usage-table-stack strong,
+.usage-table-stack small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-table-stack strong {
+  color: var(--heading);
+  font-weight: 800;
+}
+
+.usage-table-stack small {
+  color: var(--muted-text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.usage-table-stack--model {
+  max-width: 210px;
+}
+
+.usage-table-stack--evidence {
+  max-width: 180px;
+}
+
+.usage-table-loading {
+  text-align: center;
+  color: var(--muted-text);
 }
 
 .usage-card-title-row {
@@ -2160,11 +2217,11 @@ html[data-theme] .toast.is-error {
 .usage-chart {
   width: 100%;
   height: 350px;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .usage-chart-grid-line {
-  stroke: var(--card-border);
+  stroke: var(--card-border, #ddd6cc);
   stroke-width: 1;
 }
 
@@ -2185,7 +2242,7 @@ html[data-theme] .toast.is-error {
 }
 
 .usage-chart-point {
-  fill: var(--card-background);
+  fill: var(--card-background, #fbf8f2);
   stroke: var(--series-color);
   stroke-width: 2;
   pointer-events: none;
@@ -2209,31 +2266,31 @@ html[data-theme] .toast.is-error {
 }
 
 .usage-chart-hover-line {
-  stroke: var(--muted-text);
+  stroke: var(--muted-text, #697083);
   stroke-dasharray: 4 4;
   stroke-width: 1;
 }
 
 .usage-chart-tooltip rect {
-  fill: color-mix(in srgb, var(--panel-background) 96%, white 4%);
-  stroke: var(--card-border);
+  fill: #fbf8f2;
+  stroke: #ddd6cc;
   filter: drop-shadow(0 14px 24px rgb(15 23 42 / 18%));
 }
 
 .usage-chart-tooltip-text {
-  fill: var(--body);
+  fill: #555c6f;
   font-size: 11px;
   font-weight: 600;
 }
 
 .usage-chart-tooltip-title {
-  fill: var(--heading);
+  fill: #43485a;
   font-size: 12px;
   font-weight: 800;
 }
 
 .usage-chart-axis-label {
-  fill: var(--muted-text);
+  fill: var(--muted-text, #697083);
   font-size: 12px;
   font-weight: 700;
 }
@@ -2308,6 +2365,11 @@ html[data-theme] .toast.is-error {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.usage-log-pager .pager-pill {
+  min-height: 36px;
+  padding-inline: 16px;
 }
 
 .usage-evidence-grid {

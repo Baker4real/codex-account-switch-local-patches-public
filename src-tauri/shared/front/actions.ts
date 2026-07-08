@@ -46,6 +46,7 @@ import type {
   CodexCliRedetectResult,
   CodexCliStatus,
   CurrentQuotaResponse,
+  OpenAiUsageDashboard,
   OpenAiUsageQuery,
 } from "@front-shared/types";
 import {
@@ -66,6 +67,8 @@ import {
 type ErrorWithCode = Error & {
   code?: string;
 };
+
+type UsageRefreshMode = "manual" | "auto";
 
 function rerenderDashboard(): void {
   state.route = routeFromLocation();
@@ -113,6 +116,7 @@ let lastUnmanagedAccountPrompt: string | null = null;
 let usageRefreshTimer: number | null = null;
 let usageRefreshTimerMs = 0;
 let usageRangeLiveEndTimer: number | null = null;
+let usageLoadRequestSerial = 0;
 
 function toUnixSeconds(valueMs: number): number {
   return Math.floor(valueMs / 1000);
@@ -198,6 +202,34 @@ function resolveUsageQuery(): OpenAiUsageQuery {
   };
 }
 
+function usageLoadIntentKey(page: number, pageSize: number): string {
+  return JSON.stringify({
+    rangePreset: state.usageRangePreset,
+    customStartDate: state.usageCustomStartDate,
+    customEndDate: state.usageCustomEndDate,
+    liveEnd: state.usageLiveEnd,
+    profile: state.usageProfileFilter,
+    model: state.usageModelFilter,
+    statusCode: state.usageStatusCodeFilter,
+    scope: state.usageScope,
+    page,
+    pageSize,
+  });
+}
+
+function isStaleUsageLoad(requestSerial: number, intentKey: string): boolean {
+  return requestSerial !== usageLoadRequestSerial
+    || intentKey !== usageLoadIntentKey(state.usageLogsPage, state.usageLogsPageSize);
+}
+
+function finishStaleUsageLoad(requestSerial: number): void {
+  state.usageLoaded = true;
+  state.usageLoadError = null;
+  if (requestSerial === usageLoadRequestSerial && !state.usageRefreshQueued) {
+    state.usageLogsLoading = false;
+  }
+}
+
 function startOfLocalMonthMs(valueMs: number): number {
   const date = new Date(valueMs);
   return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
@@ -276,6 +308,7 @@ function applyUsagePreset(preset: typeof state.usageRangePreset): void {
   state.usageRangePickerOpen = false;
   state.usageRangeError = null;
   state.usageLogsPage = 1;
+  state.usageLogsLoading = true;
   syncUsageRangeLiveEndTimer();
   void refreshUsageData();
 }
@@ -302,6 +335,7 @@ function applyUsageCustomRange(): void {
   state.usageRangePickerOpen = false;
   state.usageRangeError = null;
   state.usageLogsPage = 1;
+  state.usageLogsLoading = true;
   syncUsageRangeLiveEndTimer();
   void refreshUsageData();
 }
@@ -550,7 +584,7 @@ function syncUsageAutoRefresh(): void {
 
   if (desiredMs > 0) {
     usageRefreshTimer = window.setInterval(() => {
-      void refreshUsageData(false);
+      void refreshUsageData(false, "auto");
     }, desiredMs);
   }
 }
@@ -708,6 +742,7 @@ async function refreshAllData(showError = true): Promise<void> {
       await loadUsageData();
     } catch (usageError) {
       state.usageLoaded = true;
+      state.usageLogsLoading = false;
       state.usageLoadError = usageError instanceof Error
         ? usageError.message
         : t(state.locale, "usageLoadFailed");
@@ -724,8 +759,35 @@ async function refreshAllData(showError = true): Promise<void> {
 
 async function loadUsageData(): Promise<void> {
   const query = resolveUsageQuery();
-  const dashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
+  const requestSerial = usageLoadRequestSerial + 1;
+  usageLoadRequestSerial = requestSerial;
+  const requestedLogsPage = state.usageLogsPage;
+  const requestedPageSize = state.usageLogsPageSize;
+  const intentKey = usageLoadIntentKey(requestedLogsPage, requestedPageSize);
+  const dashboard = await getOpenAiUsageDashboard(query, requestedLogsPage, requestedPageSize);
 
+  if (isStaleUsageLoad(requestSerial, intentKey)) {
+    finishStaleUsageLoad(requestSerial);
+    return;
+  }
+  const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / dashboard.logs.page_size));
+  applyUsageDashboard(dashboard);
+  if (dashboard.logs.page > totalPages) {
+    state.usageLogsPage = totalPages;
+    const clampedIntentKey = usageLoadIntentKey(state.usageLogsPage, state.usageLogsPageSize);
+    const clampedDashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
+    if (isStaleUsageLoad(requestSerial, clampedIntentKey)) {
+      finishStaleUsageLoad(requestSerial);
+      return;
+    }
+    applyUsageDashboard(clampedDashboard);
+  }
+  state.usageLoaded = true;
+  state.usageLoadError = null;
+  state.usageLogsLoading = false;
+}
+
+function applyUsageDashboard(dashboard: OpenAiUsageDashboard): void {
   state.usageSummary = dashboard.summary;
   state.usageAccountSummary = dashboard.account_summary.length > 0
     ? dashboard.account_summary
@@ -736,27 +798,13 @@ async function loadUsageData(): Promise<void> {
   state.usageTrends = dashboard.trends;
   state.usageLogs = dashboard.logs;
   state.usageDataSources = dashboard.data_sources;
-  const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / dashboard.logs.page_size));
-  if (dashboard.logs.page > totalPages) {
-    state.usageLogsPage = totalPages;
-    const clampedDashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
-    state.usageSummary = clampedDashboard.summary;
-    state.usageAccountSummary = clampedDashboard.account_summary.length > 0
-      ? clampedDashboard.account_summary
-      : clampedDashboard.summary.accounts;
-    state.usageModelOptions = clampedDashboard.model_options.length > 0
-      ? clampedDashboard.model_options
-      : clampedDashboard.summary.models;
-    state.usageTrends = clampedDashboard.trends;
-    state.usageLogs = clampedDashboard.logs;
-    state.usageDataSources = clampedDashboard.data_sources;
-  }
-  state.usageLoaded = true;
-  state.usageLoadError = null;
 }
 
-async function refreshUsageData(showError = true): Promise<void> {
+async function refreshUsageData(showError = true, mode: UsageRefreshMode = "manual"): Promise<void> {
   if (state.usageRefreshInFlight) {
+    if (mode === "auto") {
+      return;
+    }
     state.usageRefreshQueued = true;
     state.usageRefreshQueuedShowError = state.usageRefreshQueuedShowError || showError;
     rerenderDashboard();
@@ -771,6 +819,7 @@ async function refreshUsageData(showError = true): Promise<void> {
     rerenderDashboard();
   } catch (error) {
     state.usageLoaded = true;
+    state.usageLogsLoading = false;
     state.usageLoadError = error instanceof Error
       ? error.message
       : t(state.locale, "usageLoadFailed");
@@ -784,7 +833,7 @@ async function refreshUsageData(showError = true): Promise<void> {
       const queuedShowError = state.usageRefreshQueuedShowError;
       state.usageRefreshQueued = false;
       state.usageRefreshQueuedShowError = false;
-      void refreshUsageData(queuedShowError);
+      void refreshUsageData(queuedShowError, "manual");
     } else {
       rerenderDashboard();
     }
@@ -1587,6 +1636,7 @@ export function bootstrap(): void {
     }
     state.usageScope = elements.usageScopeSelect.value as typeof state.usageScope;
     state.usageLogsPage = 1;
+    state.usageLogsLoading = true;
     void refreshUsageData();
   });
   elements.usageAccountFilter?.addEventListener("change", () => {
@@ -1595,6 +1645,7 @@ export function bootstrap(): void {
     }
     state.usageProfileFilter = elements.usageAccountFilter.value || null;
     state.usageLogsPage = 1;
+    state.usageLogsLoading = true;
     void refreshUsageData();
   });
   elements.usageModelFilter?.addEventListener("change", () => {
@@ -1603,6 +1654,7 @@ export function bootstrap(): void {
     }
     state.usageModelFilter = elements.usageModelFilter.value || null;
     state.usageLogsPage = 1;
+    state.usageLogsLoading = true;
     void refreshUsageData();
   });
   elements.usageRefreshIntervalSelect?.addEventListener("change", () => {
@@ -1625,6 +1677,8 @@ export function bootstrap(): void {
       return;
     }
     state.usageLogsPage = page;
+    state.usageLogsLoading = true;
+    rerenderDashboard();
     void refreshUsageData();
   });
   elements.updateDialogLaterButton.addEventListener("click", () => {

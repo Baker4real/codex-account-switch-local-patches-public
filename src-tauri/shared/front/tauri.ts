@@ -372,44 +372,51 @@ function previewOpenAiUsageTrends(): OpenAiUsageTrendPoint[] {
   });
 }
 
-function previewOpenAiUsageLogs(): OpenAiUsageRequestLogPage {
+function previewOpenAiUsageLogs(page = 1, pageSize = 20): OpenAiUsageRequestLogPage {
   const summary = previewOpenAiUsageSummary();
-  const rows: OpenAiUsageRequestLog[] = Array.from({ length: 8 }, (_, index) => ({
-    request_id: `preview-${index + 1}`,
-    session_id: "preview-session",
-    profile: previewCurrentCard.folder_name,
-    account_label: previewCurrentCard.account_label,
-    official_source: "OpenAI default",
-    ledger_layer: "strict_proven",
-    attribution_kind: "strict_account",
-    attribution_window_id: null,
-    model: "gpt-5.3-codex",
-    requested_model: "gpt-5.3-codex",
-    pricing_model: "gpt-5.3-codex",
-    model_reasoning_effort: "xhigh",
-    model_verbosity: "high",
-    pricing_tier: "standard_short_context",
-    pricing_source_url: "https://developers.openai.com/api/docs/pricing",
-    tokens: {
-      input_tokens: 80_000 + index * 1_000,
-      cached_input_tokens: 44_000 + index * 400,
-      output_tokens: 6_000 + index * 120,
-      reasoning_output_tokens: 2_000,
-      real_total_tokens: 86_000 + index * 1_120,
-    },
-    cost: summary.cost,
-    priced: true,
-    pricing_note: "OpenAI API pricing",
-    status_code: 200,
-    created_at_ms: Date.now() - index * 60_000,
-    data_source: "codex_session",
-    usage_confidence: "high",
-  }));
+  const total = 1960;
+  const safePageSize = Math.max(1, Math.min(200, pageSize));
+  const safePage = Math.max(1, page);
+  const start = (safePage - 1) * safePageSize;
+  const rows: OpenAiUsageRequestLog[] = Array.from({ length: safePageSize }, (_, index) => {
+    const rowNumber = start + index + 1;
+    return {
+      request_id: `preview-${rowNumber}`,
+      session_id: "preview-session",
+      profile: previewCurrentCard.folder_name,
+      account_label: previewCurrentCard.account_label,
+      official_source: "OpenAI default",
+      ledger_layer: "strict_proven",
+      attribution_kind: "strict_account",
+      attribution_window_id: null,
+      model: "gpt-5.3-codex",
+      requested_model: "gpt-5.3-codex",
+      pricing_model: "gpt-5.3-codex",
+      model_reasoning_effort: "xhigh",
+      model_verbosity: "high",
+      pricing_tier: "standard_short_context",
+      pricing_source_url: "https://developers.openai.com/api/docs/pricing",
+      tokens: {
+        input_tokens: 80_000 + rowNumber * 1_000,
+        cached_input_tokens: 44_000 + rowNumber * 400,
+        output_tokens: 6_000 + rowNumber * 120,
+        reasoning_output_tokens: 2_000,
+        real_total_tokens: 86_000 + rowNumber * 1_120,
+      },
+      cost: summary.cost,
+      priced: true,
+      pricing_note: "OpenAI API pricing",
+      status_code: 200,
+      created_at_ms: Date.now() - rowNumber * 60_000,
+      data_source: "codex_session",
+      usage_confidence: "high",
+    };
+  });
   return {
     data: rows,
-    total: rows.length,
-    page: 1,
-    page_size: 20,
+    total,
+    page: safePage,
+    page_size: safePageSize,
   };
 }
 
@@ -421,14 +428,14 @@ function previewOpenAiUsageDataSources(): OpenAiUsageDataSourceSummary[] {
   }];
 }
 
-function previewOpenAiUsageDashboard(): OpenAiUsageDashboard {
+function previewOpenAiUsageDashboard(page = 1, pageSize = 20): OpenAiUsageDashboard {
   const summary = previewOpenAiUsageSummary();
   return {
     summary,
     account_summary: summary.accounts,
     model_options: summary.models,
     trends: previewOpenAiUsageTrends(),
-    logs: previewOpenAiUsageLogs(),
+    logs: previewOpenAiUsageLogs(page, pageSize),
     data_sources: previewOpenAiUsageDataSources(),
   };
 }
@@ -482,13 +489,19 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
       case "refresh_all_oauth_profile_plans_silent":
         return 0 as T;
       case "get_openai_usage_dashboard":
-        return clone(previewOpenAiUsageDashboard()) as T;
+        return clone(previewOpenAiUsageDashboard(
+          Number(args?.page) || 1,
+          Number(args?.pageSize) || 20,
+        )) as T;
       case "get_openai_usage_summary":
         return clone(previewOpenAiUsageSummary()) as T;
       case "get_openai_usage_trends":
         return clone(previewOpenAiUsageTrends()) as T;
       case "get_openai_usage_request_logs":
-        return clone(previewOpenAiUsageLogs()) as T;
+        return clone(previewOpenAiUsageLogs(
+          Number(args?.page) || 1,
+          Number(args?.pageSize) || 20,
+        )) as T;
       case "get_openai_usage_request_detail": {
         const requestId = args?.requestId as string | undefined;
         return (previewOpenAiUsageLogs().data.find((row) => row.request_id === requestId) ?? null) as T;
