@@ -110,8 +110,6 @@ const LOGIN_CANCEL_RETRY_LIMIT = 6;
 let lastUnmanagedAccountPrompt: string | null = null;
 let usageRefreshTimer: number | null = null;
 let usageRefreshTimerMs = 0;
-let usageRefreshInFlight = false;
-let usageRefreshQueued = false;
 
 function toUnixSeconds(valueMs: number): number {
   return Math.floor(valueMs / 1000);
@@ -130,48 +128,66 @@ function startOfTodayMs(nowMs: number): number {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 }
 
-function ensureUsageCustomRange(): void {
-  const nowMs = Date.now();
-  if (state.usageCustomStartDate == null) {
-    state.usageCustomStartDate = nowMs - 24 * 60 * 60 * 1000;
-  }
-  if (state.usageCustomEndDate == null) {
-    state.usageCustomEndDate = nowMs;
+function presetUsageRange(nowMs: number): { startMs: number | null; endMs: number | null } {
+  switch (state.usageRangePreset) {
+    case "today":
+      return { startMs: startOfTodayMs(nowMs), endMs: nowMs };
+    case "7d":
+      return { startMs: nowMs - 7 * 24 * 60 * 60 * 1000, endMs: nowMs };
+    case "14d":
+      return { startMs: nowMs - 14 * 24 * 60 * 60 * 1000, endMs: nowMs };
+    case "30d":
+      return { startMs: nowMs - 30 * 24 * 60 * 60 * 1000, endMs: nowMs };
+    case "1d":
+    default:
+      return { startMs: nowMs - 24 * 60 * 60 * 1000, endMs: nowMs };
   }
 }
 
-function resolveUsageQuery(): OpenAiUsageQuery {
-  const nowMs = Date.now();
-  let startMs: number | null = null;
-  let endMs: number | null = nowMs;
-
-  switch (state.usageRangePreset) {
-    case "today":
-      startMs = startOfTodayMs(nowMs);
-      break;
-    case "7d":
-      startMs = nowMs - 7 * 24 * 60 * 60 * 1000;
-      break;
-    case "14d":
-      startMs = nowMs - 14 * 24 * 60 * 60 * 1000;
-      break;
-    case "30d":
-      startMs = nowMs - 30 * 24 * 60 * 60 * 1000;
-      break;
-    case "custom":
-      ensureUsageCustomRange();
-      startMs = state.usageCustomStartDate;
-      endMs = state.usageLiveEnd ? nowMs : state.usageCustomEndDate;
-      break;
-    case "1d":
-    default:
-      startMs = nowMs - 24 * 60 * 60 * 1000;
-      break;
+function ensureUsageCustomRange(nowMs = Date.now()): void {
+  const fallback = presetUsageRange(nowMs);
+  if (state.usageCustomStartDate == null) {
+    state.usageCustomStartDate = fallback.startMs;
   }
+  if (state.usageCustomEndDate == null) {
+    state.usageCustomEndDate = fallback.endMs;
+  }
+}
 
+function hydrateUsageCustomRangeFromPreset(nowMs = Date.now()): void {
+  if (state.usageRangePreset === "custom") {
+    ensureUsageCustomRange(nowMs);
+    return;
+  }
+  const range = presetUsageRange(nowMs);
+  state.usageCustomStartDate = range.startMs;
+  state.usageCustomEndDate = range.endMs;
+}
+
+function clampUsageCustomRange(nowMs = Date.now()): void {
+  const startMs = state.usageCustomStartDate;
+  const endMs = state.usageLiveEnd ? nowMs : state.usageCustomEndDate;
   if (startMs != null && endMs != null && endMs < startMs) {
-    endMs = startMs;
+    state.usageCustomEndDate = startMs;
+    state.usageLiveEnd = false;
   }
+}
+
+function resolveUsageRange(nowMs = Date.now()): { startMs: number | null; endMs: number | null } {
+  if (state.usageRangePreset === "custom") {
+    ensureUsageCustomRange(nowMs);
+    clampUsageCustomRange(nowMs);
+    return {
+      startMs: state.usageCustomStartDate,
+      endMs: state.usageLiveEnd ? nowMs : state.usageCustomEndDate,
+    };
+  }
+  return presetUsageRange(nowMs);
+}
+
+function resolveUsageQuery(): OpenAiUsageQuery {
+  const { startMs, endMs } = resolveUsageRange();
+  state.usageLastResolvedEndDate = endMs;
 
   return {
     start_date: startMs == null ? null : toUnixSeconds(startMs),
@@ -404,12 +420,16 @@ async function loadUsageData(): Promise<void> {
 }
 
 async function refreshUsageData(showError = true): Promise<void> {
-  if (usageRefreshInFlight) {
-    usageRefreshQueued = true;
+  if (state.usageRefreshInFlight) {
+    state.usageRefreshQueued = true;
+    state.usageRefreshQueuedShowError = state.usageRefreshQueuedShowError || showError;
+    rerenderDashboard();
     return;
   }
-  usageRefreshInFlight = true;
-  usageRefreshQueued = false;
+  state.usageRefreshInFlight = true;
+  state.usageRefreshQueued = false;
+  state.usageRefreshQueuedShowError = false;
+  rerenderDashboard();
   try {
     await loadUsageData();
     rerenderDashboard();
@@ -423,10 +443,14 @@ async function refreshUsageData(showError = true): Promise<void> {
       showToast(error instanceof Error ? error.message : t(state.locale, "usageLoadFailed"), true);
     }
   } finally {
-    usageRefreshInFlight = false;
-    if (usageRefreshQueued) {
-      usageRefreshQueued = false;
-      void refreshUsageData(showError);
+    state.usageRefreshInFlight = false;
+    if (state.usageRefreshQueued) {
+      const queuedShowError = state.usageRefreshQueuedShowError;
+      state.usageRefreshQueued = false;
+      state.usageRefreshQueuedShowError = false;
+      void refreshUsageData(queuedShowError);
+    } else {
+      rerenderDashboard();
     }
   }
 }
@@ -1198,10 +1222,12 @@ export function bootstrap(): void {
     if (!elements.usageRangeSelect) {
       return;
     }
-    state.usageRangePreset = elements.usageRangeSelect.value as typeof state.usageRangePreset;
-    if (state.usageRangePreset === "custom") {
-      ensureUsageCustomRange();
+    const nextRangePreset = elements.usageRangeSelect.value as typeof state.usageRangePreset;
+    if (nextRangePreset === "custom" && state.usageRangePreset !== "custom") {
+      hydrateUsageCustomRangeFromPreset();
     }
+    state.usageRangePreset = nextRangePreset;
+    ensureUsageCustomRange();
     state.usageLogsPage = 1;
     void refreshUsageData();
   });
@@ -1217,8 +1243,13 @@ export function bootstrap(): void {
     if (!elements.usageStartInput) {
       return;
     }
+    hydrateUsageCustomRangeFromPreset();
     state.usageRangePreset = "custom";
-    state.usageCustomStartDate = parseDateTimeLocal(elements.usageStartInput.value);
+    const nextStartDate = parseDateTimeLocal(elements.usageStartInput.value);
+    if (nextStartDate != null) {
+      state.usageCustomStartDate = nextStartDate;
+    }
+    clampUsageCustomRange();
     state.usageLogsPage = 1;
     void refreshUsageData();
   });
@@ -1226,8 +1257,14 @@ export function bootstrap(): void {
     if (!elements.usageEndInput) {
       return;
     }
+    hydrateUsageCustomRangeFromPreset();
     state.usageRangePreset = "custom";
-    state.usageCustomEndDate = parseDateTimeLocal(elements.usageEndInput.value);
+    state.usageLiveEnd = false;
+    const nextEndDate = parseDateTimeLocal(elements.usageEndInput.value);
+    if (nextEndDate != null) {
+      state.usageCustomEndDate = nextEndDate;
+    }
+    clampUsageCustomRange();
     state.usageLogsPage = 1;
     void refreshUsageData();
   });
@@ -1235,6 +1272,7 @@ export function bootstrap(): void {
     if (!elements.usageLiveEndCheckbox) {
       return;
     }
+    hydrateUsageCustomRangeFromPreset();
     state.usageRangePreset = "custom";
     state.usageLiveEnd = elements.usageLiveEndCheckbox.checked;
     if (!state.usageLiveEnd && state.usageCustomEndDate == null) {

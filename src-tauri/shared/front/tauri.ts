@@ -280,6 +280,12 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
       cost: primaryCost,
       models: [{
         model: "gpt-5.3-codex",
+        requested_model: "gpt-5.3-codex",
+        pricing_model: "gpt-5.3-codex",
+        model_reasoning_effort: "xhigh",
+        model_verbosity: "high",
+        pricing_tier: "standard_short_context",
+        pricing_source_url: "https://developers.openai.com/api/docs/pricing",
         request_count: 18,
         tokens: primaryTokens,
         cost: primaryCost,
@@ -289,6 +295,12 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
     }],
     models: [{
       model: "gpt-5.3-codex",
+      requested_model: "gpt-5.3-codex",
+      pricing_model: "gpt-5.3-codex",
+      model_reasoning_effort: "xhigh",
+      model_verbosity: "high",
+      pricing_tier: "standard_short_context",
+      pricing_source_url: "https://developers.openai.com/api/docs/pricing",
       request_count: 18,
       tokens: primaryTokens,
       cost: primaryCost,
@@ -325,7 +337,8 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
       cost: secondaryCost,
     }],
     pricing_source: "OpenAI API pricing",
-    pricing_checked_at: "2026-07-07",
+    pricing_source_url: "https://developers.openai.com/api/docs/pricing",
+    pricing_checked_at: "2026-07-08",
   };
 }
 
@@ -371,6 +384,12 @@ function previewOpenAiUsageLogs(): OpenAiUsageRequestLogPage {
     attribution_kind: "strict_account",
     attribution_window_id: null,
     model: "gpt-5.3-codex",
+    requested_model: "gpt-5.3-codex",
+    pricing_model: "gpt-5.3-codex",
+    model_reasoning_effort: "xhigh",
+    model_verbosity: "high",
+    pricing_tier: "standard_short_context",
+    pricing_source_url: "https://developers.openai.com/api/docs/pricing",
     tokens: {
       input_tokens: 80_000 + index * 1_000,
       cached_input_tokens: 44_000 + index * 400,

@@ -43,6 +43,10 @@ export const state = {
   usageLogsPage: 1,
   usageLogsPageSize: 20,
   usageRefreshIntervalMs: 1000,
+  usageRefreshInFlight: false,
+  usageRefreshQueued: false,
+  usageRefreshQueuedShowError: false,
+  usageLastResolvedEndDate: null as number | null,
   usageLoaded: false,
   usageLoadError: null as string | null,
 };

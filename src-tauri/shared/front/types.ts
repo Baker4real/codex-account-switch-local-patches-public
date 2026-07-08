@@ -115,6 +115,12 @@ export interface OpenAiUsageCostBreakdown {
 
 export interface OpenAiUsageModelSummary {
   model: string;
+  requested_model: string | null;
+  pricing_model: string | null;
+  model_reasoning_effort: string | null;
+  model_verbosity: string | null;
+  pricing_tier: string | null;
+  pricing_source_url: string | null;
   request_count: number;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
@@ -179,6 +185,7 @@ export interface OpenAiUsageSummary {
   scope: OpenAiUsageScope;
   layer_summaries: OpenAiUsageLayerSummary[];
   pricing_source: string;
+  pricing_source_url: string;
   pricing_checked_at: string;
 }
 
@@ -214,6 +221,12 @@ export interface OpenAiUsageRequestLog {
   attribution_kind: string;
   attribution_window_id?: string | null;
   model: string;
+  requested_model: string | null;
+  pricing_model: string | null;
+  model_reasoning_effort: string | null;
+  model_verbosity: string | null;
+  pricing_tier: string | null;
+  pricing_source_url: string | null;
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
   priced: boolean;

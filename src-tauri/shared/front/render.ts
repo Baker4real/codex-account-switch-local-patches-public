@@ -928,7 +928,7 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
       <article class="usage-hero-card">
         <span>${t(state.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageNonOfficialEstimate")}</span>
         <strong>${formatUsageCost(summary.cost)}</strong>
-        <small>${summary.pricing_source} · ${summary.pricing_checked_at}</small>
+        <small>${summary.pricing_source} · ${pricingSourceHost(summary.pricing_source_url)} · ${summary.pricing_checked_at}</small>
       </article>
       <article class="usage-hero-card">
         <span>${t(state.locale, "usageRequests")}</span>
@@ -977,12 +977,15 @@ function renderUsageControls(summary: OpenAiUsageSummary | null): void {
   elements.usageScopeSelect.value = state.usageScope;
   elements.usageLiveEndCheckbox.checked = state.usageLiveEnd;
   elements.usageRefreshIntervalSelect.value = String(state.usageRefreshIntervalMs);
-  elements.usageStartInput.value = formatDateTimeLocalInput(state.usageCustomStartDate);
-  elements.usageEndInput.value = formatDateTimeLocalInput(state.usageCustomEndDate);
-  const custom = state.usageRangePreset === "custom";
-  elements.usageStartInput.disabled = !custom;
-  elements.usageEndInput.disabled = !custom || state.usageLiveEnd;
-  elements.usageLiveEndCheckbox.disabled = !custom;
+  const nowMs = Date.now();
+  elements.usageStartInput.value = formatDateTimeLocalInput(displayUsageStartDate(nowMs));
+  elements.usageEndInput.value = formatDateTimeLocalInput(displayUsageEndDate(nowMs));
+  elements.usageStartInput.disabled = false;
+  elements.usageEndInput.disabled = false;
+  elements.usageEndInput.readOnly = state.usageLiveEnd;
+  elements.usageEndInput.classList.toggle("usage-input-readonly", state.usageLiveEnd);
+  elements.usageLiveEndCheckbox.disabled = false;
+  renderUsageRefreshButton();
 
   const accountOptions = state.usageAccountSummary.length > 0
     ? state.usageAccountSummary
@@ -1018,6 +1021,59 @@ function renderUsageControls(summary: OpenAiUsageSummary | null): void {
     )),
   ].join("");
   setSelectOptions(elements.usageModelFilter, modelOptionsHtml, state.usageModelFilter ?? "");
+}
+
+function renderUsageRefreshButton(): void {
+  const button = elements.usageRefreshButton;
+  if (!button) {
+    return;
+  }
+  const busy = state.usageRefreshInFlight;
+  button.textContent = state.usageRefreshQueued
+    ? t(state.locale, "usageRefreshQueued")
+    : busy
+      ? t(state.locale, "usageRefreshing")
+      : t(state.locale, "usageRefresh");
+  button.classList.toggle("usage-refresh-button--busy", busy);
+  button.setAttribute("aria-busy", busy ? "true" : "false");
+  if (busy) {
+    button.setAttribute("aria-disabled", "true");
+  } else {
+    button.removeAttribute("aria-disabled");
+  }
+}
+
+function displayUsageStartDate(nowMs: number): number | null {
+  if (state.usageRangePreset === "custom") {
+    return state.usageCustomStartDate ?? nowMs - 24 * 60 * 60 * 1000;
+  }
+  return presetUsageStartDate(nowMs);
+}
+
+function displayUsageEndDate(nowMs: number): number | null {
+  if (state.usageRangePreset === "custom") {
+    if (state.usageLiveEnd) {
+      return state.usageLastResolvedEndDate ?? nowMs;
+    }
+    return state.usageCustomEndDate ?? nowMs;
+  }
+  return state.usageLastResolvedEndDate ?? nowMs;
+}
+
+function presetUsageStartDate(nowMs: number): number {
+  switch (state.usageRangePreset) {
+    case "today":
+      return new Date(new Date(nowMs).setHours(0, 0, 0, 0)).getTime();
+    case "7d":
+      return nowMs - 7 * 24 * 60 * 60 * 1000;
+    case "14d":
+      return nowMs - 14 * 24 * 60 * 60 * 1000;
+    case "30d":
+      return nowMs - 30 * 24 * 60 * 60 * 1000;
+    case "1d":
+    default:
+      return nowMs - 24 * 60 * 60 * 1000;
+  }
 }
 
 function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value: string): void {
@@ -1190,12 +1246,16 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
   const rows = summary.models.map((model) => `
     <tr>
       <td>${escapeHtml(model.model)}</td>
+      <td>${escapeHtml(formatUsageOptional(model.requested_model))}</td>
+      <td>${escapeHtml(formatUsageOptional(model.pricing_model))}</td>
+      <td>${escapeHtml(formatUsageOptional(model.model_reasoning_effort))}</td>
+      <td>${escapeHtml(formatUsageOptional(model.model_verbosity))}</td>
       <td>${formatInteger(model.request_count)}</td>
       <td>${formatInteger(model.tokens.input_tokens)}</td>
       <td>${formatInteger(model.tokens.cached_input_tokens)}</td>
       <td>${formatInteger(model.tokens.output_tokens)}</td>
       <td>${formatUsageCost(model.cost)}</td>
-      <td>${model.priced ? t(state.locale, "usagePriced") : t(state.locale, "usageNotPriced")}</td>
+      <td>${escapeHtml(formatUsagePricingCell(model.priced, model.pricing_tier, model.pricing_source_url))}</td>
     </tr>
   `).join("");
   return `
@@ -1206,6 +1266,10 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
           <thead>
             <tr>
               <th>${t(state.locale, "usageModel")}</th>
+              <th>${t(state.locale, "usageRequestedModel")}</th>
+              <th>${t(state.locale, "usagePricingModel")}</th>
+              <th>${t(state.locale, "usageReasoningEffort")}</th>
+              <th>${t(state.locale, "usageVerbosity")}</th>
               <th>${t(state.locale, "usageRequests")}</th>
               <th>${t(state.locale, "usageInput")}</th>
               <th>${t(state.locale, "usageCachedInput")}</th>
@@ -1221,31 +1285,176 @@ function buildUsageModelTable(summary: OpenAiUsageSummary): string {
   `;
 }
 
+function formatUsageOptional(value: string | null | undefined): string {
+  if (value == null || value.trim() === "") {
+    return t(state.locale, "usageUnknown");
+  }
+  if (value === "mixed") {
+    return t(state.locale, "usageMixed");
+  }
+  return value;
+}
+
+function formatUsagePricingCell(
+  priced: boolean,
+  tier: string | null | undefined,
+  sourceUrl: string | null | undefined,
+): string {
+  const status = priced ? t(state.locale, "usagePriced") : t(state.locale, "usageNotPriced");
+  const tierLabel = formatUsageOptional(tier);
+  const sourceLabel = sourceUrl && sourceUrl !== "mixed"
+    ? pricingSourceHost(sourceUrl)
+    : formatUsageOptional(sourceUrl);
+  return `${status} · ${tierLabel} · ${sourceLabel}`;
+}
+
+function pricingSourceHost(sourceUrl: string): string {
+  try {
+    return new URL(sourceUrl).hostname;
+  } catch {
+    return sourceUrl;
+  }
+}
+
 function buildUsageTrendMarkup(): string {
   const points = state.usageTrends;
-  const maxTokens = Math.max(1, ...points.map((point) => point.tokens.real_total_tokens));
-  const rows = points.map((point) => {
-    const pct = Math.max(2, Math.round((point.tokens.real_total_tokens / maxTokens) * 100));
-    return `
-      <div class="usage-trend-row">
-        <span>${escapeHtml(formatTrendLabel(point.bucket_start_ms))}</span>
-        <div class="usage-trend-track">
-          <em style="width:${pct}%"></em>
-        </div>
-        <strong>${formatInteger(point.tokens.real_total_tokens)}</strong>
-        <small>${formatUsageCost(point.cost)}</small>
-      </div>
-    `;
-  }).join("");
+  const trendBody = !state.usageLoaded
+    ? `<p class="usage-muted">${t(state.locale, "usageLoading")}</p>`
+    : points.length === 0
+      ? `<p class="usage-muted">${t(state.locale, "usageNoAttribution")}</p>`
+      : buildUsageLineChart(points);
   return `
     <article class="usage-table-card usage-trend-card">
       <div class="usage-card-title-row">
         <h3>${t(state.locale, "usageTrends")}</h3>
         <span>${t(state.locale, "usageRefreshInterval")}: ${formatRefreshInterval(state.usageRefreshIntervalMs)}</span>
       </div>
-      <div class="usage-trend-list">${rows || `<p class="usage-muted">${t(state.locale, "usageNoAttribution")}</p>`}</div>
+      ${trendBody}
     </article>
   `;
+}
+
+type UsageTrendPoint = typeof state.usageTrends[number];
+
+type UsageTrendSeries = {
+  key: MessageKey;
+  className: string;
+  color: string;
+  dashed?: boolean;
+  scale: "tokens" | "cost";
+  value: (point: UsageTrendPoint) => number;
+};
+
+function buildUsageLineChart(points: UsageTrendPoint[]): string {
+  const width = 920;
+  const height = 280;
+  const pad = { top: 18, right: 76, bottom: 42, left: 54 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const tokenSeries: UsageTrendSeries[] = [
+    {
+      key: "usageInput",
+      className: "input",
+      color: "#2563eb",
+      scale: "tokens",
+      value: (point) => point.tokens.input_tokens,
+    },
+    {
+      key: "usageCachedInput",
+      className: "cached",
+      color: "#0f766e",
+      scale: "tokens",
+      value: (point) => point.tokens.cached_input_tokens,
+    },
+    {
+      key: "usageOutput",
+      className: "output",
+      color: "#b45309",
+      scale: "tokens",
+      value: (point) => point.tokens.output_tokens,
+    },
+    {
+      key: "usageReasoning",
+      className: "reasoning",
+      color: "#be123c",
+      scale: "tokens",
+      value: (point) => point.tokens.reasoning_output_tokens,
+    },
+  ];
+  const costSeries: UsageTrendSeries = {
+    key: "usageCost",
+    className: "cost",
+    color: "#4b5563",
+    dashed: true,
+    scale: "cost",
+    value: (point) => point.cost.total_cost_micros,
+  };
+  const allSeries = [...tokenSeries, costSeries];
+  const tokenMax = Math.max(1, ...tokenSeries.flatMap((series) => points.map(series.value)));
+  const costMax = Math.max(1, ...points.map(costSeries.value));
+  const xFor = (index: number) => pad.left + (points.length === 1 ? innerWidth / 2 : (innerWidth * index) / (points.length - 1));
+  const yForTokens = (value: number) => pad.top + innerHeight - (value / tokenMax) * innerHeight;
+  const yForCost = (value: number) => pad.top + innerHeight - (value / costMax) * innerHeight;
+  const grid = [0, 0.25, 0.5, 0.75, 1].map((tick) => {
+    const y = pad.top + innerHeight - tick * innerHeight;
+    return `<line class="usage-chart-grid-line" x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}"></line>`;
+  }).join("");
+  const paths = allSeries.map((series) => {
+    const yFor = series.scale === "tokens" ? yForTokens : yForCost;
+    const d = points.map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(index).toFixed(2)} ${yFor(series.value(point)).toFixed(2)}`).join(" ");
+    return `<path class="usage-chart-line usage-chart-line--${series.className}${series.dashed ? " usage-chart-line--dashed" : ""}" d="${d}" style="--series-color:${series.color}"></path>`;
+  }).join("");
+  const markers = allSeries.map((series) => {
+    const yFor = series.scale === "tokens" ? yForTokens : yForCost;
+    return points.map((point, index) => `
+      <circle class="usage-chart-point usage-chart-point--${series.className}" cx="${xFor(index).toFixed(2)}" cy="${yFor(series.value(point)).toFixed(2)}" r="3.5" style="--series-color:${series.color}">
+        <title>${escapeHtml(buildUsageTrendPointTitle(point))}</title>
+      </circle>
+    `).join("");
+  }).join("");
+  const axisLabels = buildUsageTrendAxisLabels(points);
+  const legend = allSeries.map((series) => `
+    <span class="usage-chart-legend-item">
+      <i style="--series-color:${series.color}"></i>
+      ${t(state.locale, series.key)}
+    </span>
+  `).join("");
+  return `
+    <div class="usage-chart-wrap">
+      <svg class="usage-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(t(state.locale, "usageTrends"))}" preserveAspectRatio="none">
+        ${grid}
+        <text class="usage-chart-axis-label" x="${pad.left}" y="14">${escapeHtml(formatInteger(tokenMax))} ${escapeHtml(t(state.locale, "usageTokens"))}</text>
+        <text class="usage-chart-axis-label usage-chart-axis-label--right" x="${width - pad.right}" y="14">${escapeHtml(formatCostMicros(costMax))}</text>
+        ${paths}
+        ${markers}
+      </svg>
+      <div class="usage-chart-axis-row">${axisLabels}</div>
+      <div class="usage-chart-legend">${legend}</div>
+    </div>
+  `;
+}
+
+function buildUsageTrendAxisLabels(points: UsageTrendPoint[]): string {
+  const indexes = Array.from(new Set([
+    0,
+    Math.floor((points.length - 1) / 2),
+    points.length - 1,
+  ])).filter((index) => index >= 0 && index < points.length);
+  return indexes.map((index) => `
+    <span>${escapeHtml(formatTrendLabel(points[index].bucket_start_ms))}</span>
+  `).join("");
+}
+
+function buildUsageTrendPointTitle(point: UsageTrendPoint): string {
+  return [
+    formatTrendLabel(point.bucket_start_ms),
+    `${t(state.locale, "usageRequests")}: ${formatInteger(point.request_count)}`,
+    `${t(state.locale, "usageInput")}: ${formatInteger(point.tokens.input_tokens)}`,
+    `${t(state.locale, "usageCachedInput")}: ${formatInteger(point.tokens.cached_input_tokens)}`,
+    `${t(state.locale, "usageOutput")}: ${formatInteger(point.tokens.output_tokens)}`,
+    `${t(state.locale, "usageReasoning")}: ${formatInteger(point.tokens.reasoning_output_tokens)}`,
+    `${t(state.locale, "usageCost")}: ${formatUsageCost(point.cost)}`,
+  ].join("\n");
 }
 
 function formatTrendLabel(value: number): string {
@@ -1269,10 +1478,15 @@ function buildUsageLogsTable(): string {
       <td>${formatDateTimeMs(log.created_at_ms)}</td>
       <td>${escapeHtml(log.account_label ?? log.profile)}</td>
       <td>${escapeHtml(formatUsageLayerLabel(log.ledger_layer))}</td>
-      <td>${escapeHtml(log.usage_confidence)}</td>
       <td>${escapeHtml(log.model)}</td>
+      <td>${escapeHtml(formatUsageOptional(log.requested_model))}</td>
+      <td>${escapeHtml(formatUsageOptional(log.pricing_model))}</td>
+      <td>${escapeHtml(formatUsageOptional(log.model_reasoning_effort))}</td>
+      <td>${escapeHtml(formatUsageOptional(log.model_verbosity))}</td>
+      <td>${escapeHtml(formatUsageDataQuality(log.usage_confidence))}</td>
       <td>${formatInteger(log.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(log.cost)}</td>
+      <td>${escapeHtml(formatUsagePricingCell(log.priced, log.pricing_tier, log.pricing_source_url))}</td>
       <td>${escapeHtml(log.data_source)}</td>
     </tr>
   `).join("");
@@ -1298,18 +1512,38 @@ function buildUsageLogsTable(): string {
               <th>${t(state.locale, "usageCreatedAt")}</th>
               <th>${t(state.locale, "usageAccount")}</th>
               <th>${t(state.locale, "usageLedgerLayer")}</th>
-              <th>${t(state.locale, "usageDataQuality")}</th>
               <th>${t(state.locale, "usageModel")}</th>
+              <th>${t(state.locale, "usageRequestedModel")}</th>
+              <th>${t(state.locale, "usagePricingModel")}</th>
+              <th>${t(state.locale, "usageReasoningEffort")}</th>
+              <th>${t(state.locale, "usageVerbosity")}</th>
+              <th>${t(state.locale, "usageDataQuality")}</th>
               <th>${t(state.locale, "usageTokens")}</th>
               <th>${t(state.locale, "usageCost")}</th>
+              <th>${t(state.locale, "usagePricing")}</th>
               <th>${t(state.locale, "usageDataSource")}</th>
             </tr>
           </thead>
-          <tbody>${rows || `<tr><td colspan="9">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
+          <tbody>${rows || `<tr><td colspan="14">${t(state.locale, "usageNoAttribution")}</td></tr>`}</tbody>
         </table>
       </div>
     </article>
   `;
+}
+
+function formatUsageDataQuality(value: string): string {
+  switch (value) {
+    case "proven":
+      return t(state.locale, "usageQualityProven");
+    case "high":
+      return t(state.locale, "usageQualityHigh");
+    case "low":
+      return t(state.locale, "usageQualityLow");
+    case "unproven":
+      return t(state.locale, "usageQualityUnproven");
+    default:
+      return value;
+  }
 }
 
 function buildUsageDataSourceMarkup(): string {

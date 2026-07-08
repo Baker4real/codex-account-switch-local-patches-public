@@ -1585,7 +1585,7 @@ html[data-theme] .toast.is-error {
 
 .usage-control-bar {
   display: grid;
-  grid-template-columns: minmax(150px, 1.1fr) repeat(2, minmax(170px, 1fr)) minmax(110px, auto) repeat(3, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   align-items: end;
 }
@@ -1624,6 +1624,37 @@ html[data-theme] .toast.is-error {
   opacity: 0.62;
 }
 
+.usage-input-readonly {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.usage-refresh-button--busy {
+  position: relative;
+  padding-left: 32px;
+  cursor: progress;
+}
+
+.usage-refresh-button--busy::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  margin-top: -6px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: usage-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes usage-refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .usage-live-toggle {
   min-height: 38px;
   display: flex;
@@ -1646,6 +1677,7 @@ html[data-theme] .toast.is-error {
 .usage-detail-panel {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .usage-hero-grid {
@@ -1711,6 +1743,7 @@ html[data-theme] .toast.is-error {
 .usage-evidence-card,
 .usage-empty-state {
   padding: 16px;
+  min-width: 0;
 }
 
 .usage-table-card h3,
@@ -1734,7 +1767,7 @@ html[data-theme] .toast.is-error {
 .usage-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 680px;
+  min-width: 1040px;
   font-size: 13px;
 }
 
@@ -1789,6 +1822,79 @@ html[data-theme] .toast.is-error {
 .usage-trend-list {
   display: grid;
   gap: 8px;
+}
+
+.usage-chart-wrap {
+  display: grid;
+  gap: 10px;
+}
+
+.usage-chart {
+  width: 100%;
+  height: 280px;
+  overflow: visible;
+}
+
+.usage-chart-grid-line {
+  stroke: var(--card-border);
+  stroke-width: 1;
+}
+
+.usage-chart-line {
+  fill: none;
+  stroke: var(--series-color);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.usage-chart-line--dashed {
+  stroke-dasharray: 7 6;
+}
+
+.usage-chart-point {
+  fill: var(--card-background);
+  stroke: var(--series-color);
+  stroke-width: 2;
+}
+
+.usage-chart-axis-label {
+  fill: var(--muted-text);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.usage-chart-axis-label--right {
+  text-anchor: end;
+}
+
+.usage-chart-axis-row,
+.usage-chart-legend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted-text);
+  font-size: 12px;
+}
+
+.usage-chart-legend {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.usage-chart-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.usage-chart-legend-item i {
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--series-color);
 }
 
 .usage-trend-row {
@@ -2062,6 +2168,15 @@ html[data-theme] .toast.is-error {
 
   .usage-trend-row small {
     display: none;
+  }
+
+  .usage-chart {
+    height: 240px;
+  }
+
+  .usage-chart-axis-row,
+  .usage-chart-legend {
+    align-items: flex-start;
   }
 
   .control-stack.control-stack--grid,
@@ -3274,6 +3389,15 @@ button.pager-pill:disabled {
 
   .usage-trend-row strong {
     text-align: left;
+  }
+
+  .usage-chart {
+    height: 220px;
+  }
+
+  .usage-chart-axis-row {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .dialog-actions {

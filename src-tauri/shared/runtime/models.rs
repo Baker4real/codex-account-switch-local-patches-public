@@ -282,6 +282,12 @@ pub struct OpenAiUsageCostBreakdown {
 #[serde(default)]
 pub struct OpenAiUsageModelSummary {
     pub model: String,
+    pub requested_model: Option<String>,
+    pub pricing_model: Option<String>,
+    pub model_reasoning_effort: Option<String>,
+    pub model_verbosity: Option<String>,
+    pub pricing_tier: Option<String>,
+    pub pricing_source_url: Option<String>,
     pub request_count: u64,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
@@ -354,6 +360,7 @@ pub struct OpenAiUsageSummary {
     pub scope: String,
     pub layer_summaries: Vec<OpenAiUsageLayerSummary>,
     pub pricing_source: String,
+    pub pricing_source_url: String,
     pub pricing_checked_at: String,
 }
 
@@ -392,6 +399,12 @@ pub struct OpenAiUsageRequestLog {
     pub attribution_kind: String,
     pub attribution_window_id: Option<String>,
     pub model: String,
+    pub requested_model: Option<String>,
+    pub pricing_model: Option<String>,
+    pub model_reasoning_effort: Option<String>,
+    pub model_verbosity: Option<String>,
+    pub pricing_tier: Option<String>,
+    pub pricing_source_url: Option<String>,
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
     pub priced: bool,

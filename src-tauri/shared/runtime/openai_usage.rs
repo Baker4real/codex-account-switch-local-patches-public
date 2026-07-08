@@ -28,11 +28,12 @@ use super::session_files::{collect_jsonl_files, file_modified_ms};
 
 const PRICING_SOURCE: &str = "OpenAI API pricing";
 const PRICING_SOURCE_URL: &str = "https://developers.openai.com/api/docs/pricing";
-const PRICING_CHECKED_AT: &str = "2026-07-07";
-const EVIDENCE_PARSER_VERSION: &str = "openai-usage-evidence-v2-parser-1";
-const EVIDENCE_CLASSIFIER_VERSION: &str = "openai-usage-evidence-v2-classifier-2";
+const PRICING_CHECKED_AT: &str = "2026-07-08";
+const PRICING_TIER_STANDARD_SHORT_CONTEXT: &str = "standard_short_context";
+const EVIDENCE_PARSER_VERSION: &str = "openai-usage-evidence-v2-parser-2";
+const EVIDENCE_CLASSIFIER_VERSION: &str = "openai-usage-evidence-v2-classifier-3";
 const EVIDENCE_DEDUPE_VERSION: &str = "openai-usage-evidence-v2-dedupe-2";
-const LEDGER_SCHEMA_VERSION: &str = "openai-usage-ledger-schema-3";
+const LEDGER_SCHEMA_VERSION: &str = "openai-usage-ledger-schema-4";
 const LAYER_CLASSIFIER_VERSION: &str = "openai-usage-layer-classifier-1";
 const ATTRIBUTION_BACKFILL_VERSION: &str = "openai-usage-attribution-backfill-1";
 const PRICING_VERSION: &str = PRICING_CHECKED_AT;
@@ -113,6 +114,12 @@ struct Aggregate {
 #[derive(Default)]
 struct ModelAggregate {
     aggregate: Aggregate,
+    requested_models: BTreeSet<String>,
+    pricing_models: BTreeSet<String>,
+    reasoning_efforts: BTreeSet<String>,
+    verbosities: BTreeSet<String>,
+    pricing_tiers: BTreeSet<String>,
+    pricing_source_urls: BTreeSet<String>,
     priced: bool,
     pricing_note: Option<String>,
 }
@@ -169,6 +176,8 @@ struct AttributionContext {
     layer_reason: Option<String>,
     attribution_kind: String,
     attribution_window_id: Option<String>,
+    model_reasoning_effort: Option<String>,
+    model_verbosity: Option<String>,
 }
 
 #[derive(Clone)]
@@ -182,6 +191,9 @@ struct UsageEvent {
     account_identity_key: String,
     official_source: String,
     model: String,
+    requested_model: Option<String>,
+    model_reasoning_effort: Option<String>,
+    model_verbosity: Option<String>,
     delta: UsageCounts,
     cost: CalculatedCost,
     status_code: u16,
@@ -191,6 +203,8 @@ struct UsageEvent {
     source_priority: i64,
     usage_confidence: String,
     pricing_model: String,
+    pricing_tier: String,
+    pricing_source_url: String,
 }
 
 #[derive(Clone)]
@@ -209,6 +223,9 @@ struct UsageFact {
     attribution_kind: String,
     attribution_window_id: Option<String>,
     model: String,
+    requested_model: Option<String>,
+    model_reasoning_effort: Option<String>,
+    model_verbosity: Option<String>,
     delta: UsageCounts,
     cost: CalculatedCost,
     status_code: u16,
@@ -218,6 +235,8 @@ struct UsageFact {
     source_priority: i64,
     usage_confidence: String,
     pricing_model: String,
+    pricing_tier: String,
+    pricing_source_url: String,
 }
 
 #[derive(Clone)]
@@ -240,6 +259,10 @@ struct UsageEvidence {
     model: Option<String>,
     request_model: Option<String>,
     pricing_model: Option<String>,
+    model_reasoning_effort: Option<String>,
+    model_verbosity: Option<String>,
+    pricing_tier: Option<String>,
+    pricing_source_url: Option<String>,
     usage_shape: String,
     usage_confidence: String,
     delta: Option<UsageCounts>,
@@ -318,6 +341,9 @@ impl EvidenceClassifier {
                     account_identity_key,
                     official_source,
                     model: model.clone(),
+                    requested_model: evidence.request_model.clone(),
+                    model_reasoning_effort: evidence.model_reasoning_effort.clone(),
+                    model_verbosity: evidence.model_verbosity.clone(),
                     delta,
                     cost,
                     status_code,
@@ -327,6 +353,14 @@ impl EvidenceClassifier {
                     source_priority: evidence.source_priority,
                     usage_confidence: evidence.usage_confidence.clone(),
                     pricing_model: evidence.pricing_model.clone().unwrap_or(model),
+                    pricing_tier: evidence
+                        .pricing_tier
+                        .clone()
+                        .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+                    pricing_source_url: evidence
+                        .pricing_source_url
+                        .clone()
+                        .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
                 }),
                 _ => None,
             }
@@ -366,6 +400,9 @@ fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> O
         attribution_kind: evidence.attribution_kind.clone(),
         attribution_window_id: evidence.attribution_window_id.clone(),
         model: model.clone(),
+        requested_model: evidence.request_model.clone(),
+        model_reasoning_effort: evidence.model_reasoning_effort.clone(),
+        model_verbosity: evidence.model_verbosity.clone(),
         delta,
         cost,
         status_code,
@@ -375,6 +412,14 @@ fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> O
         source_priority: evidence.source_priority,
         usage_confidence: evidence.usage_confidence.clone(),
         pricing_model: evidence.pricing_model.clone().unwrap_or(model),
+        pricing_tier: evidence
+            .pricing_tier
+            .clone()
+            .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+        pricing_source_url: evidence
+            .pricing_source_url
+            .clone()
+            .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
     })
 }
 
@@ -459,6 +504,8 @@ struct AttributionRecord {
     official_source: Option<String>,
     is_official_openai: bool,
     exclusion_reason: Option<String>,
+    model_reasoning_effort: Option<String>,
+    model_verbosity: Option<String>,
 }
 
 impl AttributionRecord {
@@ -483,6 +530,8 @@ impl AttributionRecord {
             layer_reason: Some("account identity key recorded with official source".to_string()),
             attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
             attribution_window_id: Some(self.observed_at_ms.to_string()),
+            model_reasoning_effort: self.model_reasoning_effort.clone(),
+            model_verbosity: self.model_verbosity.clone(),
         })
     }
 
@@ -514,6 +563,8 @@ impl AttributionRecord {
             ),
             attribution_kind: ATTRIBUTION_KIND_LEGACY_PROFILE.to_string(),
             attribution_window_id: Some(attribution_window_id),
+            model_reasoning_effort: self.model_reasoning_effort.clone(),
+            model_verbosity: self.model_verbosity.clone(),
         })
     }
 }
@@ -577,6 +628,7 @@ fn new_usage_summary(query: &OpenAiUsageQuery) -> OpenAiUsageSummary {
     OpenAiUsageSummary {
         generated_at_ms: current_time_ms(),
         pricing_source: PRICING_SOURCE.to_string(),
+        pricing_source_url: PRICING_SOURCE_URL.to_string(),
         pricing_checked_at: PRICING_CHECKED_AT.to_string(),
         scope: normalized_usage_scope(query).to_string(),
         range_start_ms: query.start_date.and_then(seconds_to_ms),
@@ -921,6 +973,9 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             account_identity_key TEXT NOT NULL,
             official_source TEXT NOT NULL,
             model TEXT NOT NULL,
+            request_model TEXT,
+            model_reasoning_effort TEXT,
+            model_verbosity TEXT,
             input_tokens INTEGER NOT NULL,
             cached_input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
@@ -936,6 +991,8 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             pricing_source TEXT NOT NULL,
             pricing_checked_at TEXT NOT NULL,
             pricing_model TEXT,
+            pricing_tier TEXT,
+            pricing_source_url TEXT,
             pricing_version TEXT,
             status_code INTEGER NOT NULL,
             created_at_ms INTEGER NOT NULL,
@@ -972,6 +1029,10 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             model TEXT,
             request_model TEXT,
             pricing_model TEXT,
+            model_reasoning_effort TEXT,
+            model_verbosity TEXT,
+            pricing_tier TEXT,
+            pricing_source_url TEXT,
             usage_shape TEXT NOT NULL,
             usage_confidence TEXT NOT NULL,
             input_tokens INTEGER,
@@ -1020,6 +1081,9 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             attribution_kind TEXT NOT NULL,
             attribution_window_id TEXT,
             model TEXT NOT NULL,
+            request_model TEXT,
+            model_reasoning_effort TEXT,
+            model_verbosity TEXT,
             input_tokens INTEGER NOT NULL,
             cached_input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
@@ -1035,6 +1099,8 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             pricing_source TEXT NOT NULL,
             pricing_checked_at TEXT NOT NULL,
             pricing_model TEXT,
+            pricing_tier TEXT,
+            pricing_source_url TEXT,
             pricing_version TEXT,
             status_code INTEGER NOT NULL,
             created_at_ms INTEGER NOT NULL,
@@ -1135,7 +1201,12 @@ fn ensure_usage_events_columns(conn: &Connection) -> AppResult<()> {
     for (name, definition) in [
         ("evidence_id", "evidence_id TEXT"),
         ("account_identity_key", "account_identity_key TEXT"),
+        ("request_model", "request_model TEXT"),
+        ("model_reasoning_effort", "model_reasoning_effort TEXT"),
+        ("model_verbosity", "model_verbosity TEXT"),
         ("pricing_model", "pricing_model TEXT"),
+        ("pricing_tier", "pricing_tier TEXT"),
+        ("pricing_source_url", "pricing_source_url TEXT"),
         ("pricing_version", "pricing_version TEXT"),
         ("source_type", "source_type TEXT"),
         (
@@ -1177,6 +1248,9 @@ fn ensure_usage_events_account_identity_not_null(conn: &Connection) -> AppResult
             account_identity_key TEXT NOT NULL,
             official_source TEXT NOT NULL,
             model TEXT NOT NULL,
+            request_model TEXT,
+            model_reasoning_effort TEXT,
+            model_verbosity TEXT,
             input_tokens INTEGER NOT NULL,
             cached_input_tokens INTEGER NOT NULL,
             output_tokens INTEGER NOT NULL,
@@ -1192,6 +1266,8 @@ fn ensure_usage_events_account_identity_not_null(conn: &Connection) -> AppResult
             pricing_source TEXT NOT NULL,
             pricing_checked_at TEXT NOT NULL,
             pricing_model TEXT,
+            pricing_tier TEXT,
+            pricing_source_url TEXT,
             pricing_version TEXT,
             status_code INTEGER NOT NULL,
             created_at_ms INTEGER NOT NULL,
@@ -1237,6 +1313,10 @@ fn ensure_usage_evidence_columns(conn: &Connection) -> AppResult<()> {
         ),
         ("attribution_window_id", "attribution_window_id TEXT"),
         ("legacy_account_key", "legacy_account_key TEXT"),
+        ("model_reasoning_effort", "model_reasoning_effort TEXT"),
+        ("model_verbosity", "model_verbosity TEXT"),
+        ("pricing_tier", "pricing_tier TEXT"),
+        ("pricing_source_url", "pricing_source_url TEXT"),
     ] {
         if !columns.contains(name) {
             conn.execute(
@@ -1268,7 +1348,12 @@ fn ensure_usage_facts_columns(conn: &Connection) -> AppResult<()> {
             "attribution_kind TEXT NOT NULL DEFAULT 'strict_account'",
         ),
         ("attribution_window_id", "attribution_window_id TEXT"),
+        ("request_model", "request_model TEXT"),
+        ("model_reasoning_effort", "model_reasoning_effort TEXT"),
+        ("model_verbosity", "model_verbosity TEXT"),
         ("pricing_model", "pricing_model TEXT"),
+        ("pricing_tier", "pricing_tier TEXT"),
+        ("pricing_source_url", "pricing_source_url TEXT"),
         ("pricing_version", "pricing_version TEXT"),
         ("source_type", "source_type TEXT"),
         (
@@ -1858,7 +1943,11 @@ fn collect_ccswitch_proxy_request_evidence(
             previous_response_id: None,
             model: model.as_deref().map(normalize_model),
             request_model,
-            pricing_model,
+            pricing_model: pricing_model.as_deref().map(normalize_model),
+            model_reasoning_effort: None,
+            model_verbosity: None,
+            pricing_tier: Some(PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+            pricing_source_url: Some(PRICING_SOURCE_URL.to_string()),
             usage_shape: if source_type == SOURCE_CCSWITCH_PROXY {
                 USAGE_SHAPE_PROXY_REQUEST.to_string()
             } else {
@@ -1984,7 +2073,11 @@ fn collect_ccswitch_rollup_evidence(
             previous_response_id: None,
             model: model.as_deref().map(normalize_model),
             request_model,
-            pricing_model,
+            pricing_model: pricing_model.as_deref().map(normalize_model),
+            model_reasoning_effort: None,
+            model_verbosity: None,
+            pricing_tier: Some(PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+            pricing_source_url: Some(PRICING_SOURCE_URL.to_string()),
             usage_shape: USAGE_SHAPE_DAILY_ROLLUP.to_string(),
             usage_confidence: CONFIDENCE_LOW.to_string(),
             delta: Some(UsageCounts {
@@ -2065,17 +2158,20 @@ fn rebuild_usage_events(
                 r#"
             INSERT INTO openai_usage_events (
                 request_id, fingerprint, evidence_id, session_id, profile, account_label,
-                account_identity_key, official_source, model, input_tokens, cached_input_tokens,
+                account_identity_key, official_source, model, request_model,
+                model_reasoning_effort, model_verbosity, input_tokens, cached_input_tokens,
                 output_tokens, reasoning_output_tokens, real_total_tokens,
                 input_cost_micros, cached_input_cost_micros, output_cost_micros,
                 total_cost_micros, unpriced_tokens, priced, pricing_note,
-                pricing_source, pricing_checked_at, pricing_model, pricing_version,
+                pricing_source, pricing_checked_at, pricing_model, pricing_tier,
+                pricing_source_url, pricing_version,
                 status_code, created_at_ms, data_source, source_type, source_priority,
                 usage_confidence, inserted_at_ms
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
-                ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32
+                ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
+                ?36, ?37
             )
             "#,
             )
@@ -2097,6 +2193,9 @@ fn rebuild_usage_events(
                 &event.account_identity_key,
                 &event.official_source,
                 &event.model,
+                event.requested_model.as_deref(),
+                event.model_reasoning_effort.as_deref(),
+                event.model_verbosity.as_deref(),
                 i64_from_u64(event.delta.input_tokens),
                 i64_from_u64(event.delta.cached_input_tokens),
                 i64_from_u64(event.delta.output_tokens),
@@ -2117,6 +2216,8 @@ fn rebuild_usage_events(
                 PRICING_SOURCE,
                 PRICING_CHECKED_AT,
                 &event.pricing_model,
+                &event.pricing_tier,
+                &event.pricing_source_url,
                 PRICING_VERSION,
                 i64::from(event.status_code),
                 i64_from_u64(event.created_at_ms),
@@ -2232,7 +2333,8 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
                 source_priority, source_locator, source_hash, parser_version,
                 event_started_at_ms, event_completed_at_ms, observed_at_ms,
                 turn_index, response_id, previous_response_id, model, request_model,
-                pricing_model, usage_shape, usage_confidence, input_tokens,
+                pricing_model, model_reasoning_effort, model_verbosity, pricing_tier,
+                pricing_source_url, usage_shape, usage_confidence, input_tokens,
                 cached_input_tokens, output_tokens, reasoning_output_tokens,
                 raw_usage_json, profile, account_identity_key, account_label,
                 identity_source, identity_observed_at_ms, account_confidence,
@@ -2244,7 +2346,8 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                 ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
-                ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44
+                ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46,
+                ?47, ?48
             )
             "#,
         )
@@ -2275,6 +2378,10 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
             entry.model.as_deref(),
             entry.request_model.as_deref(),
             entry.pricing_model.as_deref(),
+            entry.model_reasoning_effort.as_deref(),
+            entry.model_verbosity.as_deref(),
+            entry.pricing_tier.as_deref(),
+            entry.pricing_source_url.as_deref(),
             &entry.usage_shape,
             &entry.usage_confidence,
             entry.delta.map(|_| i64_from_u64(delta.input_tokens)),
@@ -2324,17 +2431,19 @@ fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()
             INSERT INTO openai_usage_facts (
                 evidence_id, request_id, fingerprint, session_id, profile, account_label,
                 account_identity_key, legacy_account_key, official_source, ledger_layer,
-                layer_reason, attribution_kind, attribution_window_id, model, input_tokens,
+                layer_reason, attribution_kind, attribution_window_id, model, request_model,
+                model_reasoning_effort, model_verbosity, input_tokens,
                 cached_input_tokens, output_tokens, reasoning_output_tokens, real_total_tokens,
                 input_cost_micros, cached_input_cost_micros, output_cost_micros,
                 total_cost_micros, unpriced_tokens, priced, pricing_note, pricing_source,
-                pricing_checked_at, pricing_model, pricing_version, status_code, created_at_ms,
+                pricing_checked_at, pricing_model, pricing_tier, pricing_source_url,
+                pricing_version, status_code, created_at_ms,
                 data_source, source_type, source_priority, usage_confidence, inserted_at_ms
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                 ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
-                ?36, ?37
+                ?36, ?37, ?38, ?39, ?40, ?41, ?42
             )
             "#,
         )
@@ -2361,6 +2470,9 @@ fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()
             &fact.attribution_kind,
             fact.attribution_window_id.as_deref(),
             &fact.model,
+            fact.requested_model.as_deref(),
+            fact.model_reasoning_effort.as_deref(),
+            fact.model_verbosity.as_deref(),
             i64_from_u64(fact.delta.input_tokens),
             i64_from_u64(fact.delta.cached_input_tokens),
             i64_from_u64(fact.delta.output_tokens),
@@ -2380,6 +2492,8 @@ fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()
             PRICING_SOURCE,
             PRICING_CHECKED_AT,
             &fact.pricing_model,
+            &fact.pricing_tier,
+            &fact.pricing_source_url,
             PRICING_VERSION,
             i64::from(fact.status_code),
             i64_from_u64(fact.created_at_ms),
@@ -2428,11 +2542,13 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
         .prepare(
             r#"
             SELECT request_id, fingerprint, evidence_id, session_id, profile, account_label,
-                   account_identity_key, official_source, model, input_tokens, cached_input_tokens,
+                   account_identity_key, official_source, model, request_model,
+                   model_reasoning_effort, model_verbosity, input_tokens, cached_input_tokens,
                    output_tokens, reasoning_output_tokens, input_cost_micros,
                    cached_input_cost_micros, output_cost_micros, total_cost_micros,
                    unpriced_tokens, priced, pricing_note, status_code, created_at_ms,
-                   data_source, source_type, source_priority, usage_confidence, pricing_model
+                   data_source, source_type, source_priority, usage_confidence, pricing_model,
+                   pricing_tier, pricing_source_url
             FROM openai_usage_events
             WHERE (?1 IS NULL OR created_at_ms >= ?1)
               AND (?2 IS NULL OR created_at_ms <= ?2)
@@ -2454,10 +2570,10 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
         .query_map(
             params![start_ms, end_ms, profile, account_label, model, status_code],
             |row| {
-                let input_tokens = u64_from_i64(row.get::<_, i64>(9)?);
-                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(10)?);
-                let output_tokens = u64_from_i64(row.get::<_, i64>(11)?);
-                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(12)?);
+                let input_tokens = u64_from_i64(row.get::<_, i64>(12)?);
+                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(13)?);
+                let output_tokens = u64_from_i64(row.get::<_, i64>(14)?);
+                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(15)?);
                 Ok(UsageEvent {
                     evidence_id: row
                         .get::<_, Option<String>>(2)?
@@ -2470,6 +2586,9 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
                     account_identity_key: row.get::<_, String>(6)?,
                     official_source: row.get(7)?,
                     model: row.get(8)?,
+                    requested_model: row.get(9)?,
+                    model_reasoning_effort: row.get(10)?,
+                    model_verbosity: row.get(11)?,
                     delta: UsageCounts {
                         input_tokens,
                         cached_input_tokens,
@@ -2478,28 +2597,34 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
                     },
                     cost: CalculatedCost {
                         breakdown: OpenAiUsageCostBreakdown {
-                            input_cost_micros: u64_from_i64(row.get::<_, i64>(13)?),
-                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(14)?),
-                            output_cost_micros: u64_from_i64(row.get::<_, i64>(15)?),
-                            total_cost_micros: u64_from_i64(row.get::<_, i64>(16)?),
-                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(17)?),
+                            input_cost_micros: u64_from_i64(row.get::<_, i64>(16)?),
+                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(17)?),
+                            output_cost_micros: u64_from_i64(row.get::<_, i64>(18)?),
+                            total_cost_micros: u64_from_i64(row.get::<_, i64>(19)?),
+                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(20)?),
                         },
-                        priced: row.get::<_, i64>(18)? != 0,
-                        pricing_note: row.get(19)?,
+                        priced: row.get::<_, i64>(21)? != 0,
+                        pricing_note: row.get(22)?,
                     },
-                    status_code: u16::try_from(row.get::<_, i64>(20)?).unwrap_or(0),
-                    created_at_ms: u64_from_i64(row.get::<_, i64>(21)?),
-                    data_source: row.get(22)?,
+                    status_code: u16::try_from(row.get::<_, i64>(23)?).unwrap_or(0),
+                    created_at_ms: u64_from_i64(row.get::<_, i64>(24)?),
+                    data_source: row.get(25)?,
                     source_type: row
-                        .get::<_, Option<String>>(23)?
+                        .get::<_, Option<String>>(26)?
                         .unwrap_or_else(|| SOURCE_CODEX_SESSION_JSONL.to_string()),
-                    source_priority: row.get::<_, Option<i64>>(24)?.unwrap_or_default(),
+                    source_priority: row.get::<_, Option<i64>>(27)?.unwrap_or_default(),
                     usage_confidence: row
-                        .get::<_, Option<String>>(25)?
+                        .get::<_, Option<String>>(28)?
                         .unwrap_or_else(|| CONFIDENCE_HIGH.to_string()),
                     pricing_model: row
-                        .get::<_, Option<String>>(26)?
+                        .get::<_, Option<String>>(29)?
                         .unwrap_or_else(|| row.get::<_, String>(8).unwrap_or_default()),
+                    pricing_tier: row
+                        .get::<_, Option<String>>(30)?
+                        .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+                    pricing_source_url: row
+                        .get::<_, Option<String>>(31)?
+                        .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
                 })
             },
         )
@@ -2552,12 +2677,13 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
             r#"
             SELECT evidence_id, request_id, fingerprint, session_id, profile, account_label,
                    account_identity_key, legacy_account_key, official_source, ledger_layer,
-                   layer_reason, attribution_kind, attribution_window_id, model, input_tokens,
+                   layer_reason, attribution_kind, attribution_window_id, model, request_model,
+                   model_reasoning_effort, model_verbosity, input_tokens,
                    cached_input_tokens, output_tokens, reasoning_output_tokens,
                    input_cost_micros, cached_input_cost_micros, output_cost_micros,
                    total_cost_micros, unpriced_tokens, priced, pricing_note, status_code,
                    created_at_ms, data_source, source_type, source_priority, usage_confidence,
-                   pricing_model
+                   pricing_model, pricing_tier, pricing_source_url
             FROM openai_usage_facts
             WHERE (?1 IS NULL OR created_at_ms >= ?1)
               AND (?2 IS NULL OR created_at_ms <= ?2)
@@ -2592,10 +2718,10 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
                 scope
             ],
             |row| {
-                let input_tokens = u64_from_i64(row.get::<_, i64>(14)?);
-                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(15)?);
-                let output_tokens = u64_from_i64(row.get::<_, i64>(16)?);
-                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(17)?);
+                let input_tokens = u64_from_i64(row.get::<_, i64>(17)?);
+                let cached_input_tokens = u64_from_i64(row.get::<_, i64>(18)?);
+                let output_tokens = u64_from_i64(row.get::<_, i64>(19)?);
+                let reasoning_output_tokens = u64_from_i64(row.get::<_, i64>(20)?);
                 Ok(UsageFact {
                     evidence_id: row.get(0)?,
                     request_id: row.get(1)?,
@@ -2611,6 +2737,9 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
                     attribution_kind: row.get(11)?,
                     attribution_window_id: row.get(12)?,
                     model: row.get(13)?,
+                    requested_model: row.get(14)?,
+                    model_reasoning_effort: row.get(15)?,
+                    model_verbosity: row.get(16)?,
                     delta: UsageCounts {
                         input_tokens,
                         cached_input_tokens,
@@ -2619,28 +2748,34 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
                     },
                     cost: CalculatedCost {
                         breakdown: OpenAiUsageCostBreakdown {
-                            input_cost_micros: u64_from_i64(row.get::<_, i64>(18)?),
-                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(19)?),
-                            output_cost_micros: u64_from_i64(row.get::<_, i64>(20)?),
-                            total_cost_micros: u64_from_i64(row.get::<_, i64>(21)?),
-                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(22)?),
+                            input_cost_micros: u64_from_i64(row.get::<_, i64>(21)?),
+                            cached_input_cost_micros: u64_from_i64(row.get::<_, i64>(22)?),
+                            output_cost_micros: u64_from_i64(row.get::<_, i64>(23)?),
+                            total_cost_micros: u64_from_i64(row.get::<_, i64>(24)?),
+                            unpriced_tokens: u64_from_i64(row.get::<_, i64>(25)?),
                         },
-                        priced: row.get::<_, i64>(23)? != 0,
-                        pricing_note: row.get(24)?,
+                        priced: row.get::<_, i64>(26)? != 0,
+                        pricing_note: row.get(27)?,
                     },
-                    status_code: u16::try_from(row.get::<_, i64>(25)?).unwrap_or(0),
-                    created_at_ms: u64_from_i64(row.get::<_, i64>(26)?),
-                    data_source: row.get(27)?,
+                    status_code: u16::try_from(row.get::<_, i64>(28)?).unwrap_or(0),
+                    created_at_ms: u64_from_i64(row.get::<_, i64>(29)?),
+                    data_source: row.get(30)?,
                     source_type: row
-                        .get::<_, Option<String>>(28)?
+                        .get::<_, Option<String>>(31)?
                         .unwrap_or_else(|| SOURCE_CODEX_SESSION_JSONL.to_string()),
-                    source_priority: row.get::<_, Option<i64>>(29)?.unwrap_or_default(),
+                    source_priority: row.get::<_, Option<i64>>(32)?.unwrap_or_default(),
                     usage_confidence: row
-                        .get::<_, Option<String>>(30)?
+                        .get::<_, Option<String>>(33)?
                         .unwrap_or_else(|| CONFIDENCE_HIGH.to_string()),
                     pricing_model: row
-                        .get::<_, Option<String>>(31)?
+                        .get::<_, Option<String>>(34)?
                         .unwrap_or_else(|| row.get::<_, String>(13).unwrap_or_default()),
+                    pricing_tier: row
+                        .get::<_, Option<String>>(35)?
+                        .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+                    pricing_source_url: row
+                        .get::<_, Option<String>>(36)?
+                        .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
                 })
             },
         )
@@ -2979,6 +3114,12 @@ fn event_to_log(event: &UsageEvent) -> OpenAiUsageRequestLog {
         attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
         attribution_window_id: None,
         model: event.model.clone(),
+        requested_model: event.requested_model.clone(),
+        pricing_model: Some(event.pricing_model.clone()),
+        model_reasoning_effort: event.model_reasoning_effort.clone(),
+        model_verbosity: event.model_verbosity.clone(),
+        pricing_tier: Some(event.pricing_tier.clone()),
+        pricing_source_url: Some(event.pricing_source_url.clone()),
         tokens: tokens_from_delta(event.delta),
         cost: event.cost.breakdown.clone(),
         priced: event.cost.priced,
@@ -3001,6 +3142,12 @@ fn fact_to_log(fact: &UsageFact) -> OpenAiUsageRequestLog {
         attribution_kind: fact.attribution_kind.clone(),
         attribution_window_id: fact.attribution_window_id.clone(),
         model: fact.model.clone(),
+        requested_model: fact.requested_model.clone(),
+        pricing_model: Some(fact.pricing_model.clone()),
+        model_reasoning_effort: fact.model_reasoning_effort.clone(),
+        model_verbosity: fact.model_verbosity.clone(),
+        pricing_tier: Some(fact.pricing_tier.clone()),
+        pricing_source_url: Some(fact.pricing_source_url.clone()),
         tokens: tokens_from_delta(fact.delta),
         cost: fact.cost.breakdown.clone(),
         priced: fact.cost.priced,
@@ -3036,6 +3183,49 @@ pub fn record_current_openai_usage_attribution(codex_home: Option<&Path>) -> App
     append_attribution_record(&codex_home, &record)
 }
 
+#[derive(Default)]
+struct UsageConfigSnapshot {
+    model_reasoning_effort: Option<String>,
+    model_verbosity: Option<String>,
+}
+
+fn load_usage_config_snapshot(path: &Path) -> UsageConfigSnapshot {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return UsageConfigSnapshot::default();
+    };
+    let mut snapshot = UsageConfigSnapshot::default();
+    for line in raw.lines() {
+        let Some((key, raw_value)) = line.split_once('=') else {
+            continue;
+        };
+        let Some(value) = parse_simple_toml_string(raw_value) else {
+            continue;
+        };
+        match key.trim() {
+            "model_reasoning_effort" => {
+                snapshot.model_reasoning_effort = normalize_model_reasoning_effort(value);
+            }
+            "model_verbosity" => {
+                snapshot.model_verbosity = normalize_model_verbosity(value);
+            }
+            _ => {}
+        }
+    }
+    snapshot
+}
+
+fn parse_simple_toml_string(raw_value: &str) -> Option<String> {
+    let value = raw_value
+        .split('#')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionRecord> {
     let index = load_profiles_index(Some(codex_home))?;
     let observed_at_ms = current_time_ms();
@@ -3049,6 +3239,8 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
             official_source: None,
             is_official_openai: false,
             exclusion_reason: Some("no active profile".to_string()),
+            model_reasoning_effort: None,
+            model_verbosity: None,
         });
     };
     let Some(profile) = index
@@ -3065,6 +3257,8 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
             official_source: None,
             is_official_openai: false,
             exclusion_reason: Some("active profile not found".to_string()),
+            model_reasoning_effort: None,
+            model_verbosity: None,
         });
     };
     let official_source = match official_source_for_profile(profile) {
@@ -3091,6 +3285,7 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
     } else {
         Some("account identity does not match active profile".to_string())
     };
+    let config = load_usage_config_snapshot(&codex_home.join("config.toml"));
     Ok(AttributionRecord {
         observed_at_ms,
         profile: Some(profile_name),
@@ -3100,6 +3295,8 @@ fn build_current_attribution_record(codex_home: &Path) -> AppResult<AttributionR
         official_source,
         is_official_openai,
         exclusion_reason,
+        model_reasoning_effort: config.model_reasoning_effort,
+        model_verbosity: config.model_verbosity,
     })
 }
 
@@ -3215,6 +3412,8 @@ fn attribution_for_event(
                 layer_reason: fallback.layer_reason.clone(),
                 attribution_kind: fallback.attribution_kind.clone(),
                 attribution_window_id: fallback.attribution_window_id.clone(),
+                model_reasoning_effort: fallback.model_reasoning_effort.clone(),
+                model_verbosity: fallback.model_verbosity.clone(),
             });
         }
     }
@@ -3308,6 +3507,9 @@ struct SessionEvidenceInput<'a> {
     event_index: u64,
     event_time_ms: Option<u64>,
     model: Option<&'a str>,
+    request_model: Option<&'a str>,
+    model_reasoning_effort: Option<&'a str>,
+    model_verbosity: Option<&'a str>,
     parsed_usage: Option<ParsedUsage>,
     delta: Option<UsageCounts>,
     attribution: Option<&'a AttributionContext>,
@@ -3326,6 +3528,14 @@ fn session_usage_evidence(input: SessionEvidenceInput<'_>) -> UsageEvidence {
     let profile = attribution.map(|value| value.profile.clone());
     let account_identity_key = attribution.and_then(|value| value.account_identity_key.clone());
     let account_label = attribution.and_then(|value| value.account_label.clone());
+    let model_reasoning_effort = input
+        .model_reasoning_effort
+        .map(ToString::to_string)
+        .or_else(|| attribution.and_then(|value| value.model_reasoning_effort.clone()));
+    let model_verbosity = input
+        .model_verbosity
+        .map(ToString::to_string)
+        .or_else(|| attribution.and_then(|value| value.model_verbosity.clone()));
     let identity_source = attribution.and_then(|value| value.identity_source.clone());
     let identity_observed_at_ms = attribution.and_then(|value| value.identity_observed_at_ms);
     let official_source = attribution.map(|value| value.official_source.clone());
@@ -3356,8 +3566,12 @@ fn session_usage_evidence(input: SessionEvidenceInput<'_>) -> UsageEvidence {
         response_id: None,
         previous_response_id: None,
         model: input.model.map(ToString::to_string),
-        request_model: input.model.map(ToString::to_string),
+        request_model: input.request_model.map(ToString::to_string),
         pricing_model: input.model.map(ToString::to_string),
+        model_reasoning_effort,
+        model_verbosity,
+        pricing_tier: Some(PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+        pricing_source_url: Some(PRICING_SOURCE_URL.to_string()),
         usage_shape: parsed_usage
             .map(|usage| usage.usage_shape.to_string())
             .unwrap_or_else(|| "unknown".to_string()),
@@ -3499,6 +3713,8 @@ fn build_attribution_context(
         ),
         attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
         attribution_window_id: Some(attribution_since_ms.to_string()),
+        model_reasoning_effort: None,
+        model_verbosity: None,
     }))
 }
 
@@ -3552,6 +3768,9 @@ fn collect_session_file_events(
         .unwrap_or("unknown-session")
         .to_string();
     let mut current_model: Option<String> = None;
+    let mut current_request_model: Option<String> = None;
+    let mut current_reasoning_effort: Option<String> = None;
+    let mut current_verbosity: Option<String> = None;
     let mut previous_usage: Option<UsageCounts> = None;
     let mut event_index = 0_u64;
 
@@ -3577,11 +3796,18 @@ fn collect_session_file_events(
                 }
             }
             "turn_context" => {
-                current_model = payload
+                current_request_model = payload
                     .and_then(|value| value.get("model"))
                     .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                current_model = current_request_model
+                    .as_deref()
                     .map(normalize_model)
                     .filter(|value| !value.is_empty());
+                current_reasoning_effort = payload.and_then(extract_model_reasoning_effort);
+                current_verbosity = payload.and_then(extract_model_verbosity);
             }
             "event_msg" => {
                 if payload
@@ -3608,6 +3834,9 @@ fn collect_session_file_events(
                         event_index,
                         event_time_ms,
                         model: current_model.as_deref(),
+                        request_model: current_request_model.as_deref(),
+                        model_reasoning_effort: current_reasoning_effort.as_deref(),
+                        model_verbosity: current_verbosity.as_deref(),
                         parsed_usage: None,
                         delta: None,
                         attribution: None,
@@ -3633,6 +3862,9 @@ fn collect_session_file_events(
                         event_index,
                         event_time_ms,
                         model: None,
+                        request_model: current_request_model.as_deref(),
+                        model_reasoning_effort: current_reasoning_effort.as_deref(),
+                        model_verbosity: current_verbosity.as_deref(),
                         parsed_usage: Some(parsed_usage),
                         delta: None,
                         attribution: None,
@@ -3657,6 +3889,9 @@ fn collect_session_file_events(
                         event_index,
                         event_time_ms,
                         model: Some(&model),
+                        request_model: current_request_model.as_deref(),
+                        model_reasoning_effort: current_reasoning_effort.as_deref(),
+                        model_verbosity: current_verbosity.as_deref(),
                         parsed_usage: Some(parsed_usage),
                         delta: None,
                         attribution: None,
@@ -3679,6 +3914,9 @@ fn collect_session_file_events(
                         event_index,
                         event_time_ms,
                         model: Some(&model),
+                        request_model: current_request_model.as_deref(),
+                        model_reasoning_effort: current_reasoning_effort.as_deref(),
+                        model_verbosity: current_verbosity.as_deref(),
                         parsed_usage: Some(parsed_usage),
                         delta: Some(delta),
                         attribution: None,
@@ -3703,6 +3941,9 @@ fn collect_session_file_events(
                         event_index,
                         event_time_ms: None,
                         model: Some(&model),
+                        request_model: current_request_model.as_deref(),
+                        model_reasoning_effort: current_reasoning_effort.as_deref(),
+                        model_verbosity: current_verbosity.as_deref(),
                         parsed_usage: Some(parsed_usage),
                         delta: Some(delta),
                         attribution: None,
@@ -3732,6 +3973,9 @@ fn collect_session_file_events(
                             event_index,
                             event_time_ms: Some(event_time_ms),
                             model: Some(&model),
+                            request_model: current_request_model.as_deref(),
+                            model_reasoning_effort: current_reasoning_effort.as_deref(),
+                            model_verbosity: current_verbosity.as_deref(),
                             parsed_usage: Some(parsed_usage),
                             delta: Some(delta),
                             attribution: None,
@@ -3753,6 +3997,9 @@ fn collect_session_file_events(
                             event_index,
                             event_time_ms: Some(event_time_ms),
                             model: Some(&model),
+                            request_model: current_request_model.as_deref(),
+                            model_reasoning_effort: current_reasoning_effort.as_deref(),
+                            model_verbosity: current_verbosity.as_deref(),
                             parsed_usage: Some(parsed_usage),
                             delta: Some(delta),
                             attribution: None,
@@ -3784,6 +4031,9 @@ fn collect_session_file_events(
                         event_index,
                         event_time_ms: Some(event_time_ms),
                         model: Some(&model),
+                        request_model: current_request_model.as_deref(),
+                        model_reasoning_effort: current_reasoning_effort.as_deref(),
+                        model_verbosity: current_verbosity.as_deref(),
                         parsed_usage: Some(parsed_usage),
                         delta: Some(delta),
                         attribution: Some(&attribution),
@@ -3803,6 +4053,9 @@ fn collect_session_file_events(
                     event_index,
                     event_time_ms: Some(event_time_ms),
                     model: Some(&model),
+                    request_model: current_request_model.as_deref(),
+                    model_reasoning_effort: current_reasoning_effort.as_deref(),
+                    model_verbosity: current_verbosity.as_deref(),
                     parsed_usage: Some(parsed_usage),
                     delta: Some(delta),
                     attribution: Some(&attribution),
@@ -3866,6 +4119,38 @@ fn parse_usage_counts(payload: &Value) -> Option<ParsedUsage> {
     })
 }
 
+fn extract_model_reasoning_effort(payload: &Value) -> Option<String> {
+    string_field(payload, &["model_reasoning_effort", "reasoning_effort"])
+        .and_then(normalize_model_reasoning_effort)
+}
+
+fn extract_model_verbosity(payload: &Value) -> Option<String> {
+    string_field(payload, &["model_verbosity", "verbosity"]).and_then(normalize_model_verbosity)
+}
+
+fn string_field(payload: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| payload.get(*key))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn normalize_model_reasoning_effort(value: String) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+    )
+    .then_some(normalized)
+}
+
+fn normalize_model_verbosity(value: String) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    matches!(normalized.as_str(), "low" | "medium" | "high").then_some(normalized)
+}
+
 fn usage_delta(previous: Option<UsageCounts>, current: UsageCounts) -> Option<UsageCounts> {
     let Some(previous) = previous else {
         return Some(current);
@@ -3909,11 +4194,23 @@ fn add_event_usage(
         account.models.entry(event.model.clone()).or_default(),
         event.delta,
         &event.cost,
+        event.requested_model.as_ref(),
+        &event.pricing_model,
+        event.model_reasoning_effort.as_ref(),
+        event.model_verbosity.as_ref(),
+        &event.pricing_tier,
+        &event.pricing_source_url,
     );
     add_to_model(
         global_models.entry(event.model.clone()).or_default(),
         event.delta,
         &event.cost,
+        event.requested_model.as_ref(),
+        &event.pricing_model,
+        event.model_reasoning_effort.as_ref(),
+        event.model_verbosity.as_ref(),
+        &event.pricing_tier,
+        &event.pricing_source_url,
     );
 }
 
@@ -3954,11 +4251,23 @@ fn add_fact_usage(
         account.models.entry(fact.model.clone()).or_default(),
         fact.delta,
         &fact.cost,
+        fact.requested_model.as_ref(),
+        &fact.pricing_model,
+        fact.model_reasoning_effort.as_ref(),
+        fact.model_verbosity.as_ref(),
+        &fact.pricing_tier,
+        &fact.pricing_source_url,
     );
     add_to_model(
         global_models.entry(fact.model.clone()).or_default(),
         fact.delta,
         &fact.cost,
+        fact.requested_model.as_ref(),
+        &fact.pricing_model,
+        fact.model_reasoning_effort.as_ref(),
+        fact.model_verbosity.as_ref(),
+        &fact.pricing_tier,
+        &fact.pricing_source_url,
     );
 }
 
@@ -4084,11 +4393,39 @@ fn total_account_aggregate(accounts: &BTreeMap<String, AccountAggregate>) -> Agg
     total
 }
 
-fn add_to_model(model: &mut ModelAggregate, delta: UsageCounts, cost: &CalculatedCost) {
+fn add_to_model(
+    model: &mut ModelAggregate,
+    delta: UsageCounts,
+    cost: &CalculatedCost,
+    requested_model: Option<&String>,
+    pricing_model: &str,
+    model_reasoning_effort: Option<&String>,
+    model_verbosity: Option<&String>,
+    pricing_tier: &str,
+    pricing_source_url: &str,
+) {
     add_to_aggregate(&mut model.aggregate, delta, &cost.breakdown);
+    insert_optional_value(&mut model.requested_models, requested_model);
+    model.pricing_models.insert(pricing_model.to_string());
+    insert_optional_value(&mut model.reasoning_efforts, model_reasoning_effort);
+    insert_optional_value(&mut model.verbosities, model_verbosity);
+    model.pricing_tiers.insert(pricing_tier.to_string());
+    model
+        .pricing_source_urls
+        .insert(pricing_source_url.to_string());
     model.priced |= cost.priced;
     if let Some(note) = &cost.pricing_note {
         model.pricing_note = Some(note.clone());
+    }
+}
+
+fn insert_optional_value(values: &mut BTreeSet<String>, value: Option<&String>) {
+    if let Some(value) = value
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        values.insert(value.to_string());
     }
 }
 
@@ -4257,6 +4594,12 @@ fn models_to_summary(models: BTreeMap<String, ModelAggregate>) -> Vec<OpenAiUsag
         .into_iter()
         .map(|(model, aggregate)| OpenAiUsageModelSummary {
             model,
+            requested_model: single_or_mixed(aggregate.requested_models),
+            pricing_model: single_or_mixed(aggregate.pricing_models),
+            model_reasoning_effort: single_or_mixed(aggregate.reasoning_efforts),
+            model_verbosity: single_or_mixed(aggregate.verbosities),
+            pricing_tier: single_or_mixed(aggregate.pricing_tiers),
+            pricing_source_url: single_or_mixed(aggregate.pricing_source_urls),
             request_count: aggregate.aggregate.requests,
             tokens: aggregate.aggregate.tokens,
             cost: aggregate.aggregate.cost,
@@ -4264,6 +4607,14 @@ fn models_to_summary(models: BTreeMap<String, ModelAggregate>) -> Vec<OpenAiUsag
             pricing_note: aggregate.pricing_note,
         })
         .collect()
+}
+
+fn single_or_mixed(values: BTreeSet<String>) -> Option<String> {
+    match values.len() {
+        0 => None,
+        1 => values.into_iter().next(),
+        _ => Some("mixed".to_string()),
+    }
 }
 
 fn cache_hit_rate(tokens: &OpenAiUsageTokenTotals) -> Option<f64> {
@@ -4473,6 +4824,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4487,6 +4840,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4526,6 +4881,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4540,6 +4897,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4777,6 +5136,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4866,6 +5227,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4880,6 +5243,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4937,6 +5302,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4951,6 +5318,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -4999,6 +5368,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -5013,6 +5384,8 @@ mod tests {
                 official_source: Some("OpenAI default".to_string()),
                 is_official_openai: true,
                 exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
             },
         )
         .unwrap();
@@ -5284,6 +5657,88 @@ mod tests {
             .unwrap();
         assert_eq!(row.0, USAGE_SHAPE_LAST_TOKEN_USAGE);
         assert_eq!(row.1, CONFIDENCE_LOW);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn turn_context_effort_and_pricing_metadata_are_explicit_usage_fields() {
+        let codex_home = temp_codex_home("turn-context-effort");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-effort"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"openai/gpt-5.3-codex-2026-07-08","model_reasoning_effort":"xhigh","model_verbosity":"high"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.summary.pricing_source_url, PRICING_SOURCE_URL);
+        let model = &dashboard.summary.models[0];
+        assert_eq!(model.model, "gpt-5.3-codex");
+        assert_eq!(
+            model.requested_model.as_deref(),
+            Some("openai/gpt-5.3-codex-2026-07-08")
+        );
+        assert_eq!(model.pricing_model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(model.model_reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(model.model_verbosity.as_deref(), Some("high"));
+        assert_eq!(
+            model.pricing_tier.as_deref(),
+            Some(PRICING_TIER_STANDARD_SHORT_CONTEXT)
+        );
+        assert_eq!(
+            model.pricing_source_url.as_deref(),
+            Some(PRICING_SOURCE_URL)
+        );
+
+        let log = &dashboard.logs.data[0];
+        assert_eq!(log.model, "gpt-5.3-codex");
+        assert_eq!(
+            log.requested_model.as_deref(),
+            Some("openai/gpt-5.3-codex-2026-07-08")
+        );
+        assert_eq!(log.pricing_model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(log.model_reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(log.model_verbosity.as_deref(), Some("high"));
+        assert_eq!(log.usage_confidence, CONFIDENCE_HIGH);
+        assert_eq!(
+            log.pricing_tier.as_deref(),
+            Some(PRICING_TIER_STANDARD_SHORT_CONTEXT)
+        );
+        assert_eq!(log.pricing_source_url.as_deref(), Some(PRICING_SOURCE_URL));
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn missing_effort_stays_unknown_even_when_usage_confidence_is_high() {
+        let codex_home = temp_codex_home("no-effort-no-inference");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-no-effort"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let model = &dashboard.summary.models[0];
+        let log = &dashboard.logs.data[0];
+
+        assert_eq!(log.usage_confidence, CONFIDENCE_HIGH);
+        assert_eq!(model.model_reasoning_effort, None);
+        assert_eq!(model.model_verbosity, None);
+        assert_eq!(log.model_reasoning_effort, None);
+        assert_eq!(log.model_verbosity, None);
+        assert_eq!(log.pricing_model.as_deref(), Some("gpt-5.3-codex"));
         let _ = fs::remove_dir_all(&codex_home);
     }
 
