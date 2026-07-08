@@ -1951,15 +1951,33 @@ fn collect_ccswitch_proxy_request_evidence(
     snapshot: &Path,
     evidence: &mut Vec<UsageEvidence>,
 ) -> AppResult<()> {
-    let mut stmt = match conn.prepare(
+    let columns = match table_columns(conn, "proxy_request_logs") {
+        Ok(columns) => columns,
+        Err(_) => return Ok(()),
+    };
+    let optional_column = |name: &str| {
+        if columns.contains(name) {
+            name.to_string()
+        } else {
+            format!("NULL AS {name}")
+        }
+    };
+    let sql = format!(
         r#"
         SELECT request_id, provider_id, model, request_model, pricing_model,
                input_tokens, output_tokens, cache_read_tokens, status_code,
-               session_id, data_source, created_at
+               session_id, data_source, created_at,
+               {}, {}, {}, {}, {}
         FROM proxy_request_logs
         WHERE app_type = 'codex'
         "#,
-    ) {
+        optional_column("account_identity_key"),
+        optional_column("account_identity_source"),
+        optional_column("profile_id"),
+        optional_column("profile_name"),
+        optional_column("effective_base_url"),
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(stmt) => stmt,
         Err(_) => return Ok(()),
     };
@@ -1978,6 +1996,11 @@ fn collect_ccswitch_proxy_request_evidence(
                 row.get::<_, Option<String>>(9)?,
                 row.get::<_, Option<String>>(10)?,
                 row.get::<_, i64>(11)?,
+                row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
+                row.get::<_, Option<String>>(14)?,
+                row.get::<_, Option<String>>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         })
         .map_err(|error| {
@@ -2000,6 +2023,11 @@ fn collect_ccswitch_proxy_request_evidence(
             session_id,
             data_source,
             created_at_sec,
+            external_account_identity_key,
+            account_identity_source,
+            profile_id,
+            profile_name,
+            effective_base_url,
         ) = row.map_err(|error| {
             AppError::new(
                 "CCSWITCH_USAGE_ROW_FAILED",
@@ -2014,13 +2042,47 @@ fn collect_ccswitch_proxy_request_evidence(
         };
         let model = model.or(request_model.clone());
         let created_at_ms = u64_from_i64(created_at_sec).saturating_mul(1000);
+        let normalized_account_identity_key =
+            normalize_ccswitch_account_identity_key(external_account_identity_key);
+        let has_strict_account_proof =
+            source_type == SOURCE_CCSWITCH_PROXY && normalized_account_identity_key.is_some();
+        let profile = if has_strict_account_proof {
+            profile_id
+                .clone()
+                .or_else(|| profile_name.clone())
+                .or_else(|| Some(provider_id.clone()))
+        } else {
+            None
+        };
+        let official_source = has_strict_account_proof.then(|| {
+            effective_base_url
+                .clone()
+                .unwrap_or_else(|| "ChatGPT Codex OAuth".to_string())
+        });
         let delta = UsageCounts {
             input_tokens,
             cached_input_tokens: cached_input_tokens.min(input_tokens),
             output_tokens,
             reasoning_output_tokens: 0,
         };
-        let reason = if source_type == SOURCE_CCSWITCH_PROXY {
+        let fingerprint = if let (Some(account_key), Some(model)) =
+            (normalized_account_identity_key.as_deref(), model.as_deref())
+        {
+            Some(stable_hash(&[
+                account_key,
+                model,
+                &delta.input_tokens.to_string(),
+                &delta.cached_input_tokens.to_string(),
+                &delta.output_tokens.to_string(),
+                &(created_at_ms / 60_000).to_string(),
+                SOURCE_CCSWITCH_PROXY,
+            ]))
+        } else {
+            None
+        };
+        let reason = if has_strict_account_proof {
+            "cc-switch proxy row carries stable account identity proof"
+        } else if source_type == SOURCE_CCSWITCH_PROXY {
             "cc-switch proxy row requires account mapping before acceptance"
         } else {
             "cc-switch codex_session row has no account proof"
@@ -2028,7 +2090,7 @@ fn collect_ccswitch_proxy_request_evidence(
         evidence.push(UsageEvidence {
             evidence_id: format!("{source_type}:{request_id}"),
             request_id: Some(request_id.clone()),
-            fingerprint: None,
+            fingerprint,
             session_id,
             source_type: source_type.to_string(),
             source_priority: source_priority(source_type),
@@ -2068,28 +2130,66 @@ fn collect_ccswitch_proxy_request_evidence(
             },
             delta: Some(delta),
             raw_usage_json: None,
-            profile: None,
-            account_identity_key: None,
-            account_label: None,
-            identity_source: None,
-            identity_observed_at_ms: None,
-            account_confidence: CONFIDENCE_UNPROVEN.to_string(),
-            effective_base_url: None,
-            official_source: None,
-            official_confidence: CONFIDENCE_UNPROVEN.to_string(),
+            profile,
+            account_identity_key: normalized_account_identity_key,
+            account_label: profile_name.or(profile_id),
+            identity_source: account_identity_source,
+            identity_observed_at_ms: has_strict_account_proof.then_some(created_at_ms),
+            account_confidence: if has_strict_account_proof {
+                CONFIDENCE_PROVEN.to_string()
+            } else {
+                CONFIDENCE_UNPROVEN.to_string()
+            },
+            effective_base_url: effective_base_url.clone(),
+            official_source,
+            official_confidence: if has_strict_account_proof {
+                CONFIDENCE_PROVEN.to_string()
+            } else {
+                CONFIDENCE_UNPROVEN.to_string()
+            },
             status_code: status_code.and_then(|value| u16::try_from(value).ok()),
-            decision: DECISION_CANDIDATE.to_string(),
+            decision: if has_strict_account_proof {
+                DECISION_ACCEPTED.to_string()
+            } else {
+                DECISION_CANDIDATE.to_string()
+            },
             decision_reason: Some(reason.to_string()),
             superseded_by: None,
-            ledger_layer: LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string(),
+            ledger_layer: if has_strict_account_proof {
+                LEDGER_LAYER_STRICT_PROVEN.to_string()
+            } else {
+                LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string()
+            },
             layer_reason: Some(reason.to_string()),
-            attribution_kind: ATTRIBUTION_KIND_UNATTRIBUTED.to_string(),
-            attribution_window_id: None,
+            attribution_kind: if has_strict_account_proof {
+                ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string()
+            } else {
+                ATTRIBUTION_KIND_UNATTRIBUTED.to_string()
+            },
+            attribution_window_id: has_strict_account_proof.then(|| created_at_ms.to_string()),
             legacy_account_key: None,
             created_at_ms,
         });
     }
     Ok(())
+}
+
+fn normalize_ccswitch_account_identity_key(raw: Option<String>) -> Option<String> {
+    let raw = raw?.trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Some(account_id) = raw.strip_prefix("chatgpt:") {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return None;
+        }
+        return Some(account_identity_key(&AccountIdentity {
+            account_id: Some(account_id.to_string()),
+            email: None,
+        }));
+    }
+    Some(raw)
 }
 
 fn collect_ccswitch_rollup_evidence(
@@ -6274,6 +6374,66 @@ mod tests {
         assert!(evidence
             .iter()
             .all(|entry| entry.account_confidence == CONFIDENCE_UNPROVEN));
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn ccswitch_proxy_rows_with_account_identity_are_strict_proven() {
+        let temp = temp_codex_home("ccswitch-strict-identity");
+        fs::create_dir_all(&temp).unwrap();
+        let db_path = temp.join("cc-switch.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE proxy_request_logs (
+                request_id TEXT PRIMARY KEY,
+                provider_id TEXT NOT NULL,
+                app_type TEXT NOT NULL,
+                model TEXT,
+                request_model TEXT,
+                pricing_model TEXT,
+                input_tokens INTEGER NOT NULL,
+                output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL,
+                status_code INTEGER,
+                session_id TEXT,
+                data_source TEXT,
+                created_at INTEGER NOT NULL,
+                account_identity_key TEXT,
+                account_identity_source TEXT,
+                profile_id TEXT,
+                profile_name TEXT,
+                effective_base_url TEXT
+            );
+            INSERT INTO proxy_request_logs VALUES
+              ('proxy-proof','codex-oauth','codex','gpt-5.3-codex','gpt-5.3-codex','gpt-5.3-codex',
+               10,2,4,200,'s-proof','proxy',32503680000,'chatgpt:acct_ccswitch',
+               'codex_oauth_chatgpt_account','profile-codex','Codex OAuth','https://chatgpt.com/backend-api/codex');
+            "#,
+        )
+        .unwrap();
+
+        let mut evidence = Vec::new();
+        collect_ccswitch_proxy_request_evidence(&conn, &db_path, &mut evidence).unwrap();
+
+        assert_eq!(evidence.len(), 1);
+        let entry = &evidence[0];
+        let expected_key = account_identity_key(&AccountIdentity {
+            account_id: Some("acct_ccswitch".to_string()),
+            email: None,
+        });
+        assert_eq!(entry.source_type, SOURCE_CCSWITCH_PROXY);
+        assert_eq!(entry.decision, DECISION_ACCEPTED);
+        assert_eq!(entry.ledger_layer, LEDGER_LAYER_STRICT_PROVEN);
+        assert_eq!(entry.attribution_kind, ATTRIBUTION_KIND_STRICT_ACCOUNT);
+        assert_eq!(
+            entry.account_identity_key.as_deref(),
+            Some(expected_key.as_str())
+        );
+        assert_eq!(entry.account_confidence, CONFIDENCE_PROVEN);
+        assert_eq!(entry.official_confidence, CONFIDENCE_PROVEN);
+        assert_eq!(entry.profile.as_deref(), Some("profile-codex"));
+        assert!(entry.fingerprint.is_some());
         let _ = fs::remove_dir_all(&temp);
     }
 

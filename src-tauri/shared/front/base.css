@@ -1662,7 +1662,7 @@ html[data-theme] .toast.is-error {
 
 .usage-range-picker {
   position: relative;
-  z-index: 5;
+  z-index: 80;
 }
 
 .usage-range-trigger {
@@ -1752,14 +1752,16 @@ html[data-theme] .toast.is-error {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
-  z-index: 40;
+  z-index: 1000;
   width: min(620px, calc(100vw - 48px));
+  max-width: calc(100vw - 48px);
   padding: 12px;
   border: 1px solid var(--card-border);
   border-radius: 10px;
-  background: var(--popover-background);
+  background: var(--surface);
   box-shadow: 0 22px 60px rgb(15 23 42 / 18%);
   isolation: isolate;
+  overflow: hidden;
 }
 
 .usage-range-presets {
@@ -1793,6 +1795,7 @@ html[data-theme] .toast.is-error {
   grid-template-columns: minmax(220px, 0.82fr) minmax(280px, 1fr);
   gap: 12px;
   padding-top: 12px;
+  align-items: start;
 }
 
 .usage-range-fields {
@@ -1911,10 +1914,11 @@ html[data-theme] .toast.is-error {
 }
 
 .usage-range-calendar {
+  min-width: 0;
   padding: 10px;
   border: 1px solid var(--card-border);
   border-radius: 8px;
-  background: var(--popover-background);
+  background: var(--field-background);
 }
 
 .usage-calendar-header {
@@ -1979,7 +1983,9 @@ html[data-theme] .toast.is-error {
 }
 
 .usage-calendar-day {
+  width: 100%;
   height: 30px;
+  min-width: 0;
   border: 0;
   border-radius: 7px;
   background: transparent;
