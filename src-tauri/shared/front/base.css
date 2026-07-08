@@ -2161,6 +2161,14 @@ html[data-theme] .toast.is-error {
   text-overflow: ellipsis;
 }
 
+.usage-table td.usage-table-cell--model,
+.usage-table td.usage-table-cell--evidence {
+  min-width: 220px;
+  max-width: 360px;
+  vertical-align: top;
+  white-space: normal;
+}
+
 .usage-table-stack {
   display: grid;
   min-width: 0;
@@ -2193,6 +2201,22 @@ html[data-theme] .toast.is-error {
 
 .usage-table-stack--evidence {
   max-width: 180px;
+}
+
+.usage-table-cell--model .usage-table-stack,
+.usage-table-cell--evidence .usage-table-stack {
+  max-width: none;
+  user-select: text;
+}
+
+.usage-table-cell--model .usage-table-stack strong,
+.usage-table-cell--model .usage-table-stack small,
+.usage-table-cell--evidence .usage-table-stack strong,
+.usage-table-cell--evidence .usage-table-stack small {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .usage-table-loading {

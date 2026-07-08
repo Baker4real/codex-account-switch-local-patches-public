@@ -1420,8 +1420,8 @@ function usageAccountFilterKey(account: OpenAiUsageAccountSummary): string {
 function buildUsageModelTable(summary: OpenAiUsageSummary): string {
   const rows = summary.models.map((model) => `
     <tr>
-      <td>${buildUsageModelSummaryCell(model)}</td>
-      <td>${buildUsageModelSummaryEvidenceCell(model)}</td>
+      <td class="usage-table-cell--model">${buildUsageModelSummaryCell(model)}</td>
+      <td class="usage-table-cell--evidence">${buildUsageModelSummaryEvidenceCell(model)}</td>
       <td>${formatInteger(model.request_count)}</td>
       <td>${formatInteger(model.tokens.input_tokens)}</td>
       <td>${formatInteger(model.tokens.cached_input_tokens)}</td>
@@ -1796,8 +1796,8 @@ function buildUsageLogsTable(): string {
       <td>${formatDateTimeMs(log.created_at_ms)}</td>
       <td class="usage-table-cell--account" title="${escapeHtml(log.account_label ?? log.profile)}">${escapeHtml(log.account_label ?? log.profile)}</td>
       <td>${escapeHtml(formatUsageLayerLabel(log.ledger_layer))}</td>
-      <td>${buildUsageModelEvidenceCell(log)}</td>
-      <td>${buildUsageRequestEvidenceCell(log)}</td>
+      <td class="usage-table-cell--model">${buildUsageModelEvidenceCell(log)}</td>
+      <td class="usage-table-cell--evidence">${buildUsageRequestEvidenceCell(log)}</td>
       <td>${formatInteger(log.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(log.cost)}</td>
       <td>${escapeHtml(formatUsagePricingCell(log.priced, log.pricing_tier, log.pricing_source_url))}</td>
