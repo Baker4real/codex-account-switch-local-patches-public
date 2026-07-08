@@ -171,7 +171,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据；`openai_usage_facts` 只投影可计量层；`openai_usage_events` 保持 strict accepted-only 兼容表。
 - 默认摘要、趋势和日志只读 strict proven。历史槽位归因进入 `legacy_profile_attributed` 估算层，同屏展示但不合并成官方账号账单；`candidate_unattributed` 作为独立对账层展示，用于解释 cc-switch session-only 差额。candidate / excluded scope 从 `openai_usage_evidence` 投影证据行用于审计查看，但 candidate、rejected 和 superseded 不进入严格或历史费用总额。
 - 账号聚合按账号实体而不是 profile 槽位：`account_identity_key` 是最高优先级；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才桥接。两个不同 strict identity 即使 label 相同也不能合并。
-- cc-switch 只作为只读 source adapter。导入前把 DB 冻结到 `%CODEX_HOME%\usage_evidence\ccswitch\` 并记录 hash / mtime / SQL；该目录不属于 `account_backup`，必须从 profile 扫描中排除。`data_source='codex_session'` / `provider_id='_codex_session'` 行只能证明 token/model/session/time；除非请求发生时同时记录稳定账号身份和 effective Base URL，否则不能提升为 strict proven。
+- cc-switch 只作为只读 source adapter。导入前把 DB 冻结到 `%CODEX_HOME%\usage_evidence\ccswitch\` 并记录 hash / mtime / SQL；该目录不属于 `account_backup`，必须从 profile 扫描中排除。私有 ccswitch fork 在 `proxy_request_logs` 写入 `account_identity_key`、`account_identity_source`、`profile_id`、`profile_name` 和 `effective_base_url`；Codex Switch 只有在这些字段能证明官方 OpenAI 路径和账号身份时才把 cc-switch proxy 行提升为 strict proven。`data_source='codex_session'` / `provider_id='_codex_session'` 仍只能证明 token/model/session/time，不能提升为账号证明。
 
 ## 授权缓存状态
 

@@ -323,8 +323,8 @@ cc-switch 只能作为 source adapter，不是主账本。
 导入规则：
 
 - 导入前先冻结 DB 副本到 `%CODEX_HOME%\usage_evidence\` 下的 D 盘 evidence 目录，记录 hash、mtime、SQL；不能写入 `account_backup`，避免被 profile 扫描识别成账号。
-- `data_source='proxy'` 且能映射 provider/account 的 Codex 行，可以进入高置信 candidate 或 proven 检查。
-- `data_source='codex_session'`、`provider_id='_codex_session'` 只能提供 token/model/session/time 证据；除非 cc-switch 在请求发生时额外记录稳定 `account_identity_key`、profile 归属和 effective Base URL，否则不能提升为账号证明。
+- `data_source='proxy'` 且携带稳定 `account_identity_key`、profile 归属和 effective Base URL 的 Codex 行，可以进入 proven 检查；当前私有 ccswitch fork 已把这些字段写入 `proxy_request_logs`。
+- `data_source='codex_session'`、`provider_id='_codex_session'` 只能提供 token/model/session/time 证据，不能提升为账号证明。
 - `usage_daily_rollups` 只能做 day/model/provider 聚合候选，不做请求级账号归因。
 
 ## UI 改进
