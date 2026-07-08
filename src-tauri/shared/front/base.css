@@ -60,6 +60,7 @@
     radial-gradient(circle at 100% 100%, rgba(233, 227, 219, 0.48), transparent 24rem),
     linear-gradient(180deg, rgba(250, 248, 244, 0.98), rgba(244, 240, 235, 0.98));
   --panel-background: linear-gradient(180deg, rgba(251, 249, 245, 0.96), rgba(244, 240, 235, 0.96));
+  --popover-background: #fbf9f5;
   --profile-background:
     radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.52), transparent 16rem),
     linear-gradient(180deg, rgba(250, 248, 244, 0.98), rgba(243, 239, 234, 0.98));
@@ -153,6 +154,7 @@
     radial-gradient(circle at 100% 100%, rgba(221, 233, 228, 0.5), transparent 24rem),
     linear-gradient(180deg, rgba(253, 254, 250, 0.98), rgba(242, 246, 241, 0.98));
   --panel-background: linear-gradient(180deg, rgba(255, 255, 252, 0.96), rgba(243, 247, 242, 0.96));
+  --popover-background: #fffffc;
   --profile-background:
     radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.62), transparent 16rem),
     linear-gradient(180deg, rgba(253, 254, 250, 0.98), rgba(242, 247, 242, 0.98));
@@ -220,6 +222,7 @@
     radial-gradient(circle at 100% 100%, rgba(214, 229, 214, 0.5), transparent 24rem),
     linear-gradient(180deg, rgba(251, 253, 248, 0.98), rgba(239, 246, 237, 0.98));
   --panel-background: linear-gradient(180deg, rgba(253, 255, 250, 0.96), rgba(240, 247, 237, 0.96));
+  --popover-background: #fdfffa;
   --profile-background:
     radial-gradient(circle at 100% 0%, rgba(255, 255, 250, 0.58), transparent 16rem),
     linear-gradient(180deg, rgba(252, 255, 249, 0.98), rgba(239, 247, 237, 0.98));
@@ -287,6 +290,7 @@
     radial-gradient(circle at 100% 100%, rgba(211, 226, 232, 0.5), transparent 24rem),
     linear-gradient(180deg, rgba(251, 254, 254, 0.98), rgba(240, 247, 249, 0.98));
   --panel-background: linear-gradient(180deg, rgba(253, 255, 255, 0.96), rgba(239, 247, 250, 0.96));
+  --popover-background: #fdffff;
   --profile-background:
     radial-gradient(circle at 100% 0%, rgba(255, 255, 255, 0.58), transparent 16rem),
     linear-gradient(180deg, rgba(252, 255, 255, 0.98), rgba(238, 247, 250, 0.98));
@@ -355,6 +359,7 @@
     radial-gradient(circle at 100% 100%, rgba(102, 79, 72, 0.22), transparent 24rem),
     linear-gradient(180deg, rgba(29, 35, 30, 0.98), rgba(18, 22, 19, 0.98));
   --panel-background: linear-gradient(180deg, rgba(38, 45, 39, 0.96), rgba(28, 34, 29, 0.96));
+  --popover-background: #262d27;
   --profile-background:
     radial-gradient(circle at 100% 0%, rgba(84, 110, 91, 0.24), transparent 16rem),
     linear-gradient(180deg, rgba(40, 48, 41, 0.98), rgba(29, 35, 30, 0.98));
@@ -1747,12 +1752,14 @@ html[data-theme] .toast.is-error {
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
+  z-index: 40;
   width: min(620px, calc(100vw - 48px));
   padding: 12px;
   border: 1px solid var(--card-border);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--panel-background) 96%, white 4%);
+  background: var(--popover-background);
   box-shadow: 0 22px 60px rgb(15 23 42 / 18%);
+  isolation: isolate;
 }
 
 .usage-range-presets {
@@ -1860,11 +1867,11 @@ html[data-theme] .toast.is-error {
   font-variant-numeric: tabular-nums;
 }
 
-.usage-range-field input[type="date"] {
+.usage-range-field input[data-usage-range-date] {
   flex: 1;
 }
 
-.usage-range-field input[type="time"] {
+.usage-range-field input[data-usage-range-time] {
   width: 82px;
   flex: none;
 }
@@ -1907,7 +1914,7 @@ html[data-theme] .toast.is-error {
   padding: 10px;
   border: 1px solid var(--card-border);
   border-radius: 8px;
-  background: var(--surface-pressed);
+  background: var(--popover-background);
 }
 
 .usage-calendar-header {
@@ -2057,7 +2064,9 @@ html[data-theme] .toast.is-error {
   font-size: 28px;
   font-weight: 800;
   letter-spacing: 0;
+  line-height: 1.05;
   font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
 }
 
 .usage-token-grid {
@@ -3849,7 +3858,7 @@ button.pager-pill:disabled {
     align-items: stretch;
   }
 
-  .usage-range-field input[type="time"] {
+  .usage-range-field input[data-usage-range-time] {
     width: 100%;
   }
 

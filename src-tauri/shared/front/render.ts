@@ -1098,8 +1098,28 @@ function buildUsageRangeField(field: "start" | "end", valueMs: number, liveEnd: 
     <div class="usage-range-field${active ? " is-active" : ""}${liveEnd ? " is-readonly" : ""}" data-usage-range-field="${field}">
       <span>${label}</span>
       <div>
-        <input type="date" data-usage-range-date="${field}" value="${formatDateInput(valueMs)}" ${liveEnd ? "readonly" : ""} />
-        <input type="time" step="60" data-usage-range-time="${field}" value="${formatTimeInput(valueMs)}" ${liveEnd ? "readonly" : ""} />
+        <input
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          spellcheck="false"
+          data-usage-range-date="${field}"
+          value="${formatDateInput(valueMs)}"
+          aria-label="${label} date"
+          placeholder="YYYY-MM-DD"
+          ${liveEnd ? "readonly" : ""}
+        />
+        <input
+          type="text"
+          inputmode="numeric"
+          autocomplete="off"
+          spellcheck="false"
+          data-usage-range-time="${field}"
+          value="${formatTimeInput(valueMs)}"
+          aria-label="${label} time"
+          placeholder="HH:MM"
+          ${liveEnd ? "readonly" : ""}
+        />
       </div>
     </div>
   `;
@@ -1258,10 +1278,12 @@ function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value:
 function buildUsageLayerSummaryCards(summary: OpenAiUsageSummary): string {
   const strict = findUsageLayer(summary, "strict_proven");
   const legacy = findUsageLayer(summary, "legacy_profile_attributed");
+  const candidate = findUsageLayer(summary, "candidate_unattributed");
   return `
     <div class="usage-hero-grid">
       ${buildUsageLayerCard("usageStrictProven", strict)}
       ${buildUsageLayerCard("usageLegacyProfileAttributed", legacy)}
+      ${buildUsageLayerCard("usageCandidateUnattributed", candidate)}
     </div>
   `;
 }

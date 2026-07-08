@@ -3120,8 +3120,10 @@ fn attach_layer_summaries(
     mut summary: OpenAiUsageSummary,
 ) -> AppResult<OpenAiUsageSummary> {
     let layer_query = query_with_scope(query, SCOPE_COMBINED_ATTRIBUTED);
-    let facts = load_filtered_usage_facts(conn, &layer_query)?;
-    summary.layer_summaries = build_layer_summaries(&facts, &layer_query);
+    let mut facts = load_filtered_usage_facts(conn, &layer_query)?;
+    let candidate_query = query_with_scope(query, SCOPE_CANDIDATE);
+    facts.extend(load_filtered_usage_facts(conn, &candidate_query)?);
+    summary.layer_summaries = build_layer_summaries(&facts, query);
     Ok(summary)
 }
 
@@ -3135,6 +3137,9 @@ fn build_layer_summaries(
         .or_default();
     layers
         .entry(LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED.to_string())
+        .or_default();
+    layers
+        .entry(LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string())
         .or_default();
     for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
         add_to_aggregate(
@@ -5786,6 +5791,15 @@ mod tests {
         let strict_dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
         assert_eq!(strict_dashboard.summary.total_requests, 0);
         assert_eq!(strict_dashboard.logs.total, 0);
+        assert_eq!(
+            strict_dashboard
+                .summary
+                .layer_summaries
+                .iter()
+                .find(|layer| layer.ledger_layer == LEDGER_LAYER_CANDIDATE_UNATTRIBUTED)
+                .map(|layer| layer.request_count),
+            Some(1)
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 
