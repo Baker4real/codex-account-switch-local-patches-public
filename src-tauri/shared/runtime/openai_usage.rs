@@ -32,7 +32,7 @@ const PRICING_CHECKED_AT: &str = "2026-07-08";
 const PRICING_TIER_STANDARD_SHORT_CONTEXT: &str = "standard_short_context";
 const EVIDENCE_PARSER_VERSION: &str = "openai-usage-evidence-v2-parser-2";
 const EVIDENCE_CLASSIFIER_VERSION: &str = "openai-usage-evidence-v2-classifier-3";
-const EVIDENCE_DEDUPE_VERSION: &str = "openai-usage-evidence-v2-dedupe-2";
+const EVIDENCE_DEDUPE_VERSION: &str = "openai-usage-evidence-v2-dedupe-3";
 const LEDGER_SCHEMA_VERSION: &str = "openai-usage-ledger-schema-4";
 const LAYER_CLASSIFIER_VERSION: &str = "openai-usage-layer-classifier-1";
 const ATTRIBUTION_BACKFILL_VERSION: &str = "openai-usage-attribution-backfill-1";
@@ -860,12 +860,36 @@ fn load_usage_events(
 }
 
 fn finalize_usage_load(
-    events: Vec<UsageEvent>,
-    facts: Vec<UsageFact>,
-    evidence: Vec<UsageEvidence>,
+    _events: Vec<UsageEvent>,
+    _facts: Vec<UsageFact>,
+    mut evidence: Vec<UsageEvidence>,
     mut decisions: EvidenceDecisionCounts,
     summary: &mut OpenAiUsageSummary,
 ) -> UsageLoadResult {
+    resolve_accepted_evidence_by_priority(&mut evidence);
+
+    let mut events = Vec::new();
+    let mut facts = Vec::new();
+    for entry in evidence
+        .iter()
+        .filter(|entry| entry.decision == DECISION_ACCEPTED)
+    {
+        let Some(model) = entry.model.as_deref() else {
+            continue;
+        };
+        let Some(delta) = entry.delta else {
+            continue;
+        };
+        let cost = calculate_cost(model, delta);
+        let decision = EvidenceClassifier::accept_session_evidence(entry.clone(), cost);
+        if let Some(event) = decision.accepted {
+            events.push(event);
+        }
+        if let Some(fact) = decision.fact {
+            facts.push(fact);
+        }
+    }
+
     decisions.accepted = evidence
         .iter()
         .filter(|entry| entry.decision == DECISION_ACCEPTED)
@@ -912,6 +936,90 @@ fn finalize_usage_load(
         evidence,
         decisions,
     }
+}
+
+fn resolve_accepted_evidence_by_priority(evidence: &mut [UsageEvidence]) {
+    let mut request_winners: HashMap<String, usize> = HashMap::new();
+    let mut fingerprint_winners: HashMap<String, usize> = HashMap::new();
+
+    for index in 0..evidence.len() {
+        if evidence[index].decision != DECISION_ACCEPTED {
+            continue;
+        }
+
+        let duplicate = evidence[index]
+            .request_id
+            .as_ref()
+            .and_then(|request_id| request_winners.get(request_id).copied())
+            .or_else(|| {
+                evidence[index]
+                    .fingerprint
+                    .as_ref()
+                    .and_then(|fingerprint| fingerprint_winners.get(fingerprint).copied())
+            });
+
+        let Some(existing_index) = duplicate else {
+            remember_evidence_winner(
+                evidence,
+                index,
+                &mut request_winners,
+                &mut fingerprint_winners,
+            );
+            continue;
+        };
+
+        if evidence[index].source_priority > evidence[existing_index].source_priority {
+            let winner_id = evidence[index].evidence_id.clone();
+            if let Some(request_id) = evidence[existing_index].request_id.as_ref() {
+                request_winners.insert(request_id.clone(), index);
+            }
+            if let Some(fingerprint) = evidence[existing_index].fingerprint.as_ref() {
+                fingerprint_winners.insert(fingerprint.clone(), index);
+            }
+            mark_evidence_superseded(
+                &mut evidence[existing_index],
+                &winner_id,
+                "superseded by higher-priority evidence source",
+            );
+            remember_evidence_winner(
+                evidence,
+                index,
+                &mut request_winners,
+                &mut fingerprint_winners,
+            );
+        } else {
+            let winner_id = evidence[existing_index].evidence_id.clone();
+            let reason =
+                if evidence[index].source_priority == evidence[existing_index].source_priority {
+                    "duplicate evidence from same-priority source"
+                } else {
+                    "duplicate evidence from lower-priority source"
+                };
+            mark_evidence_superseded(&mut evidence[index], &winner_id, reason);
+        }
+    }
+}
+
+fn remember_evidence_winner(
+    evidence: &[UsageEvidence],
+    index: usize,
+    request_winners: &mut HashMap<String, usize>,
+    fingerprint_winners: &mut HashMap<String, usize>,
+) {
+    if let Some(request_id) = evidence[index].request_id.as_ref() {
+        request_winners.insert(request_id.clone(), index);
+    }
+    if let Some(fingerprint) = evidence[index].fingerprint.as_ref() {
+        fingerprint_winners.insert(fingerprint.clone(), index);
+    }
+}
+
+fn mark_evidence_superseded(entry: &mut UsageEvidence, winner_id: &str, reason: &str) {
+    entry.decision = DECISION_SUPERSEDED.to_string();
+    entry.decision_reason = Some(reason.to_string());
+    entry.superseded_by = Some(winner_id.to_string());
+    entry.ledger_layer = LEDGER_LAYER_SUPERSEDED.to_string();
+    entry.layer_reason = Some(reason.to_string());
 }
 
 fn collect_future_response_evidence(codex_home: &Path) -> AppResult<Vec<UsageEvidence>> {
@@ -2554,7 +2662,7 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
               AND (?2 IS NULL OR created_at_ms <= ?2)
               AND (?3 IS NULL OR profile = ?3)
               AND (?4 IS NULL OR account_label = ?4)
-              AND (?5 IS NULL OR model = ?5)
+              AND (?5 IS NULL OR COALESCE(model, request_model) = ?5)
               AND (?6 IS NULL OR status_code = ?6)
             ORDER BY created_at_ms ASC, request_id ASC
             "#,
@@ -2650,7 +2758,7 @@ fn load_ledger_events(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<
 fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Vec<UsageFact>> {
     let scope = normalized_usage_scope(query);
     if matches!(scope, SCOPE_CANDIDATE | SCOPE_EXCLUDED) {
-        return Ok(Vec::new());
+        return load_evidence_usage_facts(conn, query, scope);
     }
     let start_ms = query.start_date.and_then(seconds_to_ms).map(i64_from_u64);
     let end_ms = query.end_date.and_then(end_seconds_to_ms).map(i64_from_u64);
@@ -2689,7 +2797,7 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
               AND (?2 IS NULL OR created_at_ms <= ?2)
               AND (?3 IS NULL OR profile = ?3)
               AND (?4 IS NULL OR account_label = ?4)
-              AND (?5 IS NULL OR model = ?5)
+              AND (?5 IS NULL OR COALESCE(model, request_model) = ?5)
               AND (?6 IS NULL OR status_code = ?6)
               AND (
                 (?7 = 'strict' AND ledger_layer = 'strict_proven')
@@ -2792,6 +2900,187 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
             AppError::new(
                 "OPENAI_USAGE_FACTS_ROW_FAILED",
                 format!("Failed to read usage facts row: {error}"),
+            )
+        })?);
+    }
+    Ok(facts)
+}
+
+fn load_evidence_usage_facts(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    scope: &str,
+) -> AppResult<Vec<UsageFact>> {
+    let start_ms = query.start_date.and_then(seconds_to_ms).map(i64_from_u64);
+    let end_ms = query.end_date.and_then(end_seconds_to_ms).map(i64_from_u64);
+    let profile = query
+        .profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let account_label = query
+        .account_label
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let model = query
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_model);
+    let status_code = query.status_code.map(i64::from);
+
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT evidence_id, request_id, fingerprint, session_id, source_type,
+                   source_priority, source_hash, event_completed_at_ms, observed_at_ms,
+                   model, request_model, pricing_model, model_reasoning_effort,
+                   model_verbosity, pricing_tier, pricing_source_url,
+                   usage_confidence, input_tokens, cached_input_tokens, output_tokens,
+                   reasoning_output_tokens, profile, account_identity_key, account_label,
+                   official_source, status_code, decision, decision_reason, ledger_layer,
+                   layer_reason, attribution_kind, attribution_window_id,
+                   legacy_account_key, created_at_ms
+            FROM openai_usage_evidence
+            WHERE (?1 IS NULL OR COALESCE(event_completed_at_ms, observed_at_ms, created_at_ms) >= ?1)
+              AND (?2 IS NULL OR COALESCE(event_completed_at_ms, observed_at_ms, created_at_ms) <= ?2)
+              AND (?3 IS NULL OR profile = ?3)
+              AND (?4 IS NULL OR account_label = ?4)
+              AND (?5 IS NULL OR COALESCE(model, request_model) = ?5)
+              AND (?6 IS NULL OR status_code = ?6)
+              AND (
+                (?7 = 'candidate' AND decision = 'candidate')
+                OR (?7 = 'excluded' AND decision IN ('rejected', 'superseded'))
+              )
+            ORDER BY COALESCE(event_completed_at_ms, observed_at_ms, created_at_ms) ASC,
+                     COALESCE(request_id, evidence_id) ASC
+            "#,
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVIDENCE_QUERY_PREPARE_FAILED",
+                format!("Failed to prepare usage evidence query: {error}"),
+            )
+        })?;
+
+    let rows = stmt
+        .query_map(
+            params![
+                start_ms,
+                end_ms,
+                profile,
+                account_label,
+                model,
+                status_code,
+                scope
+            ],
+            |row| {
+                let evidence_id: String = row.get(0)?;
+                let request_id = row
+                    .get::<_, Option<String>>(1)?
+                    .unwrap_or_else(|| evidence_id.clone());
+                let source_type: String = row.get(4)?;
+                let source_hash: String = row.get(6)?;
+                let model = row
+                    .get::<_, Option<String>>(9)?
+                    .or(row.get::<_, Option<String>>(10)?)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let delta = UsageCounts {
+                    input_tokens: row
+                        .get::<_, Option<i64>>(17)?
+                        .map(u64_from_i64)
+                        .unwrap_or(0),
+                    cached_input_tokens: row
+                        .get::<_, Option<i64>>(18)?
+                        .map(u64_from_i64)
+                        .unwrap_or(0),
+                    output_tokens: row
+                        .get::<_, Option<i64>>(19)?
+                        .map(u64_from_i64)
+                        .unwrap_or(0),
+                    reasoning_output_tokens: row
+                        .get::<_, Option<i64>>(20)?
+                        .map(u64_from_i64)
+                        .unwrap_or(0),
+                };
+                let cost = if model == "unknown" || delta == UsageCounts::default() {
+                    CalculatedCost {
+                        breakdown: OpenAiUsageCostBreakdown::default(),
+                        priced: false,
+                        pricing_note: Some("evidence row has no priced usage delta".to_string()),
+                    }
+                } else {
+                    calculate_cost(&model, delta)
+                };
+                let created_at_ms = row
+                    .get::<_, Option<i64>>(7)?
+                    .or(row.get::<_, Option<i64>>(8)?)
+                    .unwrap_or_else(|| row.get::<_, i64>(33).unwrap_or_default());
+                let decision: String = row.get(26)?;
+                Ok(UsageFact {
+                    evidence_id,
+                    request_id,
+                    fingerprint: row.get::<_, Option<String>>(2)?.unwrap_or(source_hash),
+                    session_id: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                    profile: row
+                        .get::<_, Option<String>>(21)?
+                        .unwrap_or_else(|| "evidence".to_string()),
+                    account_label: row.get(23)?,
+                    account_identity_key: row.get(22)?,
+                    legacy_account_key: row.get(32)?,
+                    official_source: row
+                        .get::<_, Option<String>>(24)?
+                        .unwrap_or_else(|| source_type.clone()),
+                    ledger_layer: row.get(28)?,
+                    layer_reason: row.get(29)?,
+                    attribution_kind: row
+                        .get::<_, Option<String>>(30)?
+                        .unwrap_or_else(|| decision.clone()),
+                    attribution_window_id: row.get(31)?,
+                    model: model.clone(),
+                    requested_model: row.get(10)?,
+                    model_reasoning_effort: row.get(12)?,
+                    model_verbosity: row.get(13)?,
+                    delta,
+                    cost,
+                    status_code: row
+                        .get::<_, Option<i64>>(25)?
+                        .and_then(|value| u16::try_from(value).ok())
+                        .unwrap_or(0),
+                    created_at_ms: u64_from_i64(created_at_ms),
+                    data_source: source_type.clone(),
+                    source_type,
+                    source_priority: row.get::<_, Option<i64>>(5)?.unwrap_or_default(),
+                    usage_confidence: row
+                        .get::<_, Option<String>>(16)?
+                        .unwrap_or_else(|| CONFIDENCE_UNPROVEN.to_string()),
+                    pricing_model: row
+                        .get::<_, Option<String>>(11)?
+                        .unwrap_or_else(|| model.clone()),
+                    pricing_tier: row
+                        .get::<_, Option<String>>(14)?
+                        .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+                    pricing_source_url: row
+                        .get::<_, Option<String>>(15)?
+                        .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
+                })
+            },
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVIDENCE_QUERY_FAILED",
+                format!("Failed to query usage evidence: {error}"),
+            )
+        })?;
+
+    let mut facts = Vec::new();
+    for row in rows {
+        facts.push(row.map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_EVIDENCE_ROW_FAILED",
+                format!("Failed to read usage evidence row: {error}"),
             )
         })?);
     }
@@ -5457,6 +5746,46 @@ mod tests {
         assert_eq!(candidate.0, DECISION_CANDIDATE);
         assert_eq!(candidate.1, LEDGER_LAYER_CANDIDATE_UNATTRIBUTED);
         assert_eq!(candidate.2, "no attribution record covered this event");
+        let candidate_dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_CANDIDATE.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+        assert_eq!(candidate_dashboard.logs.total, 1);
+        assert_eq!(
+            candidate_dashboard.logs.data[0].ledger_layer,
+            LEDGER_LAYER_CANDIDATE_UNATTRIBUTED
+        );
+        assert_eq!(candidate_dashboard.summary.total_requests, 1);
+        conn.execute(
+            "UPDATE openai_usage_evidence SET model = NULL WHERE decision = 'candidate'",
+            [],
+        )
+        .unwrap();
+        let candidate_request_model_dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_CANDIDATE.to_string()),
+                model: Some("gpt-5.3-codex".to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+        assert_eq!(candidate_request_model_dashboard.logs.total, 1);
+        assert_eq!(
+            candidate_request_model_dashboard.logs.data[0].model,
+            "gpt-5.3-codex"
+        );
+        let strict_dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(strict_dashboard.summary.total_requests, 0);
+        assert_eq!(strict_dashboard.logs.total, 0);
         let _ = fs::remove_dir_all(&codex_home);
     }
 
@@ -5489,6 +5818,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(superseded_rows, 2);
+        let excluded_dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_EXCLUDED.to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+        assert_eq!(excluded_dashboard.logs.total, 2);
+        assert!(excluded_dashboard
+            .logs
+            .data
+            .iter()
+            .all(|entry| entry.ledger_layer == LEDGER_LAYER_SUPERSEDED));
+        assert_eq!(excluded_dashboard.summary.total_requests, 2);
+        let strict_dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(strict_dashboard.summary.total_requests, 2);
+        assert_eq!(strict_dashboard.logs.total, 2);
         let total_evidence = conn
             .query_row("SELECT COUNT(*) FROM openai_usage_evidence", [], |row| {
                 row.get::<_, i64>(0)
@@ -5496,6 +5845,111 @@ mod tests {
             .unwrap();
         assert_eq!(total_evidence, 4);
         let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    fn accepted_test_evidence(
+        evidence_id: &str,
+        source_type: &str,
+        source_priority: i64,
+    ) -> UsageEvidence {
+        UsageEvidence {
+            evidence_id: evidence_id.to_string(),
+            request_id: Some("request-1".to_string()),
+            fingerprint: Some("fingerprint-1".to_string()),
+            session_id: Some("session-1".to_string()),
+            source_type: source_type.to_string(),
+            source_priority,
+            source_locator: format!("test:{evidence_id}"),
+            source_hash: evidence_id.to_string(),
+            parser_version: EVIDENCE_PARSER_VERSION.to_string(),
+            event_started_at_ms: Some(ts("2999-01-01T00:00:01.000Z")),
+            event_completed_at_ms: Some(ts("2999-01-01T00:00:02.000Z")),
+            observed_at_ms: Some(ts("2999-01-01T00:00:02.000Z")),
+            turn_index: Some(1),
+            response_id: Some("response-1".to_string()),
+            previous_response_id: None,
+            model: Some("gpt-5.3-codex".to_string()),
+            request_model: Some("gpt-5.3-codex".to_string()),
+            pricing_model: Some("gpt-5.3-codex".to_string()),
+            model_reasoning_effort: None,
+            model_verbosity: None,
+            pricing_tier: Some(PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+            pricing_source_url: Some(PRICING_SOURCE_URL.to_string()),
+            usage_shape: USAGE_SHAPE_CUMULATIVE_TOTAL_DELTA.to_string(),
+            usage_confidence: CONFIDENCE_HIGH.to_string(),
+            delta: Some(UsageCounts {
+                input_tokens: 100,
+                cached_input_tokens: 20,
+                output_tokens: 10,
+                reasoning_output_tokens: 0,
+            }),
+            raw_usage_json: None,
+            profile: Some("a".to_string()),
+            account_identity_key: Some("acct_key_a".to_string()),
+            account_label: Some("acct_A".to_string()),
+            identity_source: Some("test".to_string()),
+            identity_observed_at_ms: Some(ts("2999-01-01T00:00:00.000Z")),
+            account_confidence: CONFIDENCE_PROVEN.to_string(),
+            effective_base_url: None,
+            official_source: Some("OpenAI default".to_string()),
+            official_confidence: CONFIDENCE_PROVEN.to_string(),
+            status_code: Some(200),
+            decision: DECISION_ACCEPTED.to_string(),
+            decision_reason: Some("test accepted evidence".to_string()),
+            superseded_by: None,
+            ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
+            layer_reason: Some("test strict proof".to_string()),
+            attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
+            attribution_window_id: Some("window-1".to_string()),
+            legacy_account_key: None,
+            created_at_ms: ts("2999-01-01T00:00:02.000Z"),
+        }
+    }
+
+    #[test]
+    fn higher_priority_evidence_supersedes_session_fallback_before_facts_are_finalized() {
+        let session = accepted_test_evidence(
+            "session-evidence",
+            SOURCE_CODEX_SESSION_JSONL,
+            source_priority(SOURCE_CODEX_SESSION_JSONL),
+        );
+        let response = accepted_test_evidence(
+            "response-evidence",
+            SOURCE_OPENAI_RESPONSE_USAGE,
+            source_priority(SOURCE_OPENAI_RESPONSE_USAGE),
+        );
+        let mut summary = new_usage_summary(&OpenAiUsageQuery::default());
+
+        let result = finalize_usage_load(
+            Vec::new(),
+            Vec::new(),
+            vec![session, response],
+            EvidenceDecisionCounts::default(),
+            &mut summary,
+        );
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.events[0].evidence_id, "response-evidence");
+        assert_eq!(result.facts.len(), 1);
+        assert_eq!(result.facts[0].evidence_id, "response-evidence");
+        assert_eq!(result.decisions.accepted, 1);
+        assert_eq!(result.decisions.superseded, 1);
+        assert_eq!(summary.exclusions.superseded_events, 1);
+        assert_eq!(summary.exclusions.duplicate_events, 0);
+        let session_evidence = result
+            .evidence
+            .iter()
+            .find(|entry| entry.evidence_id == "session-evidence")
+            .unwrap();
+        assert_eq!(session_evidence.decision, DECISION_SUPERSEDED);
+        assert_eq!(
+            session_evidence.superseded_by.as_deref(),
+            Some("response-evidence")
+        );
+        assert_eq!(
+            session_evidence.layer_reason.as_deref(),
+            Some("superseded by higher-priority evidence source")
+        );
     }
 
     #[test]
