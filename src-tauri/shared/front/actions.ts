@@ -78,6 +78,7 @@ function rerenderDashboard(): void {
     renderShellOverview(null);
     renderOpenAiUsage(state.usageSummary);
     syncUsageAutoRefresh();
+    syncUsageRangeLiveEndTimer();
     return;
   }
 
@@ -97,6 +98,7 @@ function rerenderDashboard(): void {
   renderShellOverview(dashboard);
   renderOpenAiUsage(state.usageSummary);
   syncUsageAutoRefresh();
+  syncUsageRangeLiveEndTimer();
 }
 
 let renameSourceProfile: string | null = null;
@@ -110,17 +112,10 @@ const LOGIN_CANCEL_RETRY_LIMIT = 6;
 let lastUnmanagedAccountPrompt: string | null = null;
 let usageRefreshTimer: number | null = null;
 let usageRefreshTimerMs = 0;
+let usageRangeLiveEndTimer: number | null = null;
 
 function toUnixSeconds(valueMs: number): number {
   return Math.floor(valueMs / 1000);
-}
-
-function parseDateTimeLocal(value: string): number | null {
-  if (!value) {
-    return null;
-  }
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? null : parsed;
 }
 
 function startOfTodayMs(nowMs: number): number {
@@ -128,16 +123,20 @@ function startOfTodayMs(nowMs: number): number {
   return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 }
 
+function presetLookbackStartMs(dayCount: number, nowMs: number): number {
+  return startOfTodayMs(nowMs - (dayCount - 1) * 24 * 60 * 60 * 1000);
+}
+
 function presetUsageRange(nowMs: number): { startMs: number | null; endMs: number | null } {
   switch (state.usageRangePreset) {
     case "today":
       return { startMs: startOfTodayMs(nowMs), endMs: nowMs };
     case "7d":
-      return { startMs: nowMs - 7 * 24 * 60 * 60 * 1000, endMs: nowMs };
+      return { startMs: presetLookbackStartMs(7, nowMs), endMs: nowMs };
     case "14d":
-      return { startMs: nowMs - 14 * 24 * 60 * 60 * 1000, endMs: nowMs };
+      return { startMs: presetLookbackStartMs(14, nowMs), endMs: nowMs };
     case "30d":
-      return { startMs: nowMs - 30 * 24 * 60 * 60 * 1000, endMs: nowMs };
+      return { startMs: presetLookbackStartMs(30, nowMs), endMs: nowMs };
     case "1d":
     default:
       return { startMs: nowMs - 24 * 60 * 60 * 1000, endMs: nowMs };
@@ -197,6 +196,343 @@ function resolveUsageQuery(): OpenAiUsageQuery {
     status_code: state.usageStatusCodeFilter,
     scope: state.usageScope,
   };
+}
+
+function startOfLocalMonthMs(valueMs: number): number {
+  const date = new Date(valueMs);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
+function setDateKeepTime(valueMs: number, dayMs: number): number {
+  const base = new Date(valueMs);
+  const day = new Date(dayMs);
+  return new Date(
+    day.getFullYear(),
+    day.getMonth(),
+    day.getDate(),
+    base.getHours(),
+    base.getMinutes(),
+  ).getTime();
+}
+
+function parseDateKeepTime(valueMs: number, value: string): number | null {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  const base = new Date(valueMs);
+  return new Date(year, month - 1, day, base.getHours(), base.getMinutes()).getTime();
+}
+
+function parseTimeKeepDate(valueMs: number, value: string): number | null {
+  const [hour, minute] = value.split(":").map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return null;
+  }
+  const base = new Date(valueMs);
+  return new Date(
+    base.getFullYear(),
+    base.getMonth(),
+    base.getDate(),
+    hour,
+    minute,
+  ).getTime();
+}
+
+function resetUsageRangeDraftFromCurrent(nowMs = Date.now()): void {
+  const range = resolveUsageRange(nowMs);
+  const startMs = range.startMs ?? nowMs - 24 * 60 * 60 * 1000;
+  const endMs = range.endMs ?? nowMs;
+  state.usageRangeDraftStartDate = startMs;
+  state.usageRangeDraftEndDate = endMs;
+  state.usageRangeDraftLiveEnd = state.usageRangePreset === "custom"
+    ? state.usageLiveEnd
+    : false;
+  state.usageRangeDraftActiveField = "start";
+  state.usageRangeDisplayMonth = startOfLocalMonthMs(startMs);
+  state.usageRangeError = null;
+}
+
+function openUsageRangePicker(): void {
+  if (!state.usageRangePickerOpen) {
+    resetUsageRangeDraftFromCurrent();
+  }
+  state.usageRangePickerOpen = true;
+  rerenderDashboard();
+}
+
+function closeUsageRangePicker(): void {
+  if (!state.usageRangePickerOpen) {
+    return;
+  }
+  state.usageRangePickerOpen = false;
+  state.usageRangeError = null;
+  syncUsageRangeLiveEndTimer();
+  rerenderDashboard();
+}
+
+function applyUsagePreset(preset: typeof state.usageRangePreset): void {
+  state.usageRangePreset = preset;
+  state.usageRangePickerOpen = false;
+  state.usageRangeError = null;
+  state.usageLogsPage = 1;
+  syncUsageRangeLiveEndTimer();
+  void refreshUsageData();
+}
+
+function applyUsageCustomRange(): void {
+  const startMs = state.usageRangeDraftStartDate;
+  const endMs = state.usageRangeDraftLiveEnd
+    ? Date.now()
+    : state.usageRangeDraftEndDate;
+  if (startMs == null || endMs == null) {
+    state.usageRangeError = t(state.locale, "usageInvalidTimeRange");
+    rerenderDashboard();
+    return;
+  }
+  if (startMs > endMs) {
+    state.usageRangeError = t(state.locale, "usageInvalidTimeRangeOrder");
+    rerenderDashboard();
+    return;
+  }
+  state.usageRangePreset = "custom";
+  state.usageCustomStartDate = startMs;
+  state.usageCustomEndDate = endMs;
+  state.usageLiveEnd = state.usageRangeDraftLiveEnd;
+  state.usageRangePickerOpen = false;
+  state.usageRangeError = null;
+  state.usageLogsPage = 1;
+  syncUsageRangeLiveEndTimer();
+  void refreshUsageData();
+}
+
+function updateUsageDraftDate(field: "start" | "end", value: string): void {
+  if (field === "end" && state.usageRangeDraftLiveEnd) {
+    return;
+  }
+  const current = field === "start"
+    ? state.usageRangeDraftStartDate
+    : state.usageRangeDraftEndDate;
+  if (current == null) {
+    return;
+  }
+  const next = parseDateKeepTime(current, value);
+  if (next == null) {
+    return;
+  }
+  if (field === "start") {
+    state.usageRangeDraftStartDate = next;
+  } else {
+    state.usageRangeDraftEndDate = next;
+  }
+  state.usageRangeDisplayMonth = startOfLocalMonthMs(next);
+  state.usageRangeDraftActiveField = field;
+  state.usageRangeError = null;
+  rerenderDashboard();
+}
+
+function updateUsageDraftTime(field: "start" | "end", value: string): void {
+  if (field === "end" && state.usageRangeDraftLiveEnd) {
+    return;
+  }
+  const current = field === "start"
+    ? state.usageRangeDraftStartDate
+    : state.usageRangeDraftEndDate;
+  if (current == null) {
+    return;
+  }
+  const next = parseTimeKeepDate(current, value);
+  if (next == null) {
+    return;
+  }
+  if (field === "start") {
+    state.usageRangeDraftStartDate = next;
+  } else {
+    state.usageRangeDraftEndDate = next;
+  }
+  state.usageRangeDraftActiveField = field;
+  state.usageRangeError = null;
+  rerenderDashboard();
+}
+
+function pickUsageCalendarDay(dayMs: number): void {
+  const startMs = state.usageRangeDraftStartDate;
+  const endMs = state.usageRangeDraftEndDate;
+  if (startMs == null || endMs == null) {
+    return;
+  }
+
+  if (state.usageRangeDraftLiveEnd) {
+    state.usageRangeDraftStartDate = setDateKeepTime(startMs, dayMs);
+    state.usageRangeDraftActiveField = "start";
+  } else if (state.usageRangeDraftActiveField === "start") {
+    const nextStart = setDateKeepTime(startMs, dayMs);
+    state.usageRangeDraftStartDate = nextStart;
+    if (nextStart > endMs) {
+      state.usageRangeDraftEndDate = nextStart;
+    }
+    state.usageRangeDraftActiveField = "end";
+  } else {
+    const nextEnd = setDateKeepTime(endMs, dayMs);
+    if (nextEnd < startMs) {
+      state.usageRangeDraftStartDate = nextEnd;
+      state.usageRangeDraftActiveField = "end";
+    } else {
+      state.usageRangeDraftEndDate = nextEnd;
+    }
+  }
+  state.usageRangeDisplayMonth = startOfLocalMonthMs(dayMs);
+  state.usageRangeError = null;
+  rerenderDashboard();
+}
+
+function setUsageDraftLiveEnd(live: boolean): void {
+  state.usageRangeDraftLiveEnd = live;
+  if (live) {
+    state.usageRangeDraftEndDate = Date.now();
+    state.usageRangeDraftActiveField = "start";
+  } else if (state.usageRangeDraftEndDate == null) {
+    state.usageRangeDraftEndDate = Date.now();
+  }
+  state.usageRangeError = null;
+  syncUsageRangeLiveEndTimer();
+  rerenderDashboard();
+}
+
+function moveUsageCalendarMonth(delta: number): void {
+  const current = state.usageRangeDisplayMonth
+    ?? startOfLocalMonthMs(state.usageRangeDraftStartDate ?? Date.now());
+  const month = new Date(current);
+  state.usageRangeDisplayMonth = new Date(
+    month.getFullYear(),
+    month.getMonth() + delta,
+    1,
+  ).getTime();
+  rerenderDashboard();
+}
+
+function showUsageCalendarToday(): void {
+  state.usageRangeDisplayMonth = startOfLocalMonthMs(Date.now());
+  rerenderDashboard();
+}
+
+function syncUsageRangeLiveEndTimer(): void {
+  const shouldRun = state.route === "usage"
+    && state.usageRangePickerOpen
+    && state.usageRangeDraftLiveEnd;
+  if (!shouldRun) {
+    if (usageRangeLiveEndTimer != null) {
+      window.clearInterval(usageRangeLiveEndTimer);
+      usageRangeLiveEndTimer = null;
+    }
+    return;
+  }
+  if (usageRangeLiveEndTimer != null) {
+    return;
+  }
+  usageRangeLiveEndTimer = window.setInterval(() => {
+    if (!state.usageRangePickerOpen || !state.usageRangeDraftLiveEnd) {
+      syncUsageRangeLiveEndTimer();
+      return;
+    }
+    state.usageRangeDraftEndDate = Date.now();
+    rerenderDashboard();
+  }, 1000);
+}
+
+function handleUsageRangePopoverClick(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+  if (target instanceof HTMLInputElement) {
+    return;
+  }
+
+  const presetButton = target.closest<HTMLElement>("[data-usage-range-preset]");
+  if (presetButton) {
+    const preset = presetButton.dataset.usageRangePreset as typeof state.usageRangePreset | undefined;
+    if (preset && preset !== "custom") {
+      applyUsagePreset(preset);
+    }
+    return;
+  }
+
+  const field = target.closest<HTMLElement>("[data-usage-range-field]");
+  if (field?.dataset.usageRangeField === "start" || field?.dataset.usageRangeField === "end") {
+    if (!field.classList.contains("is-readonly")) {
+      state.usageRangeDraftActiveField = field.dataset.usageRangeField;
+      rerenderDashboard();
+    }
+    return;
+  }
+
+  const dayButton = target.closest<HTMLElement>("[data-usage-range-day]");
+  if (dayButton?.dataset.usageRangeDay) {
+    const dayMs = Number(dayButton.dataset.usageRangeDay);
+    if (Number.isFinite(dayMs)) {
+      pickUsageCalendarDay(dayMs);
+    }
+    return;
+  }
+
+  const monthButton = target.closest<HTMLElement>("[data-usage-range-month]");
+  if (monthButton?.dataset.usageRangeMonth) {
+    const delta = Number(monthButton.dataset.usageRangeMonth);
+    if (Number.isFinite(delta)) {
+      moveUsageCalendarMonth(delta);
+    }
+    return;
+  }
+
+  if (target.closest("[data-usage-range-today]")) {
+    showUsageCalendarToday();
+    return;
+  }
+
+  if (target.closest("[data-usage-range-cancel]")) {
+    closeUsageRangePicker();
+    return;
+  }
+
+  if (target.closest("[data-usage-range-apply]")) {
+    applyUsageCustomRange();
+  }
+}
+
+function handleUsageRangePopoverChange(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  const dateField = target.dataset.usageRangeDate;
+  if (dateField === "start" || dateField === "end") {
+    updateUsageDraftDate(dateField, target.value);
+    return;
+  }
+  const timeField = target.dataset.usageRangeTime;
+  if (timeField === "start" || timeField === "end") {
+    updateUsageDraftTime(timeField, target.value);
+    return;
+  }
+  if (target.matches("[data-usage-range-live]")) {
+    setUsageDraftLiveEnd(target.checked);
+  }
+}
+
+function handleUsageRangePopoverFocus(event: Event): void {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+  const field = target.dataset.usageRangeDate ?? target.dataset.usageRangeTime;
+  if (field === "start" || field === "end") {
+    if (field === "end" && state.usageRangeDraftLiveEnd) {
+      return;
+    }
+    state.usageRangeDraftActiveField = field;
+    rerenderDashboard();
+  }
 }
 
 function syncUsageAutoRefresh(): void {
@@ -1218,66 +1554,38 @@ export function bootstrap(): void {
   elements.usageRefreshButton?.addEventListener("click", () => {
     void refreshUsageData();
   });
-  elements.usageRangeSelect?.addEventListener("change", () => {
-    if (!elements.usageRangeSelect) {
-      return;
+  elements.usageRangeButton?.addEventListener("click", () => {
+    if (state.usageRangePickerOpen) {
+      closeUsageRangePicker();
+    } else {
+      openUsageRangePicker();
     }
-    const nextRangePreset = elements.usageRangeSelect.value as typeof state.usageRangePreset;
-    if (nextRangePreset === "custom" && state.usageRangePreset !== "custom") {
-      hydrateUsageCustomRangeFromPreset();
+  });
+  elements.usageRangePopover?.addEventListener("click", handleUsageRangePopoverClick);
+  elements.usageRangePopover?.addEventListener("change", handleUsageRangePopoverChange);
+  elements.usageRangePopover?.addEventListener("focusin", handleUsageRangePopoverFocus);
+  document.addEventListener("click", (event) => {
+    const picker = document.getElementById("usage-range-picker");
+    const target = event.target;
+    if (
+      state.usageRangePickerOpen &&
+      picker &&
+      target instanceof Node &&
+      !picker.contains(target)
+    ) {
+      closeUsageRangePicker();
     }
-    state.usageRangePreset = nextRangePreset;
-    ensureUsageCustomRange();
-    state.usageLogsPage = 1;
-    void refreshUsageData();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && state.usageRangePickerOpen) {
+      closeUsageRangePicker();
+    }
   });
   elements.usageScopeSelect?.addEventListener("change", () => {
     if (!elements.usageScopeSelect) {
       return;
     }
     state.usageScope = elements.usageScopeSelect.value as typeof state.usageScope;
-    state.usageLogsPage = 1;
-    void refreshUsageData();
-  });
-  elements.usageStartInput?.addEventListener("change", () => {
-    if (!elements.usageStartInput) {
-      return;
-    }
-    hydrateUsageCustomRangeFromPreset();
-    state.usageRangePreset = "custom";
-    const nextStartDate = parseDateTimeLocal(elements.usageStartInput.value);
-    if (nextStartDate != null) {
-      state.usageCustomStartDate = nextStartDate;
-    }
-    clampUsageCustomRange();
-    state.usageLogsPage = 1;
-    void refreshUsageData();
-  });
-  elements.usageEndInput?.addEventListener("change", () => {
-    if (!elements.usageEndInput) {
-      return;
-    }
-    hydrateUsageCustomRangeFromPreset();
-    state.usageRangePreset = "custom";
-    state.usageLiveEnd = false;
-    const nextEndDate = parseDateTimeLocal(elements.usageEndInput.value);
-    if (nextEndDate != null) {
-      state.usageCustomEndDate = nextEndDate;
-    }
-    clampUsageCustomRange();
-    state.usageLogsPage = 1;
-    void refreshUsageData();
-  });
-  elements.usageLiveEndCheckbox?.addEventListener("change", () => {
-    if (!elements.usageLiveEndCheckbox) {
-      return;
-    }
-    hydrateUsageCustomRangeFromPreset();
-    state.usageRangePreset = "custom";
-    state.usageLiveEnd = elements.usageLiveEndCheckbox.checked;
-    if (!state.usageLiveEnd && state.usageCustomEndDate == null) {
-      state.usageCustomEndDate = Date.now();
-    }
     state.usageLogsPage = 1;
     void refreshUsageData();
   });

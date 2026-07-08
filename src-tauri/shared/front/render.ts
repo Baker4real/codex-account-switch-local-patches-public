@@ -3,6 +3,7 @@ import type {
   DashboardViewModel,
   OpenAiUsageAccountSummary,
   OpenAiUsageCostBreakdown,
+  OpenAiUsageRangePreset,
   OpenAiUsageRequestLog,
   OpenAiUsageSummary,
   PagingInfo,
@@ -67,11 +68,10 @@ export const elements = {
   settingsGithubButton: requiredElement<HTMLButtonElement>("settings-github-button"),
   settingsCheckUpdateButton: requiredElement<HTMLButtonElement>("settings-check-update-button"),
   usageRefreshButton: optionalElement<HTMLButtonElement>("usage-refresh-button"),
-  usageRangeSelect: optionalElement<HTMLSelectElement>("usage-range-select"),
+  usageRangeButton: optionalElement<HTMLButtonElement>("usage-range-button"),
+  usageRangeLabel: optionalElement<HTMLSpanElement>("usage-range-label"),
+  usageRangePopover: optionalElement<HTMLDivElement>("usage-range-popover"),
   usageScopeSelect: optionalElement<HTMLSelectElement>("usage-scope-select"),
-  usageStartInput: optionalElement<HTMLInputElement>("usage-start-input"),
-  usageEndInput: optionalElement<HTMLInputElement>("usage-end-input"),
-  usageLiveEndCheckbox: optionalElement<HTMLInputElement>("usage-live-end-checkbox"),
   usageAccountFilter: optionalElement<HTMLSelectElement>("usage-account-filter"),
   usageModelFilter: optionalElement<HTMLSelectElement>("usage-model-filter"),
   usageRefreshIntervalSelect: optionalElement<HTMLSelectElement>("usage-refresh-interval-select"),
@@ -962,29 +962,28 @@ export function renderOpenAiUsage(summary: OpenAiUsageSummary | null): void {
 
 function renderUsageControls(summary: OpenAiUsageSummary | null): void {
   if (
-    !elements.usageRangeSelect ||
+    !elements.usageRangeButton ||
+    !elements.usageRangeLabel ||
+    !elements.usageRangePopover ||
     !elements.usageScopeSelect ||
-    !elements.usageLiveEndCheckbox ||
     !elements.usageRefreshIntervalSelect ||
-    !elements.usageStartInput ||
-    !elements.usageEndInput ||
     !elements.usageAccountFilter ||
     !elements.usageModelFilter
   ) {
     return;
   }
-  elements.usageRangeSelect.value = state.usageRangePreset;
   elements.usageScopeSelect.value = state.usageScope;
-  elements.usageLiveEndCheckbox.checked = state.usageLiveEnd;
   elements.usageRefreshIntervalSelect.value = String(state.usageRefreshIntervalMs);
   const nowMs = Date.now();
-  elements.usageStartInput.value = formatDateTimeLocalInput(displayUsageStartDate(nowMs));
-  elements.usageEndInput.value = formatDateTimeLocalInput(displayUsageEndDate(nowMs));
-  elements.usageStartInput.disabled = false;
-  elements.usageEndInput.disabled = false;
-  elements.usageEndInput.readOnly = state.usageLiveEnd;
-  elements.usageEndInput.classList.toggle("usage-input-readonly", state.usageLiveEnd);
-  elements.usageLiveEndCheckbox.disabled = false;
+  const rangeLabel = formatUsageRangeLabel(nowMs);
+  elements.usageRangeLabel.textContent = rangeLabel;
+  elements.usageRangeButton.title = rangeLabel;
+  elements.usageRangeButton.setAttribute("aria-expanded", state.usageRangePickerOpen ? "true" : "false");
+  elements.usageRangeButton.classList.toggle("is-active", state.usageRangePreset === "custom" || state.usageRangePickerOpen);
+  elements.usageRangePopover.hidden = !state.usageRangePickerOpen;
+  elements.usageRangePopover.innerHTML = state.usageRangePickerOpen
+    ? buildUsageRangePopover(nowMs)
+    : "";
   renderUsageRefreshButton();
 
   const accountOptions = state.usageAccountSummary.length > 0
@@ -1021,6 +1020,134 @@ function renderUsageControls(summary: OpenAiUsageSummary | null): void {
     )),
   ].join("");
   setSelectOptions(elements.usageModelFilter, modelOptionsHtml, state.usageModelFilter ?? "");
+}
+
+const usageRangePresets: OpenAiUsageRangePreset[] = ["today", "1d", "7d", "14d", "30d"];
+
+function formatUsageRangeLabel(nowMs: number): string {
+  if (state.usageRangePreset !== "custom") {
+    return usageRangePresetLabel(state.usageRangePreset);
+  }
+
+  const startMs = displayUsageStartDate(nowMs);
+  const endMs = displayUsageEndDate(nowMs);
+  const startLabel = formatDateTimeMs(startMs);
+  if (state.usageLiveEnd) {
+    return `${startLabel} → ${t(state.locale, "usageLiveEndNow")}`;
+  }
+  return `${startLabel} - ${formatDateTimeMs(endMs)}`;
+}
+
+function usageRangePresetLabel(preset: OpenAiUsageRangePreset): string {
+  switch (preset) {
+    case "today":
+      return t(state.locale, "usageRangeToday");
+    case "7d":
+      return t(state.locale, "usageRangeLast7Days");
+    case "14d":
+      return t(state.locale, "usageRangeLast14Days");
+    case "30d":
+      return t(state.locale, "usageRangeLast30Days");
+    case "custom":
+      return t(state.locale, "usageRangeCustom");
+    case "1d":
+    default:
+      return t(state.locale, "usageRangeLast24Hours");
+  }
+}
+
+function buildUsageRangePopover(nowMs: number): string {
+  const draftStart = state.usageRangeDraftStartDate ?? displayUsageStartDate(nowMs) ?? nowMs - 24 * 60 * 60 * 1000;
+  const draftEnd = state.usageRangeDraftEndDate ?? displayUsageEndDate(nowMs) ?? nowMs;
+  const displayMonth = state.usageRangeDisplayMonth ?? startOfLocalMonthMs(draftStart);
+  const draftLiveEnd = state.usageRangeDraftLiveEnd;
+  const presets = usageRangePresets.map((preset) => `
+    <button
+      class="usage-range-preset${state.usageRangePreset === preset ? " is-active" : ""}"
+      type="button"
+      data-usage-range-preset="${preset}"
+    >${escapeHtml(usageRangePresetLabel(preset))}</button>
+  `).join("");
+  return `
+    <div class="usage-range-presets">${presets}</div>
+    <div class="usage-range-layout">
+      <div class="usage-range-fields">
+        <p class="usage-range-hint">${t(state.locale, "usageCustomRangeHint")}</p>
+        ${buildUsageRangeField("start", draftStart, false)}
+        ${buildUsageRangeField("end", draftEnd, draftLiveEnd)}
+        <label class="usage-range-live">
+          <input type="checkbox" data-usage-range-live ${draftLiveEnd ? "checked" : ""} />
+          <span>${t(state.locale, "usageLiveEnd")}</span>
+        </label>
+        ${state.usageRangeError ? `<p class="usage-range-error">${escapeHtml(state.usageRangeError)}</p>` : ""}
+        <div class="usage-range-actions">
+          <button class="pager-pill" type="button" data-usage-range-cancel>${t(state.locale, "cancel")}</button>
+          <button class="pager-pill usage-range-apply" type="button" data-usage-range-apply>${t(state.locale, "save")}</button>
+        </div>
+      </div>
+      ${buildUsageCalendar(displayMonth, draftStart, draftEnd)}
+    </div>
+  `;
+}
+
+function buildUsageRangeField(field: "start" | "end", valueMs: number, liveEnd: boolean): string {
+  const active = state.usageRangeDraftActiveField === field;
+  const label = field === "start" ? t(state.locale, "usageStartTime") : t(state.locale, "usageEndTime");
+  return `
+    <div class="usage-range-field${active ? " is-active" : ""}${liveEnd ? " is-readonly" : ""}" data-usage-range-field="${field}">
+      <span>${label}</span>
+      <div>
+        <input type="date" data-usage-range-date="${field}" value="${formatDateInput(valueMs)}" ${liveEnd ? "readonly" : ""} />
+        <input type="time" step="60" data-usage-range-time="${field}" value="${formatTimeInput(valueMs)}" ${liveEnd ? "readonly" : ""} />
+      </div>
+    </div>
+  `;
+}
+
+function buildUsageCalendar(monthMs: number, startMs: number, endMs: number): string {
+  const month = new Date(monthMs);
+  const days = getUsageCalendarDays(monthMs);
+  const todayMs = startOfLocalDayMs(Date.now());
+  const startDayMs = startOfLocalDayMs(startMs);
+  const endDayMs = startOfLocalDayMs(endMs);
+  const weekdays = Array.from({ length: 7 }, (_, index) => (
+    new Intl.DateTimeFormat(state.locale, { weekday: "narrow" }).format(new Date(2024, 0, 7 + index))
+  ));
+  const weekdayMarkup = weekdays.map((weekday) => `<span>${escapeHtml(weekday)}</span>`).join("");
+  const dayMarkup = days.map((dayMs) => {
+    const day = new Date(dayMs);
+    const currentMonth = day.getMonth() === month.getMonth() && day.getFullYear() === month.getFullYear();
+    const isToday = dayMs === todayMs;
+    const isStart = dayMs === startDayMs;
+    const isEnd = dayMs === endDayMs;
+    const inRange = dayMs >= startDayMs && dayMs <= endDayMs;
+    const classes = [
+      "usage-calendar-day",
+      currentMonth ? null : "is-outside",
+      isToday ? "is-today" : null,
+      inRange && !isStart && !isEnd ? "is-in-range" : null,
+      isStart || isEnd ? "is-endpoint" : null,
+    ].filter((value): value is string => value != null).join(" ");
+    return `
+      <button
+        class="${classes}"
+        type="button"
+        data-usage-range-day="${dayMs}"
+        aria-pressed="${isStart || isEnd ? "true" : "false"}"
+      >${day.getDate()}</button>
+    `;
+  }).join("");
+  return `
+    <div class="usage-range-calendar">
+      <div class="usage-calendar-header">
+        <button type="button" class="usage-calendar-nav" data-usage-range-month="-1" aria-label="${t(state.locale, "previous")}"></button>
+        <button type="button" class="usage-calendar-title" data-usage-range-today>${escapeHtml(formatUsageCalendarMonth(monthMs))}</button>
+        <button type="button" class="usage-calendar-nav usage-calendar-nav--next" data-usage-range-month="1" aria-label="${t(state.locale, "next")}"></button>
+      </div>
+      <div class="usage-calendar-weekdays">${weekdayMarkup}</div>
+      <div class="usage-calendar-grid">${dayMarkup}</div>
+    </div>
+  `;
 }
 
 function renderUsageRefreshButton(): void {
@@ -1063,17 +1190,61 @@ function displayUsageEndDate(nowMs: number): number | null {
 function presetUsageStartDate(nowMs: number): number {
   switch (state.usageRangePreset) {
     case "today":
-      return new Date(new Date(nowMs).setHours(0, 0, 0, 0)).getTime();
+      return startOfLocalDayMs(nowMs);
     case "7d":
-      return nowMs - 7 * 24 * 60 * 60 * 1000;
+      return presetLookbackStartMs(7, nowMs);
     case "14d":
-      return nowMs - 14 * 24 * 60 * 60 * 1000;
+      return presetLookbackStartMs(14, nowMs);
     case "30d":
-      return nowMs - 30 * 24 * 60 * 60 * 1000;
+      return presetLookbackStartMs(30, nowMs);
     case "1d":
     default:
       return nowMs - 24 * 60 * 60 * 1000;
   }
+}
+
+function presetLookbackStartMs(dayCount: number, nowMs: number): number {
+  return startOfLocalDayMs(nowMs - (dayCount - 1) * 24 * 60 * 60 * 1000);
+}
+
+function startOfLocalDayMs(valueMs: number): number {
+  const date = new Date(valueMs);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function startOfLocalMonthMs(valueMs: number): number {
+  const date = new Date(valueMs);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
+function getUsageCalendarDays(monthMs: number): number[] {
+  const first = new Date(monthMs);
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() - first.getDay());
+  return Array.from({ length: 42 }, (_, index) => {
+    const day = new Date(gridStart);
+    day.setDate(gridStart.getDate() + index);
+    return startOfLocalDayMs(day.getTime());
+  });
+}
+
+function formatUsageCalendarMonth(valueMs: number): string {
+  return new Intl.DateTimeFormat(state.locale, {
+    year: "numeric",
+    month: "long",
+  }).format(new Date(valueMs));
+}
+
+function formatDateInput(valueMs: number): string {
+  const date = new Date(valueMs);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+function formatTimeInput(valueMs: number): string {
+  const date = new Date(valueMs);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value: string): void {
@@ -1081,25 +1252,6 @@ function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value:
     select.innerHTML = optionsHtml;
   }
   select.value = value;
-}
-
-function formatDateTimeLocalInput(value: number | null): string {
-  if (value == null) {
-    return "";
-  }
-  const date = new Date(value);
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return [
-    date.getFullYear(),
-    "-",
-    pad(date.getMonth() + 1),
-    "-",
-    pad(date.getDate()),
-    "T",
-    pad(date.getHours()),
-    ":",
-    pad(date.getMinutes()),
-  ].join("");
 }
 
 function buildUsageLayerSummaryCards(summary: OpenAiUsageSummary): string {
@@ -1340,6 +1492,7 @@ type UsageTrendSeries = {
   key: MessageKey;
   className: string;
   color: string;
+  fillId?: string;
   dashed?: boolean;
   scale: "tokens" | "cost";
   value: (point: UsageTrendPoint) => number;
@@ -1347,8 +1500,8 @@ type UsageTrendSeries = {
 
 function buildUsageLineChart(points: UsageTrendPoint[]): string {
   const width = 920;
-  const height = 280;
-  const pad = { top: 18, right: 76, bottom: 42, left: 54 };
+  const height = 350;
+  const pad = { top: 30, right: 78, bottom: 42, left: 58 };
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
   const tokenSeries: UsageTrendSeries[] = [
@@ -1356,6 +1509,7 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
       key: "usageInput",
       className: "input",
       color: "#2563eb",
+      fillId: "usageColorInput",
       scale: "tokens",
       value: (point) => point.tokens.input_tokens,
     },
@@ -1363,6 +1517,7 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
       key: "usageCachedInput",
       className: "cached",
       color: "#0f766e",
+      fillId: "usageColorCached",
       scale: "tokens",
       value: (point) => point.tokens.cached_input_tokens,
     },
@@ -1370,6 +1525,7 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
       key: "usageOutput",
       className: "output",
       color: "#b45309",
+      fillId: "usageColorOutput",
       scale: "tokens",
       value: (point) => point.tokens.output_tokens,
     },
@@ -1377,6 +1533,7 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
       key: "usageReasoning",
       className: "reasoning",
       color: "#be123c",
+      fillId: "usageColorReasoning",
       scale: "tokens",
       value: (point) => point.tokens.reasoning_output_tokens,
     },
@@ -1395,24 +1552,54 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
   const xFor = (index: number) => pad.left + (points.length === 1 ? innerWidth / 2 : (innerWidth * index) / (points.length - 1));
   const yForTokens = (value: number) => pad.top + innerHeight - (value / tokenMax) * innerHeight;
   const yForCost = (value: number) => pad.top + innerHeight - (value / costMax) * innerHeight;
+  const isHourly = usageTrendRangeDurationMs() <= 24 * 60 * 60 * 1000;
+  const gradients = tokenSeries.map((series) => `
+    <linearGradient id="${series.fillId}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="5%" stop-color="${series.color}" stop-opacity="0.20"></stop>
+      <stop offset="95%" stop-color="${series.color}" stop-opacity="0"></stop>
+    </linearGradient>
+  `).join("");
   const grid = [0, 0.25, 0.5, 0.75, 1].map((tick) => {
     const y = pad.top + innerHeight - tick * innerHeight;
     return `<line class="usage-chart-grid-line" x1="${pad.left}" y1="${y}" x2="${width - pad.right}" y2="${y}"></line>`;
   }).join("");
+  const areaPaths = tokenSeries.map((series) => {
+    const coords = points.map((point, index) => ({
+      x: xFor(index),
+      y: yForTokens(series.value(point)),
+    }));
+    const line = buildSmoothUsagePath(coords);
+    const area = `${line} L ${coords[coords.length - 1].x.toFixed(2)} ${(pad.top + innerHeight).toFixed(2)} L ${coords[0].x.toFixed(2)} ${(pad.top + innerHeight).toFixed(2)} Z`;
+    return `<path class="usage-chart-area usage-chart-area--${series.className}" d="${area}" fill="url(#${series.fillId})"></path>`;
+  }).join("");
   const paths = allSeries.map((series) => {
     const yFor = series.scale === "tokens" ? yForTokens : yForCost;
-    const d = points.map((point, index) => `${index === 0 ? "M" : "L"} ${xFor(index).toFixed(2)} ${yFor(series.value(point)).toFixed(2)}`).join(" ");
+    const d = buildSmoothUsagePath(points.map((point, index) => ({
+      x: xFor(index),
+      y: yFor(series.value(point)),
+    })));
     return `<path class="usage-chart-line usage-chart-line--${series.className}${series.dashed ? " usage-chart-line--dashed" : ""}" d="${d}" style="--series-color:${series.color}"></path>`;
   }).join("");
   const markers = allSeries.map((series) => {
     const yFor = series.scale === "tokens" ? yForTokens : yForCost;
     return points.map((point, index) => `
       <circle class="usage-chart-point usage-chart-point--${series.className}" cx="${xFor(index).toFixed(2)}" cy="${yFor(series.value(point)).toFixed(2)}" r="3.5" style="--series-color:${series.color}">
-        <title>${escapeHtml(buildUsageTrendPointTitle(point))}</title>
+        <title>${escapeHtml(buildUsageTrendTooltipRows(point, isHourly).join("\n"))}</title>
       </circle>
     `).join("");
   }).join("");
-  const axisLabels = buildUsageTrendAxisLabels(points);
+  const hoverLayers = points.map((point, index) => buildUsageTrendHoverLayer({
+    point,
+    index,
+    x: xFor(index),
+    width,
+    height,
+    pad,
+    hitLeft: index === 0 ? pad.left : (xFor(index - 1) + xFor(index)) / 2,
+    hitRight: index === points.length - 1 ? width - pad.right : (xFor(index) + xFor(index + 1)) / 2,
+    isHourly,
+  })).join("");
+  const axisLabels = buildUsageTrendAxisLabels(points, isHourly);
   const legend = allSeries.map((series) => `
     <span class="usage-chart-legend-item">
       <i style="--series-color:${series.color}"></i>
@@ -1422,11 +1609,14 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
   return `
     <div class="usage-chart-wrap">
       <svg class="usage-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(t(state.locale, "usageTrends"))}" preserveAspectRatio="none">
+        <defs>${gradients}</defs>
         ${grid}
-        <text class="usage-chart-axis-label" x="${pad.left}" y="14">${escapeHtml(formatInteger(tokenMax))} ${escapeHtml(t(state.locale, "usageTokens"))}</text>
-        <text class="usage-chart-axis-label usage-chart-axis-label--right" x="${width - pad.right}" y="14">${escapeHtml(formatCostMicros(costMax))}</text>
+        <text class="usage-chart-axis-label" x="${pad.left}" y="18">${escapeHtml(formatCompactAxisValue(tokenMax))} ${escapeHtml(t(state.locale, "usageTokens"))}</text>
+        <text class="usage-chart-axis-label usage-chart-axis-label--right" x="${width - pad.right}" y="18">${escapeHtml(formatCostMicros(costMax))}</text>
+        ${areaPaths}
         ${paths}
         ${markers}
+        ${hoverLayers}
       </svg>
       <div class="usage-chart-axis-row">${axisLabels}</div>
       <div class="usage-chart-legend">${legend}</div>
@@ -1434,35 +1624,106 @@ function buildUsageLineChart(points: UsageTrendPoint[]): string {
   `;
 }
 
-function buildUsageTrendAxisLabels(points: UsageTrendPoint[]): string {
+function buildSmoothUsagePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) {
+    return "";
+  }
+  if (points.length === 1) {
+    return `M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`;
+  }
+  const path = [`M ${points[0].x.toFixed(2)} ${points[0].y.toFixed(2)}`];
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index];
+    const next = points[index + 1];
+    const previous = points[index - 1] ?? current;
+    const after = points[index + 2] ?? next;
+    const cp1x = current.x + (next.x - previous.x) / 6;
+    const cp1y = current.y + (next.y - previous.y) / 6;
+    const cp2x = next.x - (after.x - current.x) / 6;
+    const cp2y = next.y - (after.y - current.y) / 6;
+    path.push(`C ${cp1x.toFixed(2)} ${cp1y.toFixed(2)}, ${cp2x.toFixed(2)} ${cp2y.toFixed(2)}, ${next.x.toFixed(2)} ${next.y.toFixed(2)}`);
+  }
+  return path.join(" ");
+}
+
+function buildUsageTrendAxisLabels(points: UsageTrendPoint[], isHourly: boolean): string {
   const indexes = Array.from(new Set([
     0,
     Math.floor((points.length - 1) / 2),
     points.length - 1,
   ])).filter((index) => index >= 0 && index < points.length);
   return indexes.map((index) => `
-    <span>${escapeHtml(formatTrendLabel(points[index].bucket_start_ms))}</span>
+    <span>${escapeHtml(formatTrendLabel(points[index].bucket_start_ms, isHourly))}</span>
   `).join("");
 }
 
-function buildUsageTrendPointTitle(point: UsageTrendPoint): string {
+function buildUsageTrendHoverLayer(input: {
+  point: UsageTrendPoint;
+  index: number;
+  x: number;
+  width: number;
+  height: number;
+  pad: { top: number; right: number; bottom: number; left: number };
+  hitLeft: number;
+  hitRight: number;
+  isHourly: boolean;
+}): string {
+  const tooltipWidth = 214;
+  const rowHeight = 17;
+  const rows = buildUsageTrendTooltipRows(input.point, input.isHourly);
+  const tooltipHeight = 24 + rows.length * rowHeight;
+  const tooltipX = input.x > input.width - input.pad.right - tooltipWidth
+    ? input.x - tooltipWidth - 12
+    : input.x + 12;
+  const tooltipY = Math.max(input.pad.top + 4, Math.min(input.height - input.pad.bottom - tooltipHeight, input.pad.top + 10));
+  const rowMarkup = rows.map((row, rowIndex) => `
+    <text class="usage-chart-tooltip-text${rowIndex === 0 ? " usage-chart-tooltip-title" : ""}" x="${tooltipX + 12}" y="${tooltipY + 20 + rowIndex * rowHeight}">
+      ${escapeHtml(row)}
+    </text>
+  `).join("");
+  return `
+    <g class="usage-chart-hover">
+      <rect class="usage-chart-hit-rect" x="${input.hitLeft.toFixed(2)}" y="${input.pad.top}" width="${Math.max(16, input.hitRight - input.hitLeft).toFixed(2)}" height="${input.height - input.pad.top - input.pad.bottom}"></rect>
+      <line class="usage-chart-hover-line" x1="${input.x.toFixed(2)}" y1="${input.pad.top}" x2="${input.x.toFixed(2)}" y2="${input.height - input.pad.bottom}"></line>
+      <g class="usage-chart-tooltip">
+        <rect x="${tooltipX}" y="${tooltipY}" width="${tooltipWidth}" height="${tooltipHeight}" rx="8"></rect>
+        ${rowMarkup}
+      </g>
+    </g>
+  `;
+}
+
+function buildUsageTrendTooltipRows(point: UsageTrendPoint, isHourly: boolean): string[] {
   return [
-    formatTrendLabel(point.bucket_start_ms),
+    formatTrendLabel(point.bucket_start_ms, isHourly),
     `${t(state.locale, "usageRequests")}: ${formatInteger(point.request_count)}`,
     `${t(state.locale, "usageInput")}: ${formatInteger(point.tokens.input_tokens)}`,
     `${t(state.locale, "usageCachedInput")}: ${formatInteger(point.tokens.cached_input_tokens)}`,
     `${t(state.locale, "usageOutput")}: ${formatInteger(point.tokens.output_tokens)}`,
     `${t(state.locale, "usageReasoning")}: ${formatInteger(point.tokens.reasoning_output_tokens)}`,
     `${t(state.locale, "usageCost")}: ${formatUsageCost(point.cost)}`,
-  ].join("\n");
+  ];
 }
 
-function formatTrendLabel(value: number): string {
+function usageTrendRangeDurationMs(): number {
+  const nowMs = Date.now();
+  const startMs = displayUsageStartDate(nowMs) ?? nowMs - 24 * 60 * 60 * 1000;
+  const endMs = displayUsageEndDate(nowMs) ?? nowMs;
+  return Math.max(0, endMs - startMs);
+}
+
+function formatCompactAxisValue(value: number): string {
+  if (value >= 1000) {
+    return `${Math.round(value / 1000)}k`;
+  }
+  return formatInteger(value);
+}
+
+function formatTrendLabel(value: number, isHourly = true): string {
   return new Intl.DateTimeFormat(state.locale, {
     month: "2-digit",
     day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
+    ...(isHourly ? { hour: "2-digit", minute: "2-digit" } : {}),
   }).format(new Date(value));
 }
 

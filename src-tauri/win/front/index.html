@@ -146,17 +146,27 @@
             </div>
 
             <div class="usage-control-bar">
-              <label class="usage-control">
-                <span data-i18n-key="usageTimeRange">Time range</span>
-                <select id="usage-range-select">
-                  <option value="1d" data-i18n-key="usageRangeLast24Hours">Last 24 hours</option>
-                  <option value="today" data-i18n-key="usageRangeToday">Today</option>
-                  <option value="7d" data-i18n-key="usageRangeLast7Days">Last 7 days</option>
-                  <option value="14d" data-i18n-key="usageRangeLast14Days">Last 14 days</option>
-                  <option value="30d" data-i18n-key="usageRangeLast30Days">Last 30 days</option>
-                  <option value="custom" data-i18n-key="usageRangeCustom">Custom</option>
-                </select>
-              </label>
+              <div id="usage-range-picker" class="usage-range-picker">
+                <button
+                  id="usage-range-button"
+                  class="usage-range-trigger"
+                  type="button"
+                  aria-haspopup="dialog"
+                  aria-expanded="false"
+                  title="Time range"
+                >
+                  <span class="usage-range-trigger-icon" aria-hidden="true"></span>
+                  <span id="usage-range-label" class="usage-range-trigger-label">Last 24 hours</span>
+                  <span class="usage-range-trigger-chevron" aria-hidden="true"></span>
+                </button>
+                <div
+                  id="usage-range-popover"
+                  class="usage-range-popover"
+                  role="dialog"
+                  aria-label="Time range"
+                  hidden
+                ></div>
+              </div>
               <label class="usage-control">
                 <span data-i18n-key="usageScopeFilter">Scope</span>
                 <select id="usage-scope-select">
@@ -166,18 +176,6 @@
                   <option value="candidate" data-i18n-key="usageScopeCandidate">Unattributed candidates</option>
                   <option value="excluded" data-i18n-key="usageScopeExcluded">Excluded evidence</option>
                 </select>
-              </label>
-              <label class="usage-control usage-control--datetime">
-                <span data-i18n-key="usageStartTime">Start</span>
-                <input id="usage-start-input" type="datetime-local" />
-              </label>
-              <label class="usage-control usage-control--datetime">
-                <span data-i18n-key="usageEndTime">End</span>
-                <input id="usage-end-input" type="datetime-local" />
-              </label>
-              <label class="usage-live-toggle">
-                <input id="usage-live-end-checkbox" type="checkbox" checked />
-                <span data-i18n-key="usageLiveEnd">Live end</span>
               </label>
               <label class="usage-control">
                 <span data-i18n-key="usageAccountFilter">Account</span>
