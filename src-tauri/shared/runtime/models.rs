@@ -229,8 +229,10 @@ pub struct ProfileIndexEntry {
     pub refresh_token_status: RefreshTokenStatus,
     pub auth_mtime_ms: Option<u64>,
     pub auth_size: Option<u64>,
+    pub auth_fingerprint: Option<u64>,
     pub profile_mtime_ms: Option<u64>,
     pub profile_size: Option<u64>,
+    pub profile_fingerprint: Option<u64>,
     pub updated_at: String,
 }
 

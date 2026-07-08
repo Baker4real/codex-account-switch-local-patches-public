@@ -48,6 +48,23 @@ pub(crate) fn env_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
+pub(crate) fn write_runnable_codex_cmd(path: &std::path::Path, version: &str) {
+    if cfg!(target_os = "windows") {
+        std::fs::write(path, format!("@echo off\r\necho {version}\r\n")).unwrap();
+    } else {
+        std::fs::write(path, format!("#!/bin/sh\necho {version}\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = std::fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) struct EnvVarGuard {
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }

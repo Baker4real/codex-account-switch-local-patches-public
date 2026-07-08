@@ -595,7 +595,7 @@ mod tests {
     use crate::windows::{
         env_guard,
         process::{load_install_state, InstallState},
-        EnvVarGuard,
+        write_runnable_codex_cmd, EnvVarGuard,
     };
 
     fn temp_codex_home(name: &str) -> PathBuf {
@@ -689,11 +689,7 @@ mod tests {
 
         let npm_dir = codex_home.join("npm");
         fs::create_dir_all(&npm_dir).unwrap();
-        fs::write(
-            npm_dir.join("codex.cmd"),
-            "@echo off\r\necho codex-cli 0.133.0\r\n",
-        )
-        .unwrap();
+        write_runnable_codex_cmd(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
         std::env::remove_var("CODEX_EXE");
         std::env::remove_var("CODEX_INSTALL_DIR");
         std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
@@ -734,11 +730,7 @@ mod tests {
 
         let npm_dir = codex_home.join("npm");
         fs::create_dir_all(&npm_dir).unwrap();
-        fs::write(
-            npm_dir.join("codex.cmd"),
-            "@echo off\r\necho codex-cli 0.133.0\r\n",
-        )
-        .unwrap();
+        write_runnable_codex_cmd(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
         std::env::remove_var("CODEX_EXE");
         std::env::remove_var("CODEX_INSTALL_DIR");
         std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
@@ -783,11 +775,7 @@ mod tests {
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(managed_bin.join("codex.cmd"), "@echo off\r\n").unwrap();
         fs::write(alias_dir.join("codex.exe"), "alias").unwrap();
-        fs::write(
-            npm_dir.join("codex.cmd"),
-            "@echo off\r\necho codex-cli 0.133.0\r\n",
-        )
-        .unwrap();
+        write_runnable_codex_cmd(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
         fs::write(
             runtime_dir.join("install_state.json"),
             format!(

@@ -86,7 +86,7 @@ mod tests {
     };
     use crate::windows::paths::get_refresh_runtime_dir;
     use crate::windows::process::load_install_state;
-    use crate::windows::{env_guard, EnvVarGuard};
+    use crate::windows::{env_guard, write_runnable_codex_cmd, EnvVarGuard};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -149,11 +149,7 @@ mod tests {
         fs::create_dir_all(&npm_dir).unwrap();
         fs::write(bin_dir.join("codex.cmd"), "@echo off\r\n").unwrap();
         fs::write(npm_dir.join("codex"), "#!/bin/sh\n").unwrap();
-        fs::write(
-            npm_dir.join("codex.cmd"),
-            "@echo off\r\necho codex-cli 0.133.0\r\n",
-        )
-        .unwrap();
+        write_runnable_codex_cmd(&npm_dir.join("codex.cmd"), "codex-cli 0.133.0");
 
         std::env::remove_var("CODEX_EXE");
         std::env::remove_var("CODEX_INSTALL_DIR");

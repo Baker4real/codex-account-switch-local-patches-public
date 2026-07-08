@@ -21,7 +21,7 @@ use super::profiles::{
 };
 use super::session_usage::{load_latest_local_quota_snapshot, normalize_quota_summary};
 
-const PROFILES_INDEX_SCHEMA_VERSION: u32 = 4;
+const PROFILES_INDEX_SCHEMA_VERSION: u32 = 5;
 
 /// How long a freshly-rebuilt index lives in the in-process cache
 /// before the next `load_profiles_index` call re-reads the disk.
@@ -122,10 +122,19 @@ pub fn reload_profiles_index_after_mutation(codex_home: Option<&Path>) -> AppRes
     load_profiles_index(Some(&codex_home))
 }
 
-fn file_signature(path: &Path) -> (Option<u64>, Option<u64>) {
+fn content_fingerprint(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn file_signature(path: &Path) -> (Option<u64>, Option<u64>, Option<u64>) {
     let metadata = match fs::metadata(path) {
         Ok(value) => value,
-        Err(_) => return (None, None),
+        Err(_) => return (None, None, None),
     };
 
     let modified = metadata
@@ -133,8 +142,11 @@ fn file_signature(path: &Path) -> (Option<u64>, Option<u64>) {
         .ok()
         .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
         .and_then(|value| u64::try_from(value.as_millis()).ok());
+    let fingerprint = fs::read(path)
+        .ok()
+        .map(|contents| content_fingerprint(&contents));
 
-    (modified, Some(metadata.len()))
+    (modified, Some(metadata.len()), fingerprint)
 }
 
 fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIndexEntry {
@@ -149,8 +161,8 @@ fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIn
     let has_account_identity = account_label.is_some();
     let auth_path = profile_dir.join("auth.json");
     let metadata_path = profile_dir.join("profile.json");
-    let (auth_mtime_ms, auth_size) = file_signature(&auth_path);
-    let (profile_mtime_ms, profile_size) = file_signature(&metadata_path);
+    let (auth_mtime_ms, auth_size, auth_fingerprint) = file_signature(&auth_path);
+    let (profile_mtime_ms, profile_size, profile_fingerprint) = file_signature(&metadata_path);
 
     ProfileIndexEntry {
         folder_name: profile_name.to_string(),
@@ -166,8 +178,10 @@ fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIn
         refresh_token_status: derive_refresh_token_status_from_auth_path(&auth_path),
         auth_mtime_ms,
         auth_size,
+        auth_fingerprint,
         profile_mtime_ms,
         profile_size,
+        profile_fingerprint,
         updated_at: utc_timestamp(),
     }
 }
@@ -219,14 +233,16 @@ fn load_profiles_index_file(codex_home: &Path) -> Option<ProfilesIndex> {
 fn index_entry_matches_disk(entry: &ProfileIndexEntry, profile_dir: &Path) -> bool {
     let auth_path = profile_dir.join("auth.json");
     let metadata_path = profile_dir.join("profile.json");
-    let (auth_mtime_ms, auth_size) = file_signature(&auth_path);
-    let (profile_mtime_ms, profile_size) = file_signature(&metadata_path);
+    let (auth_mtime_ms, auth_size, auth_fingerprint) = file_signature(&auth_path);
+    let (profile_mtime_ms, profile_size, profile_fingerprint) = file_signature(&metadata_path);
 
     entry.auth_present == auth_path.is_file()
         && entry.auth_mtime_ms == auth_mtime_ms
         && entry.auth_size == auth_size
+        && entry.auth_fingerprint == auth_fingerprint
         && entry.profile_mtime_ms == profile_mtime_ms
         && entry.profile_size == profile_size
+        && entry.profile_fingerprint == profile_fingerprint
 }
 
 pub fn load_profiles_index(codex_home: Option<&Path>) -> AppResult<ProfilesIndex> {
