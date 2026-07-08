@@ -324,7 +324,7 @@ cc-switch 只能作为 source adapter，不是主账本。
 
 - 导入前先冻结 DB 副本到 `%CODEX_HOME%\usage_evidence\` 下的 D 盘 evidence 目录，记录 hash、mtime、SQL；不能写入 `account_backup`，避免被 profile 扫描识别成账号。
 - `data_source='proxy'` 且能映射 provider/account 的 Codex 行，可以进入高置信 candidate 或 proven 检查。
-- `data_source='codex_session'`、`provider_id='_codex_session'` 只能提供 token/model/session/time 证据。
+- `data_source='codex_session'`、`provider_id='_codex_session'` 只能提供 token/model/session/time 证据；除非 cc-switch 在请求发生时额外记录稳定 `account_identity_key`、profile 归属和 effective Base URL，否则不能提升为账号证明。
 - `usage_daily_rollups` 只能做 day/model/provider 聚合候选，不做请求级账号归因。
 
 ## UI 改进
@@ -337,7 +337,7 @@ UI 不应只展示“排除数量”，应展示证据层状态：
 - 已被高优先级来源替代：`superseded`
 - 未定价：`unpriced`
 
-默认账号统计仍只读 accepted/proven。candidate 可以有单独视图或提示，但不能混入严格总额。
+默认账号统计仍只读 accepted/proven。candidate 应有单独视图或摘要卡片用于对账，但不能混入严格或历史费用总额。
 
 ## 分阶段迁移
 
@@ -358,7 +358,7 @@ UI 不应只展示“排除数量”，应展示证据层状态：
 
 - 只读冻结副本。
 - 默认不把 session-only 数据计入账号总额。
-- 提供 token 校验差异和 candidate/unproven 摘要。
+- 提供 token 校验差异和 candidate/unproven 摘要；`candidate_unattributed` 应作为独立对账层展示，帮助解释与 cc-switch 总额的差异。
 
 ### Phase 4：未来 response/proxy usage adapter
 
@@ -376,7 +376,7 @@ UI 不应只展示“排除数量”，应展示证据层状态：
 - source priority：response/proxy 覆盖 session fallback。
 - cc-switch：proxy 行、codex_session 行、rollup 行分别进入正确决策。
 - evidence rebuild：source signature、classifier version、dedupe version、pricing version 变化会重建。
-- UI：accepted/candidate/unproven/superseded 数量不混入严格账号总额。
+- UI：accepted/candidate/unproven/superseded 数量不混入严格账号总额，`candidate_unattributed` 只能作为独立对账层展示。
 
 ## 决策
 

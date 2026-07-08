@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust Tauri commands, existing shared TypeScript frontend, existing CSS shell, Codex JSONL session files.
 
-**Status:** Initial parity implementation completed on 2026-07-07 in commit `c0d3098`; usage facet self-collapse follow-up completed in commit `61db517`; refresh/pagination/chart hardening completed on 2026-07-08 in commit `8a193e4`. Desktop/mobile browser smoke and Windows portable deploy were verified for the 2026-07-08 follow-up.
+**Status:** Initial parity implementation completed on 2026-07-07 in commit `c0d3098`; usage facet self-collapse follow-up completed in commit `61db517`; refresh/pagination/chart hardening completed on 2026-07-08 in commit `8a193e4`. Desktop/mobile browser smoke and Windows portable deploy were verified for the 2026-07-08 follow-up. A later 2026-07-08 hardening pass made the `candidate_unattributed` layer visible as a separate reconciliation card and replaced native date/time controls with app-owned minute inputs in the range popover.
 
 ## Global Constraints
 
@@ -70,6 +70,8 @@
 - [x] Render CC Switch parity controls.
 - [x] Render hero, trend chart, logs/account/model tabs, detail rows, and evidence panel.
 - [x] Move the account classification table below the time controls and before the summary cards.
+- [x] Show `candidate_unattributed` as a separate reconciliation layer without mixing it into strict or legacy cost totals.
+- [x] Keep the custom range popover app-owned: text date/time fields plus app calendar, no native OS date picker overlay.
 - [x] Preserve compact desktop styling and responsive behavior.
 
 ### Task 4: Verification And Review

@@ -120,7 +120,8 @@ npm run deploy:windows:remote-desktop
   `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建分层 ledger，
   保存 evidence、facts 和 strict accepted events。默认总额、趋势和日志只读
   strict proven；历史槽位归因只能进入 `legacy_profile_attributed` 估算层；
-  candidate / rejected / superseded 不得进入费用总额。source signature 必须覆盖
+  `candidate_unattributed` 必须作为单独对账层可见，方便核对 cc-switch
+  session-only 差额，但 candidate / rejected / superseded 不得进入费用总额。source signature 必须覆盖
   session JSONL、归属记录、profile metadata、active marker、schema/layer/backfill
   和价格版本，确保历史归属或价格表变化后能重新同步。未知模型 token 可以展示，
   但费用必须保持未定价，不得显示为 `$0`。
@@ -130,6 +131,8 @@ npm run deploy:windows:remote-desktop
   让其他同范围账号从下拉中消失。账号筛选使用 `account_group_key`，不是单个
   profile；账号聚合必须以 `account_identity_key` 为最高优先级，legacy label
   只能在唯一映射到同一 strict identity 时桥接，不能合并两个不同 strict identity。
+- 使用统计自定义时间范围必须使用应用内日历和分钟级文本输入；不要恢复原生
+  `date` / `time` 输入控件，避免系统日期浮层压住应用内弹层和统计卡片。
 - cc-switch 等外部只读证据冻结副本必须写到 `%CODEX_HOME%\usage_evidence\`，
   不得写入 `account_backup`。`account_backup\usage_evidence` 是系统目录污染，
   必须迁出或排除，不能出现在账号列表、Usage 账号表或 profile 扫描中。
