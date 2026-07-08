@@ -165,7 +165,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### 「使用统计」里的 token 和费用怎么算
 
-使用统计只读取本机 Codex `sessions` / `archived_sessions` 里的 `token_count` 累计值，并按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate、rejected、superseded 不进入费用总额。账号表按账号实体聚合，`account_identity_key` 优先；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才合并。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
+使用统计只读取本机 Codex `sessions` / `archived_sessions` 里的 `token_count` 累计值，并按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate / excluded scope 从 evidence ledger 展示候选、拒绝和 superseded 证据行，但 candidate、rejected、superseded 不进入费用总额。账号表按账号实体聚合，`account_identity_key` 优先；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才合并。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
 
 ### per-card「登录」按钮为什么有时变成「取消」
 

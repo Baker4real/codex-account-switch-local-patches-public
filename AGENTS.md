@@ -22,7 +22,7 @@
 
 ### Issue tracker
 
-Issues and PRDs are tracked as local markdown under `.scratch/`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+Issues are tracked in the private GitHub repo `Baker4real/codex-account-switch-local-patches` and implemented on `private/main`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

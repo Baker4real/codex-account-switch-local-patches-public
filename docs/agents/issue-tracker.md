@@ -1,19 +1,24 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub Issues
 
-Issues and PRDs for this repo live as markdown files in `.scratch/`.
+本仓库的 agent-ready issues 跟踪在私有 GitHub 仓库：
+
+- Repository: `Baker4real/codex-account-switch-local-patches`
+- Tracking branch: `private/main`
+- Default working branch in this local checkout: `main` tracking `private/main`
+
+`.scratch/` 只用于草稿 PRD、本地分析材料或用户明确要求的离线 issue 文件；不要把它当作默认 issue tracker。
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The PRD is `.scratch/<feature-slug>/PRD.md`
-- Implementation issues are `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`
-- Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
-- Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- Use `gh issue create --repo Baker4real/codex-account-switch-local-patches` for new work items.
+- Apply the repo's triage labels from `docs/agents/triage-labels.md`, normally `bug` / `ready-for-agent` when the issue is already confirmed and agent-ready.
+- Include `Tracking branch: private/main` in the issue body when the work belongs to the private patch stack.
+- Implementation closeout comments should name the commit on `private/main` and the verification commands that passed.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a new file under `.scratch/<feature-slug>/` (creating the directory if needed).
+Create or update a GitHub issue in `Baker4real/codex-account-switch-local-patches` unless the user explicitly asks for local markdown.
 
 ## When a skill says "fetch the relevant ticket"
 
-Read the file at the referenced path. The user will normally pass the path or the issue number directly.
+Use `gh issue view <number> --repo Baker4real/codex-account-switch-local-patches`. If the user passes a `.scratch/` path, treat that path as local draft context rather than the canonical tracker.
