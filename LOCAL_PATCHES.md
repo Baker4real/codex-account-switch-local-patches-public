@@ -12,7 +12,7 @@
 
 ## 已验证 Windows 编译路径（优先使用）
 
-已在 2026-07-01 于本仓库验证通过。下次需要本机补丁构建或替换
+已在 2026-07-09 于本仓库验证通过。下次需要本机补丁构建或替换
 `CODEX_SWITCH_INSTALL_DIR` 指向的安装目录时，优先从这条路径开始；除非任务明确要求
 CI release、GNU/MinGW 诊断或上游对比，不要先试裸 `tauri build`、
 `npm run tauri:build:portable` 或其它临时路径。

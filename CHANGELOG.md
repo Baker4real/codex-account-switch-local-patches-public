@@ -14,6 +14,7 @@
 - 新增「使用统计」模块：位于「账号」和「设置」之间，从 Codex session JSONL 重建 `account_backup/openai_usage.sqlite`，只统计可证明为官方 OpenAI Base URL 的 token 增量，按账号、模型、时间范围、趋势、请求日志和数据源证据展示，并按模型价格估算费用；未知模型费用保持未定价，不当作 `$0`。
 - 使用统计筛选不再自我折叠：账号分类表移到时间选择下方、摘要卡片前；账号候选清除账号自身筛选但保留时间和模型筛选，模型候选清除模型自身筛选但保留时间和账号筛选，选择一个账号或模型后仍可切换到同一时间范围内的其他候选。
 - 使用统计刷新默认间隔改为 30 秒；手动刷新会立即显示进行中或排队状态，自动刷新不会覆盖正在进行的查询。请求日志分页和筛选现在使用请求序列与查询意图防止旧响应覆盖当前页，趋势图增加顶部余量、浅色 tooltip 和移动端表格横向滚动，避免峰值、浮层和日志列互相遮挡。
+- 使用统计的模型列和请求证据列现在会完整换行显示，不再因表格紧凑样式截断长模型名、请求模型、定价模型、reasoning effort 或 verbosity 证据。
 - OpenAI 使用统计升级为 evidence / facts / strict accepted events 分层账本：默认总额仍只读 strict proven，历史槽位归因估算同屏可见但不冒充官方账单；账号表按账号实体聚合，`account_identity_key` 优先，legacy label 只在能唯一桥接到同一 strict identity 时合并。
 - cc-switch 等只读外部证据冻结副本改放 `%CODEX_HOME%\usage_evidence\`，并显式排除 `account_backup\usage_evidence`，避免 evidence 目录被误识别成账号 profile。
 
