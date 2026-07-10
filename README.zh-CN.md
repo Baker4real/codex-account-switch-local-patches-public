@@ -133,7 +133,7 @@ Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msv
 
 替换本机安装目录时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
 
-本地补丁版构建完成后，如需同步到已配置的远端 Windows 桌面入口，先用 `npm run deploy:windows:remote-desktop -- -InspectOnly` 只读确认远端快捷方式目标，再用 `npm run deploy:windows:remote-desktop` 上传并覆盖同一目标目录里的 `codex_switch.exe` 与 `WebView2Loader.dll`。部署证据写入 `-EvidenceRoot`（默认读取 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`）下的 `remote-desktop-deploy-*`。详细规则见 `LOCAL_PATCHES.md`，设备专属默认值见 `docs/environments/windows-dual-host.md`。
+本地补丁版构建完成后，如需同步到远端 Windows 桌面入口，必须先显式提供 `RemoteTarget` 和 `RemoteDesktopLink` 并执行 `-InspectOnly`，确认快捷方式实时目标后再部署；正式部署还必须提供 `RemoteStageRoot`。三项既可通过同名参数传入，也可分别使用 `CODEX_SWITCH_REMOTE_TARGET`、`CODEX_SWITCH_REMOTE_DESKTOP_LINK`、`CODEX_REMOTE_STAGE_ROOT`。`EvidenceRoot` 必须来自参数、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 或 `CODEX_HOME` 派生路径。正式替换只停止可执行路径等于快捷方式目标的进程；复制或哈希校验失败时自动恢复备份，避免留下 exe/loader 混合版本。参数契约见 `LOCAL_PATCHES.md`，当前设备可直接复制的命令见 `docs/environments/windows-dual-host.md`。
 
 ## 版本与发布
 

@@ -65,27 +65,39 @@ Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dl
 [`docs/environments/windows-dual-host.md`](docs/environments/windows-dual-host.md)；快照
 只用于恢复默认值，执行部署时仍以 `-InspectOnly` 的实时解析结果为准。
 
-已沉淀的远端桌面覆盖入口：
+远端桌面覆盖入口使用显式参数；下面是通用形状，尖括号内容必须替换为真实值：
 
 ```powershell
-npm run deploy:windows:remote-desktop -- -InspectOnly
-npm run deploy:windows:remote-desktop
+npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -EvidenceRoot '<local-evidence-root>' -InspectOnly
+npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -RemoteStageRoot '<remote-stage-root>' -EvidenceRoot '<local-evidence-root>'
 ```
 
-- 远端主机与桌面入口由脚本参数 `-RemoteTarget`、`-RemoteDesktopLink` 决定；
-  设备专属默认值不得复制到通用部署契约里。
+- `RemoteTarget` 与 `RemoteDesktopLink` 对 inspect 和 deploy 都是必填项，可分别由
+  `-RemoteTarget` / `CODEX_SWITCH_REMOTE_TARGET` 与
+  `-RemoteDesktopLink` / `CODEX_SWITCH_REMOTE_DESKTOP_LINK` 提供。
+- `RemoteStageRoot` 只有正式 deploy 必填，可由 `-RemoteStageRoot` 或
+  `CODEX_REMOTE_STAGE_ROOT` 提供；`-InspectOnly` 不读取、不创建 staging，因而不要求该值。
+- `EvidenceRoot` 必须由 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`
+  或 `CODEX_HOME` 派生路径提供。脚本不依赖仓库内 `.scratch` 作为部署证据 fallback。
+- 设备专属默认值不得复制到通用部署契约；当前维护设备的可复制命令见
+  `docs/environments/windows-dual-host.md`。
 - 脚本先从
   `src-tauri\target\x86_64-pc-windows-msvc\release\codex_switch.exe`
   和 `release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll`
   读取本机构建产物并计算 SHA-256。
-- `-InspectOnly` 只解析远端快捷方式和当前哈希，不上传、不覆盖；正式执行会
+- `-InspectOnly` 只解析远端快捷方式和当前哈希，不上传、不覆盖，也不要求
+  `RemoteStageRoot`；正式执行会
   上传到 `-RemoteStageRoot`（默认读取 `CODEX_REMOTE_STAGE_ROOT`）下的时间戳目录，
-  由远端脚本备份旧文件、停止 `codex_switch`、覆盖 exe+dll 并复核哈希。
+  由远端脚本备份旧文件，只停止可执行路径等于快捷方式 `TargetPath` 的
+  `codex_switch` 进程，覆盖 exe+dll 并复核哈希；其他目录中的同名进程不受影响。
+- 远端替换开始后，如任一复制或哈希校验失败，脚本会自动用部署前备份恢复
+  `codex_switch.exe` 与 `WebView2Loader.dll`，避免目标目录停留在混合版本。
 - 脚本不保存密码。非交互认证通过 `-AskPassPath` 或调用环境里的
   `SSH_ASKPASS` 注入；通用文档不记录凭据来源或内容。
-- 每次运行的 stdout/stderr、inspect 和 deploy JSON 会落在 `-EvidenceRoot`
-  （默认读取 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`）下的
-  `remote-desktop-deploy-*` 目录，用于事后追踪和回滚定位。
+- 有效 evidence 根依次取 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`、
+  `CODEX_HOME\run-evidence\codex-account-switch`；三者都不可用时立即失败。每次运行的
+  stdout/stderr、inspect 和 deploy JSON 会写入其下的 `remote-desktop-deploy-*`
+  目录，用于事后追踪和回滚定位。
 
 `npm run test:rust:windows-gnu` 只用于当前 `rustc` host 是
 `x86_64-pc-windows-gnu` 的 GNU/MinGW 链接路径诊断；它不是替换安装版的主构建路径。
