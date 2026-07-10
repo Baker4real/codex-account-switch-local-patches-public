@@ -250,6 +250,34 @@ describe("UsageWorkspace", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("intent 请求失活后清除 loader，并在重新激活时补刷当前 intent", async () => {
+    const staleRequest = deferred<OpenAiUsageDashboard>();
+    const currentRequest = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(staleRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await workspace.dispatch({ type: "set-refresh-interval", intervalMs: 0 });
+    await workspace.dispatch({ type: "set-filters", model: "gpt-5.3-codex" });
+    const staleRefresh = workspace.dispatch({ type: "refresh", mode: "manual" });
+    expect(workspace.snapshot().logsLoading).toBe(true);
+
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+    expect(workspace.snapshot().logsLoading).toBe(false);
+    staleRequest.resolve(dashboardWithRequests(1));
+    await staleRefresh;
+
+    const reactivate = workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    expect(loadDashboard.mock.calls[1][0].model).toBe("gpt-5.3-codex");
+    currentRequest.resolve(dashboardWithRequests(2));
+    await reactivate;
+
+    expect(workspace.snapshot().logsLoading).toBe(false);
+    expect(workspace.snapshot().summary?.total_requests).toBe(2);
+  });
+
   it("只有 manual refresh 错误触发用户通知", async () => {
     const initialError = new Error("initial 失败");
     const autoError = new Error("auto 失败");

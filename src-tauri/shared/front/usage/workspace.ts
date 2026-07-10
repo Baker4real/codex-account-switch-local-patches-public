@@ -164,6 +164,7 @@ export function createUsageWorkspace(
   let refreshRun: Promise<void> | null = null;
   let activeRefreshMode: "initial" | "manual" | "auto" | null = null;
   let queuedRefreshMode: "initial" | "manual" | null = null;
+  let refreshOnActivate = false;
   let requestSerial = 0;
   let activeRequestSerial = 0;
 
@@ -280,6 +281,7 @@ export function createUsageWorkspace(
     state.loaded = true;
     state.loadError = null;
     state.logsLoading = false;
+    refreshOnActivate = false;
   }
 
   function syncRefreshTimer(): void {
@@ -414,20 +416,28 @@ export function createUsageWorkspace(
     switch (event.type) {
       case "set-context":
         const activeChanged = active !== event.active;
+        let shouldRefreshOnActivate = false;
         active = event.active;
         state.locale = event.locale;
         if (!active) {
           closeRangePicker();
           if (activeChanged) {
+            refreshOnActivate ||= state.logsLoading;
             invalidateActiveRequest();
             state.loading = false;
+            state.logsLoading = false;
           }
+        } else if (activeChanged && refreshOnActivate) {
+          refreshOnActivate = false;
+          state.logsLoading = true;
+          shouldRefreshOnActivate = true;
         }
         if (activeChanged) {
           syncRefreshTimer();
           syncRangeLiveEndTimer();
         }
         notifyChange();
+        if (shouldRefreshOnActivate) await refresh("initial");
         return;
       case "open-range-picker":
         if (!state.rangePickerOpen) resetRangeDraftFromCurrent();
