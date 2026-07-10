@@ -76,6 +76,7 @@ pub(super) fn validated_email_alias(value: Option<&str>) -> Option<String> {
 
 pub(super) struct CanonicalAccountResolver {
     canonical_by_node: BTreeMap<IdentityNode, String>,
+    latest_prior_by_evidence: BTreeMap<String, String>,
 }
 
 pub(super) type VerifiedProfileAliases = BTreeMap<(String, String), VerifiedIdentityAliases>;
@@ -113,6 +114,13 @@ impl CanonicalAccountResolver {
         let verified_aliases = facts
             .iter()
             .map(|fact| verified_aliases_for_fact(fact, verified_profile_aliases))
+            .collect::<Vec<_>>();
+        let confirmed_facts = facts
+            .iter()
+            .enumerate()
+            .map(|(index, fact)| {
+                aliases(fact).next().is_some() || verified_aliases[index].is_some()
+            })
             .collect::<Vec<_>>();
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
         let mut owner_by_node = BTreeMap::<IdentityNode, usize>::new();
@@ -170,8 +178,10 @@ impl CanonicalAccountResolver {
         }
 
         let mut components = BTreeMap::<usize, ComponentAliases>::new();
+        let mut roots = Vec::with_capacity(facts.len());
         for (index, fact) in facts.iter().enumerate() {
             let root = find(&mut parents, index);
+            roots.push(root);
             let component = components.entry(root).or_default();
             for alias in aliases(fact).chain(
                 verified_aliases[index]
@@ -191,7 +201,10 @@ impl CanonicalAccountResolver {
         }
 
         let mut canonical_by_node = BTreeMap::new();
-        for component in components.into_values() {
+        let mut canonical_by_root = BTreeMap::new();
+        let mut confirmed_roots = BTreeSet::new();
+        for (root, component) in components {
+            let confirmed = !component.account_ids.is_empty() || !component.emails.is_empty();
             let canonical = component
                 .account_ids
                 .first()
@@ -201,6 +214,10 @@ impl CanonicalAccountResolver {
             let Some(canonical) = canonical else {
                 continue;
             };
+            canonical_by_root.insert(root, canonical.clone());
+            if confirmed {
+                confirmed_roots.insert(root);
+            }
             for node in component
                 .account_ids
                 .into_iter()
@@ -216,7 +233,48 @@ impl CanonicalAccountResolver {
                 canonical_by_node.insert(node, canonical.clone());
             }
         }
-        Self { canonical_by_node }
+
+        let mut timelines = BTreeMap::<String, Vec<ConfirmedIdentityPoint>>::new();
+        for (index, fact) in facts.iter().enumerate() {
+            if !confirmed_facts[index] {
+                continue;
+            }
+            let Some(canonical) = canonical_by_root.get(&roots[index]) else {
+                continue;
+            };
+            timelines
+                .entry(fact.profile.clone())
+                .or_default()
+                .push(ConfirmedIdentityPoint {
+                    order: attribution_order(fact),
+                    canonical: canonical.clone(),
+                });
+        }
+        for timeline in timelines.values_mut() {
+            timeline.sort_by(|left, right| left.order.cmp(&right.order));
+        }
+
+        let mut latest_prior_by_evidence = BTreeMap::new();
+        for (index, fact) in facts.iter().enumerate() {
+            if confirmed_facts[index] || confirmed_roots.contains(&roots[index]) {
+                continue;
+            }
+            let Some(timeline) = timelines.get(&fact.profile) else {
+                continue;
+            };
+            let event_order = attribution_order(fact);
+            if let Some(point) = timeline
+                .iter()
+                .rev()
+                .find(|point| point.order < event_order)
+            {
+                latest_prior_by_evidence.insert(fact.evidence_id.clone(), point.canonical.clone());
+            }
+        }
+        Self {
+            canonical_by_node,
+            latest_prior_by_evidence,
+        }
     }
 
     pub(super) fn canonical_key(&self, fact: &UsageFact, fallback: String) -> String {
@@ -229,10 +287,36 @@ impl CanonicalAccountResolver {
                 return canonical;
             }
         }
+        if let Some(canonical) = self.latest_prior_by_evidence.get(&fact.evidence_id) {
+            return canonical.clone();
+        }
         self.canonical_by_node
             .get(&IdentityNode::Fallback(fallback.clone()))
             .cloned()
             .unwrap_or(fallback)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct AttributionOrder {
+    created_at_ms: u64,
+    attribution_window_id: Option<String>,
+    evidence_id: String,
+}
+
+struct ConfirmedIdentityPoint {
+    order: AttributionOrder,
+    canonical: String,
+}
+
+fn attribution_order(fact: &UsageFact) -> AttributionOrder {
+    // `created_at_ms` has millisecond precision, so equal timestamps do not prove
+    // observation order. Persisted window/evidence ids are the conservative,
+    // deterministic sequence; request/load order and current profile state are not.
+    AttributionOrder {
+        created_at_ms: fact.created_at_ms,
+        attribution_window_id: fact.attribution_window_id.clone(),
+        evidence_id: fact.evidence_id.clone(),
     }
 }
 

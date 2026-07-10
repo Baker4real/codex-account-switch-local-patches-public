@@ -4049,6 +4049,155 @@ mod tests {
         .unwrap();
     }
 
+    struct IdentityFactFixture<'a> {
+        evidence_id: &'a str,
+        request_id: &'a str,
+        fingerprint: &'a str,
+        profile: &'a str,
+        account_identity_key: Option<&'a str>,
+        account_id_alias: Option<&'a str>,
+        legacy_account_key: Option<&'a str>,
+        ledger_layer: &'a str,
+        attribution_kind: &'a str,
+        attribution_window_id: &'a str,
+        created_at_ms: i64,
+    }
+
+    fn confirmed_identity_fact<'a>(
+        evidence_id: &'a str,
+        request_id: &'a str,
+        profile: &'a str,
+        account_identity_key: &'a str,
+        account_id_alias: &'a str,
+        attribution_window_id: &'a str,
+        created_at_ms: i64,
+    ) -> IdentityFactFixture<'a> {
+        IdentityFactFixture {
+            evidence_id,
+            request_id,
+            fingerprint: evidence_id,
+            profile,
+            account_identity_key: Some(account_identity_key),
+            account_id_alias: Some(account_id_alias),
+            legacy_account_key: None,
+            ledger_layer: LEDGER_LAYER_STRICT_PROVEN,
+            attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT,
+            attribution_window_id,
+            created_at_ms,
+        }
+    }
+
+    fn legacy_identity_fact<'a>(
+        evidence_id: &'a str,
+        request_id: &'a str,
+        profile: &'a str,
+        legacy_account_key: &'a str,
+        attribution_window_id: &'a str,
+        created_at_ms: i64,
+    ) -> IdentityFactFixture<'a> {
+        IdentityFactFixture {
+            evidence_id,
+            request_id,
+            fingerprint: evidence_id,
+            profile,
+            account_identity_key: None,
+            account_id_alias: None,
+            legacy_account_key: Some(legacy_account_key),
+            ledger_layer: LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
+            attribution_kind: ATTRIBUTION_KIND_LEGACY_PROFILE,
+            attribution_window_id,
+            created_at_ms,
+        }
+    }
+
+    fn seed_usage_fact_fixture(
+        codex_home: &Path,
+        name: &str,
+        cumulative_totals: &[(u64, u64)],
+    ) -> Vec<String> {
+        fs::create_dir_all(codex_home).unwrap();
+        setup_profile(codex_home, None);
+        append_attribution_record(
+            codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("seed".to_string()),
+                account_label: Some("seed".to_string()),
+                account_identity_key: None,
+                account_id_alias: None,
+                email_alias: None,
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+        )
+        .unwrap();
+        let mut lines = vec![
+            format!(r#"{{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{{"id":"s-{name}"}}}}"#),
+            r#"{"timestamp":"2999-01-01T00:00:00.500Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#.to_string(),
+        ];
+        for (index, (input_tokens, output_tokens)) in cumulative_totals.iter().enumerate() {
+            lines.push(format!(
+                r#"{{"timestamp":"2999-01-01T00:00:{:02}.000Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{input_tokens},"cached_input_tokens":0,"output_tokens":{output_tokens},"reasoning_output_tokens":0}}}}}}}}"#,
+                index + 1,
+            ));
+        }
+        write_session(codex_home, &lines.join("\n"));
+        let seeded = load_openai_usage_dashboard(Some(codex_home), None, 1, 20).unwrap();
+        assert_eq!(
+            seeded
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            cumulative_totals.len() as u64
+        );
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(codex_home))).unwrap();
+        let mut stmt = conn
+            .prepare("SELECT evidence_id FROM openai_usage_facts ORDER BY created_at_ms")
+            .unwrap();
+        stmt.query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    fn rewrite_identity_fact(
+        conn: &Connection,
+        old_evidence_id: &str,
+        fixture: &IdentityFactFixture<'_>,
+    ) {
+        conn.execute(
+            r#"
+            UPDATE openai_usage_facts
+            SET evidence_id = ?1, request_id = ?2, fingerprint = ?3,
+                profile = ?4, account_label = NULL, account_identity_key = ?5,
+                account_id_alias = ?6, email_alias = NULL, legacy_account_key = ?7,
+                ledger_layer = ?8, attribution_kind = ?9,
+                attribution_window_id = ?10, created_at_ms = ?11
+            WHERE evidence_id = ?12
+            "#,
+            rusqlite::params![
+                fixture.evidence_id,
+                fixture.request_id,
+                fixture.fingerprint,
+                fixture.profile,
+                fixture.account_identity_key,
+                fixture.account_id_alias,
+                fixture.legacy_account_key,
+                fixture.ledger_layer,
+                fixture.attribution_kind,
+                fixture.attribution_window_id,
+                fixture.created_at_ms,
+                old_evidence_id,
+            ],
+        )
+        .unwrap();
+    }
+
     fn assert_profile_snapshot_does_not_recover(
         name: &str,
         auth: Option<&str>,
@@ -4521,6 +4670,376 @@ mod tests {
             account.account_group_key.as_deref(),
             Some("acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829")
         );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_uses_latest_prior_identity_without_future_backfill() {
+        let codex_home = temp_codex_home("dashboard-latest-prior-identity");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        append_attribution_record(
+            &codex_home,
+            &AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("seed".to_string()),
+                account_label: Some("seed".to_string()),
+                account_identity_key: None,
+                account_id_alias: None,
+                email_alias: None,
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-latest-prior"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:00.500Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":1,"output_tokens":1,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":30,"cached_input_tokens":3,"output_tokens":3,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":60,"cached_input_tokens":6,"output_tokens":6,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":10,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+        let seeded = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(seeded.account_summary.len(), 1);
+
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let evidence_ids = {
+            let mut stmt = conn
+                .prepare("SELECT evidence_id FROM openai_usage_facts ORDER BY created_at_ms")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        assert_eq!(evidence_ids.len(), 4);
+        let alias_a = identity::account_id_alias(Some("acct_timeline_a")).unwrap();
+        let alias_b = identity::account_id_alias(Some("acct_timeline_b")).unwrap();
+        let rows = [
+            (
+                "e-a-100",
+                "r-a-100",
+                "f-a-100",
+                Some("identity-a"),
+                Some(alias_a.as_str()),
+                None,
+                LEDGER_LAYER_STRICT_PROVEN,
+                ATTRIBUTION_KIND_STRICT_ACCOUNT,
+                "0100",
+                100_i64,
+            ),
+            (
+                "e-legacy-150",
+                "r-legacy-150",
+                "f-legacy-150",
+                None,
+                None,
+                Some("legacy-p-150"),
+                LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
+                ATTRIBUTION_KIND_LEGACY_PROFILE,
+                "0150",
+                150_i64,
+            ),
+            (
+                "e-b-200",
+                "r-b-200",
+                "f-b-200",
+                Some("identity-b"),
+                Some(alias_b.as_str()),
+                None,
+                LEDGER_LAYER_STRICT_PROVEN,
+                ATTRIBUTION_KIND_STRICT_ACCOUNT,
+                "0200",
+                200_i64,
+            ),
+            (
+                "e-legacy-250",
+                "r-legacy-250",
+                "f-legacy-250",
+                None,
+                None,
+                Some("legacy-p-250"),
+                LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
+                ATTRIBUTION_KIND_LEGACY_PROFILE,
+                "0250",
+                250_i64,
+            ),
+        ];
+        for (old_evidence_id, row) in evidence_ids.iter().zip(rows) {
+            conn.execute(
+                r#"
+                UPDATE openai_usage_facts
+                SET evidence_id = ?1, request_id = ?2, fingerprint = ?3,
+                    profile = 'p', account_label = NULL, account_identity_key = ?4,
+                    account_id_alias = ?5, email_alias = NULL, legacy_account_key = ?6,
+                    ledger_layer = ?7, attribution_kind = ?8,
+                    attribution_window_id = ?9, created_at_ms = ?10
+                WHERE evidence_id = ?11
+                "#,
+                rusqlite::params![
+                    row.0,
+                    row.1,
+                    row.2,
+                    row.3,
+                    row.4,
+                    row.5,
+                    row.6,
+                    row.7,
+                    row.8,
+                    row.9,
+                    old_evidence_id,
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(dashboard.account_summary.len(), 2);
+        let accounts = dashboard
+            .account_summary
+            .iter()
+            .map(|account| {
+                (
+                    account.account_group_key.as_deref().unwrap(),
+                    (
+                        account.request_count,
+                        account.tokens.input_tokens,
+                        account.tokens.output_tokens,
+                        account.tokens.real_total_tokens,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(accounts.get(alias_a.as_str()), Some(&(2, 30, 3, 33)));
+        assert_eq!(accounts.get(alias_b.as_str()), Some(&(2, 70, 7, 77)));
+        assert_eq!(accounts.values().map(|value| value.0).sum::<u64>(), 4);
+        assert_eq!(accounts.values().map(|value| value.1).sum::<u64>(), 100);
+        assert_eq!(accounts.values().map(|value| value.2).sum::<u64>(), 10);
+        assert_eq!(accounts.values().map(|value| value.3).sum::<u64>(), 110);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_keeps_pre_identity_usage_unattributed() {
+        let codex_home = temp_codex_home("dashboard-pre-identity-unknown");
+        let evidence_ids =
+            seed_usage_fact_fixture(&codex_home, "pre-identity-unknown", &[(10, 1), (30, 3)]);
+        assert_eq!(evidence_ids.len(), 2);
+        let alias_a = identity::account_id_alias(Some("acct_timeline_a")).unwrap();
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[0],
+            &legacy_identity_fact(
+                "e-legacy-050",
+                "r-legacy-050",
+                "p",
+                "legacy-p-050",
+                "0050",
+                50,
+            ),
+        );
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[1],
+            &confirmed_identity_fact(
+                "e-a-100",
+                "r-a-100",
+                "p",
+                "identity-a",
+                &alias_a,
+                "0100",
+                100,
+            ),
+        );
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(dashboard.account_summary.len(), 2);
+        let accounts = dashboard
+            .account_summary
+            .iter()
+            .map(|account| {
+                (
+                    account.account_group_key.as_deref().unwrap(),
+                    (
+                        account.request_count,
+                        account.tokens.input_tokens,
+                        account.tokens.output_tokens,
+                        account.tokens.real_total_tokens,
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(accounts.get("legacy:legacy-p-050"), Some(&(1, 10, 1, 11)));
+        assert_eq!(accounts.get(alias_a.as_str()), Some(&(1, 20, 2, 22)));
+        assert_eq!(accounts.values().map(|value| value.0).sum::<u64>(), 2);
+        assert_eq!(accounts.values().map(|value| value.3).sum::<u64>(), 33);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_latest_prior_is_profile_scoped_and_order_independent() {
+        let codex_home = temp_codex_home("dashboard-profile-scoped-latest-prior");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "profile-scoped-latest-prior",
+            &[
+                (10, 1),
+                (30, 3),
+                (60, 6),
+                (100, 10),
+                (150, 15),
+                (210, 21),
+                (280, 28),
+                (360, 36),
+            ],
+        );
+        assert_eq!(evidence_ids.len(), 8);
+        let alias_x = identity::account_id_alias(Some("acct_timeline_x")).unwrap();
+        let alias_a = identity::account_id_alias(Some("acct_timeline_a")).unwrap();
+        let alias_b = identity::account_id_alias(Some("acct_timeline_b")).unwrap();
+        let alias_c = identity::account_id_alias(Some("acct_timeline_c")).unwrap();
+        let fixtures = [
+            confirmed_identity_fact(
+                "e-x-040",
+                "r-x-040",
+                "q",
+                "identity-x",
+                &alias_x,
+                "0040",
+                40,
+            ),
+            legacy_identity_fact(
+                "e-legacy-050",
+                "r-legacy-050",
+                "p",
+                "legacy-p-050",
+                "0050",
+                50,
+            ),
+            confirmed_identity_fact(
+                "e-a-100",
+                "r-a-100",
+                "p",
+                "identity-a",
+                &alias_a,
+                "0100",
+                100,
+            ),
+            legacy_identity_fact(
+                "e-legacy-150",
+                "r-legacy-150",
+                "p",
+                "legacy-p-150",
+                "0150",
+                150,
+            ),
+            confirmed_identity_fact(
+                "e-b-200",
+                "z-confirmed-b-200",
+                "p",
+                "identity-b",
+                &alias_b,
+                "0200-a",
+                200,
+            ),
+            legacy_identity_fact(
+                "e-legacy-after-b-200",
+                "a-legacy-after-b-200",
+                "p",
+                "legacy-p-after-b-200",
+                "0200-b",
+                200,
+            ),
+            legacy_identity_fact(
+                "e-legacy-before-c-300",
+                "z-legacy-before-c-300",
+                "p",
+                "legacy-p-before-c-300",
+                "0300-a",
+                300,
+            ),
+            confirmed_identity_fact(
+                "e-c-300",
+                "a-confirmed-c-300",
+                "p",
+                "identity-c",
+                &alias_c,
+                "0300-b",
+                300,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        drop(conn);
+
+        let account_counts = |dashboard: &OpenAiUsageDashboard| {
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| {
+                    (
+                        account.account_group_key.clone().unwrap(),
+                        account.request_count,
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let first = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let first_counts = account_counts(&first);
+        assert_eq!(first_counts.get(alias_x.as_str()), Some(&1));
+        assert_eq!(first_counts.get("legacy:legacy-p-050"), Some(&1));
+        assert_eq!(first_counts.get(alias_a.as_str()), Some(&2));
+        assert_eq!(first_counts.get(alias_b.as_str()), Some(&3));
+        assert_eq!(first_counts.get(alias_c.as_str()), Some(&1));
+        assert_eq!(first_counts.values().sum::<u64>(), 8);
+        assert_eq!(
+            first
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            396
+        );
+
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET request_id = 'a-confirmed-b-200' WHERE evidence_id = 'e-b-200'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET request_id = 'z-legacy-after-b-200' WHERE evidence_id = 'e-legacy-after-b-200'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET request_id = 'a-legacy-before-c-300' WHERE evidence_id = 'e-legacy-before-c-300'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET request_id = 'z-confirmed-c-300' WHERE evidence_id = 'e-c-300'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let reversed = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(account_counts(&reversed), first_counts);
         let _ = fs::remove_dir_all(&codex_home);
     }
 
