@@ -4324,13 +4324,18 @@ mod tests {
         setup_profile(&codex_home, None);
         let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
         fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        let history_identity_key = account_identity_key(&AccountIdentity {
+            account_id: None,
+            email: Some("User@Example.com".to_string()),
+        });
         fs::write(
             attribution_path,
             [
                 r#"{"observed_at_ms":32472144000000,"profile":"email-only-history","account_label":" User@Example.com ","account_identity_key":"acct_key_email_only","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144003000,"profile":"dual-current","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
-            .join("\n"),
+            .join("\n")
+            .replace("acct_key_email_only", &history_identity_key),
         )
         .unwrap();
         write_session(
@@ -4364,13 +4369,18 @@ mod tests {
         setup_profile(&codex_home, None);
         let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
         fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        let history_identity_key = account_identity_key(&AccountIdentity {
+            account_id: Some("acct_A".to_string()),
+            email: None,
+        });
         fs::write(
             attribution_path,
             [
                 r#"{"observed_at_ms":32472144000000,"profile":"account-only-history","account_label":" acct_A ","account_identity_key":"acct_key_account_only","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144003000,"profile":"dual-current","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
-            .join("\n"),
+            .join("\n")
+            .replace("acct_key_account_only", &history_identity_key),
         )
         .unwrap();
         write_session(
@@ -4393,6 +4403,104 @@ mod tests {
         assert_eq!(
             account.account_group_key.as_deref(),
             Some("acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829")
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_rejects_email_label_bridge_with_conflicting_identity_key() {
+        let codex_home = temp_codex_home("dashboard-conflicting-email-label-key");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"conflicting-history","account_label":"user@example.com","account_identity_key":"acct_key_conflict_email","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"other-account","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-conflicting-email-label-key"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 2);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            1700
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_rejects_account_id_label_bridge_with_conflicting_identity_key() {
+        let codex_home = temp_codex_home("dashboard-conflicting-account-label-key");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"conflicting-history","account_label":"acct_A","account_identity_key":"acct_key_conflict_account","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"other-account","account_label":"acct_A","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-conflicting-account-label-key"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 2);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            1700
         );
         let _ = fs::remove_dir_all(&codex_home);
     }

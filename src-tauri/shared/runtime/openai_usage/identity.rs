@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 
-use super::UsageFact;
+use super::{account_identity_key, AccountIdentity, UsageFact};
 
 pub(super) fn account_id_alias(value: Option<&str>) -> Option<String> {
     normalized_non_empty(value).map(|value| format!("acct:{}", sha256_hex(value.as_bytes())))
@@ -94,18 +94,39 @@ impl CanonicalAccountResolver {
             if aliases(fact).next().is_some() || fact.account_identity_key.is_none() {
                 continue;
             }
-            let Some(label) = fact.account_label.as_deref() else {
+            let Some(label) = fact
+                .account_label
+                .as_deref()
+                .map(str::trim)
+                .filter(|label| !label.is_empty())
+            else {
                 continue;
             };
-            let candidate = if label.contains('@') {
-                email_alias(Some(label)).map(IdentityAlias::Email)
+            let (candidate_identity, candidate_alias) = if label.contains('@') {
+                (
+                    AccountIdentity {
+                        account_id: None,
+                        email: Some(label.to_string()),
+                    },
+                    email_alias(Some(label)).map(IdentityAlias::Email),
+                )
             } else {
-                account_id_alias(Some(label)).map(IdentityAlias::AccountId)
+                (
+                    AccountIdentity {
+                        account_id: Some(label.to_string()),
+                        email: None,
+                    },
+                    account_id_alias(Some(label)).map(IdentityAlias::AccountId),
+                )
             };
-            let Some(candidate) = candidate else {
+            let candidate_identity_key = account_identity_key(&candidate_identity);
+            if fact.account_identity_key.as_deref() != Some(candidate_identity_key.as_str()) {
+                continue;
+            }
+            let Some(candidate_alias) = candidate_alias else {
                 continue;
             };
-            if let Some(owner) = owner_by_node.get(&IdentityNode::Alias(candidate)) {
+            if let Some(owner) = owner_by_node.get(&IdentityNode::Alias(candidate_alias)) {
                 union(&mut parents, index, *owner);
             }
         }
