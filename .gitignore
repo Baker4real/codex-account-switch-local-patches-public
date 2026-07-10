@@ -25,9 +25,15 @@ codex_history/
 .codex/
 .claude/
 .scratch/run-evidence/
+.local/
+*.local.md
+.env.local
+.env.*.local
 docs/*
 !docs/agents/
 !docs/agents/**
+!docs/environments/
+!docs/environments/**
 !docs/plans/
 !docs/plans/**
 !docs/specs/
