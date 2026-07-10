@@ -725,8 +725,8 @@ git commit -m "docs: describe usage deep modules"
 此阶段由主 agent 执行，不委托实现子代理。
 
 - [x] 确认 `codex/deepen-usage-modules` 上所有任务提交存在，完整测试和最终 review 通过。
-- [ ] 记录用户未提交 `.gitignore`、`AGENTS.md` diff，确认切换分支不会覆盖。
-- [ ] 切换 `main`，以 `git merge --ff-only codex/deepen-usage-modules` 合入临时分支；不得 squash 掉任务级审查提交。
-- [ ] 在 `main` 上重新运行 `npm run test:front`、`npm test` 与 `git status --short --branch`。
-- [ ] 删除本地 `codex/deepen-usage-modules` 分支。
-- [ ] 验证 `main` 含所有实现提交，临时分支不存在，用户原有未提交改动仍在。
+- [x] 记录用户未提交 `.gitignore`、`AGENTS.md` diff，确认切换分支不会覆盖。
+- [x] 切换 `main`，以 `git merge --ff-only codex/deepen-usage-modules` 合入临时分支；不得 squash 掉任务级审查提交。
+- [x] 在 `main` 上重新运行 `npm run test:front`、`npm test` 与 `git status --short --branch`。
+- [x] 删除本地 `codex/deepen-usage-modules` 分支。
+- [x] 验证 `main` 含所有实现提交，临时分支不存在，用户原有未提交改动仍在。
