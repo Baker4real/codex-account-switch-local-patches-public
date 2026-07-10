@@ -4,7 +4,8 @@ use std::fmt::Write as _;
 use sha2::{Digest, Sha256};
 
 use super::{
-    account_identity_key, AccountIdentity, UsageFact, ATTRIBUTION_KIND_STRICT_ACCOUNT,
+    account_identity_key, AccountIdentity, UsageFact, ATTRIBUTION_KIND_LEGACY_PROFILE,
+    ATTRIBUTION_KIND_STRICT_ACCOUNT, LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
     LEDGER_LAYER_STRICT_PROVEN,
 };
 
@@ -79,6 +80,7 @@ pub(super) fn validated_email_alias(value: Option<&str>) -> Option<String> {
 
 pub(super) struct CanonicalAccountResolver {
     canonical_by_node: BTreeMap<IdentityNode, String>,
+    trusted_canonical_by_evidence: BTreeMap<String, String>,
     latest_prior_by_evidence: BTreeMap<String, String>,
 }
 
@@ -118,16 +120,33 @@ impl CanonicalAccountResolver {
             .iter()
             .map(|fact| verified_aliases_for_fact(fact, verified_profile_aliases))
             .collect::<Vec<_>>();
-        let confirmed_facts = facts
+        let trusted_aliases = facts
             .iter()
             .enumerate()
             .map(|(index, fact)| {
-                let strict_typed_alias = fact.ledger_layer == LEDGER_LAYER_STRICT_PROVEN
+                let strict_aliases = if fact.ledger_layer == LEDGER_LAYER_STRICT_PROVEN
                     && fact.attribution_kind == ATTRIBUTION_KIND_STRICT_ACCOUNT
-                    && aliases(fact).next().is_some();
-                strict_typed_alias || verified_aliases[index].is_some()
+                {
+                    aliases(fact).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                if strict_aliases.is_empty() {
+                    verified_aliases[index]
+                        .iter()
+                        .flat_map(|value| value.aliases())
+                        .collect::<Vec<_>>()
+                } else {
+                    strict_aliases
+                }
             })
             .collect::<Vec<_>>();
+        let confirmed_facts = trusted_aliases
+            .iter()
+            .map(|aliases| !aliases.is_empty())
+            .collect::<Vec<_>>();
+        let profile_trusted_components = build_trusted_components(facts, &trusted_aliases, true);
+        let global_trusted_components = build_trusted_components(facts, &trusted_aliases, false);
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
         let mut owner_by_node = BTreeMap::<IdentityNode, usize>::new();
         for (index, (fact, fallback_key)) in facts.iter().zip(fallback_keys).enumerate() {
@@ -240,12 +259,29 @@ impl CanonicalAccountResolver {
             }
         }
 
+        let mut trusted_canonical_by_evidence = BTreeMap::new();
+        for (index, fact) in facts.iter().enumerate() {
+            let (Some(profile_trusted), Some(global_trusted), Some(global_canonical)) = (
+                profile_trusted_components[index].as_ref(),
+                global_trusted_components[index].as_ref(),
+                canonical_by_root.get(&roots[index]),
+            ) else {
+                continue;
+            };
+            let trusted_canonical = if global_trusted.aliases.contains(global_canonical) {
+                global_canonical.clone()
+            } else {
+                profile_trusted.canonical.clone()
+            };
+            trusted_canonical_by_evidence.insert(fact.evidence_id.clone(), trusted_canonical);
+        }
+
         let mut timelines = BTreeMap::<String, Vec<ConfirmedIdentityPoint>>::new();
         for (index, fact) in facts.iter().enumerate() {
             if !confirmed_facts[index] {
                 continue;
             }
-            let Some(canonical) = canonical_by_root.get(&roots[index]) else {
+            let Some(canonical) = trusted_canonical_by_evidence.get(&fact.evidence_id) else {
                 continue;
             };
             timelines
@@ -262,7 +298,10 @@ impl CanonicalAccountResolver {
 
         let mut latest_prior_by_evidence = BTreeMap::new();
         for (index, fact) in facts.iter().enumerate() {
-            if confirmed_facts[index] || confirmed_roots.contains(&roots[index]) {
+            if confirmed_facts[index]
+                || confirmed_roots.contains(&roots[index])
+                || !is_latest_prior_eligible(fact)
+            {
                 continue;
             }
             let Some(timeline) = timelines.get(&fact.profile) else {
@@ -275,11 +314,15 @@ impl CanonicalAccountResolver {
         }
         Self {
             canonical_by_node,
+            trusted_canonical_by_evidence,
             latest_prior_by_evidence,
         }
     }
 
     pub(super) fn canonical_key(&self, fact: &UsageFact, fallback: String) -> String {
+        if let Some(canonical) = self.trusted_canonical_by_evidence.get(&fact.evidence_id) {
+            return canonical.clone();
+        }
         for alias in aliases(fact) {
             if let Some(canonical) = self
                 .canonical_by_node
@@ -299,6 +342,13 @@ impl CanonicalAccountResolver {
     }
 }
 
+fn is_latest_prior_eligible(fact: &UsageFact) -> bool {
+    fact.ledger_layer == LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED
+        && fact.attribution_kind == ATTRIBUTION_KIND_LEGACY_PROFILE
+        && aliases(fact).next().is_none()
+        && fact.account_identity_key.is_none()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct AttributionOrder {
     created_at_ms: u64,
@@ -308,17 +358,28 @@ struct AttributionOrder {
 }
 
 impl AttributionOrder {
-    fn is_proven_prior_to(&self, event: &Self) -> bool {
+    fn relation_to(&self, event: &Self) -> TemporalRelation {
         match self.created_at_ms.cmp(&event.created_at_ms) {
-            std::cmp::Ordering::Less => true,
-            std::cmp::Ordering::Greater => false,
-            std::cmp::Ordering::Equal => matches!(
-                (self.numeric_window_id, event.numeric_window_id),
-                (Some(confirmed_window), Some(event_window))
-                    if confirmed_window < event_window
-            ),
+            std::cmp::Ordering::Less => TemporalRelation::Prior,
+            std::cmp::Ordering::Greater => TemporalRelation::After,
+            std::cmp::Ordering::Equal => match (self.numeric_window_id, event.numeric_window_id) {
+                (Some(confirmed_window), Some(event_window)) if confirmed_window < event_window => {
+                    TemporalRelation::Prior
+                }
+                (Some(confirmed_window), Some(event_window)) if confirmed_window > event_window => {
+                    TemporalRelation::After
+                }
+                _ => TemporalRelation::Unknown,
+            },
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TemporalRelation {
+    Prior,
+    After,
+    Unknown,
 }
 
 struct ConfirmedIdentityPoint {
@@ -337,12 +398,18 @@ fn latest_proven_prior<'a>(
         while start > 0 && timeline[start - 1].order.created_at_ms == created_at_ms {
             start -= 1;
         }
-        let eligible = timeline[start..end]
+        let prior = timeline[start..end]
             .iter()
-            .filter(|point| point.order.is_proven_prior_to(event))
+            .filter(|point| point.order.relation_to(event) == TemporalRelation::Prior)
             .collect::<Vec<_>>();
-        if let Some(point) = proven_latest_in_cohort(&eligible) {
-            return Some(point);
+        if let Some(point) = proven_latest_in_cohort(&prior) {
+            let conflicting_unknown = timeline[start..end].iter().any(|competitor| {
+                competitor.order.relation_to(event) == TemporalRelation::Unknown
+                    && competitor.canonical != point.canonical
+            });
+            if !conflicting_unknown {
+                return Some(point);
+            }
         }
         end = start;
     }
@@ -390,6 +457,76 @@ fn attribution_order(fact: &UsageFact) -> AttributionOrder {
         attribution_window_id: fact.attribution_window_id.clone(),
         evidence_id: fact.evidence_id.clone(),
     }
+}
+
+#[derive(Clone)]
+struct TrustedIdentityComponent {
+    canonical: String,
+    aliases: BTreeSet<String>,
+}
+
+fn build_trusted_components(
+    facts: &[UsageFact],
+    aliases_by_fact: &[Vec<IdentityAlias>],
+    profile_scoped: bool,
+) -> Vec<Option<TrustedIdentityComponent>> {
+    let mut parents = (0..facts.len()).collect::<Vec<_>>();
+    let mut owner_by_alias = BTreeMap::<(Option<String>, IdentityAlias), usize>::new();
+    for (index, (fact, fact_aliases)) in facts.iter().zip(aliases_by_fact).enumerate() {
+        let scope = profile_scoped.then(|| fact.profile.clone());
+        for alias in fact_aliases {
+            if let Some(owner) = owner_by_alias.insert((scope.clone(), alias.clone()), index) {
+                union(&mut parents, index, owner);
+            }
+        }
+    }
+
+    let roots = (0..facts.len())
+        .map(|index| find(&mut parents, index))
+        .collect::<Vec<_>>();
+    let mut components = BTreeMap::<usize, ComponentAliases>::new();
+    for (index, fact_aliases) in aliases_by_fact.iter().enumerate() {
+        if fact_aliases.is_empty() {
+            continue;
+        }
+        let component = components.entry(roots[index]).or_default();
+        for alias in fact_aliases {
+            match alias {
+                IdentityAlias::AccountId(value) => {
+                    component.account_ids.insert(value.clone());
+                }
+                IdentityAlias::Email(value) => {
+                    component.emails.insert(value.clone());
+                }
+            }
+        }
+    }
+
+    let components = components
+        .into_iter()
+        .filter_map(|(root, component)| {
+            let canonical = component
+                .account_ids
+                .first()
+                .or_else(|| component.emails.first())?
+                .clone();
+            let aliases = component
+                .account_ids
+                .into_iter()
+                .chain(component.emails)
+                .collect();
+            Some((root, TrustedIdentityComponent { canonical, aliases }))
+        })
+        .collect::<BTreeMap<_, _>>();
+    roots
+        .into_iter()
+        .enumerate()
+        .map(|(index, root)| {
+            (!aliases_by_fact[index].is_empty())
+                .then(|| components.get(&root).cloned())
+                .flatten()
+        })
+        .collect()
 }
 
 #[derive(Default)]
