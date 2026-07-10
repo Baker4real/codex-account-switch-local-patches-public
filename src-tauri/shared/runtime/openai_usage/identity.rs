@@ -82,6 +82,7 @@ pub(super) struct CanonicalAccountResolver {
     canonical_by_node: BTreeMap<IdentityNode, String>,
     trusted_canonical_by_evidence: BTreeMap<String, String>,
     latest_prior_by_evidence: BTreeMap<String, String>,
+    latest_prior_eligible_evidence: BTreeSet<String>,
 }
 
 pub(super) type VerifiedProfileAliases = BTreeMap<(String, String), VerifiedIdentityAliases>;
@@ -227,9 +228,7 @@ impl CanonicalAccountResolver {
 
         let mut canonical_by_node = BTreeMap::new();
         let mut canonical_by_root = BTreeMap::new();
-        let mut confirmed_roots = BTreeSet::new();
         for (root, component) in components {
-            let confirmed = !component.account_ids.is_empty() || !component.emails.is_empty();
             let canonical = component
                 .account_ids
                 .first()
@@ -240,9 +239,6 @@ impl CanonicalAccountResolver {
                 continue;
             };
             canonical_by_root.insert(root, canonical.clone());
-            if confirmed {
-                confirmed_roots.insert(root);
-            }
             for node in component
                 .account_ids
                 .into_iter()
@@ -261,7 +257,7 @@ impl CanonicalAccountResolver {
 
         let mut trusted_canonical_by_evidence = BTreeMap::new();
         for (index, fact) in facts.iter().enumerate() {
-            let (Some(profile_trusted), Some(global_trusted), Some(global_canonical)) = (
+            let (Some(_profile_trusted), Some(global_trusted), Some(global_canonical)) = (
                 profile_trusted_components[index].as_ref(),
                 global_trusted_components[index].as_ref(),
                 canonical_by_root.get(&roots[index]),
@@ -271,7 +267,7 @@ impl CanonicalAccountResolver {
             let trusted_canonical = if global_trusted.aliases.contains(global_canonical) {
                 global_canonical.clone()
             } else {
-                profile_trusted.canonical.clone()
+                global_trusted.canonical.clone()
             };
             trusted_canonical_by_evidence.insert(fact.evidence_id.clone(), trusted_canonical);
         }
@@ -297,10 +293,13 @@ impl CanonicalAccountResolver {
         }
 
         let mut latest_prior_by_evidence = BTreeMap::new();
+        let latest_prior_eligible_evidence = facts
+            .iter()
+            .filter(|fact| is_latest_prior_eligible(fact))
+            .map(|fact| fact.evidence_id.clone())
+            .collect::<BTreeSet<_>>();
         for (index, fact) in facts.iter().enumerate() {
-            if confirmed_facts[index]
-                || confirmed_roots.contains(&roots[index])
-                || !is_latest_prior_eligible(fact)
+            if confirmed_facts[index] || !latest_prior_eligible_evidence.contains(&fact.evidence_id)
             {
                 continue;
             }
@@ -316,6 +315,7 @@ impl CanonicalAccountResolver {
             canonical_by_node,
             trusted_canonical_by_evidence,
             latest_prior_by_evidence,
+            latest_prior_eligible_evidence,
         }
     }
 
@@ -334,6 +334,12 @@ impl CanonicalAccountResolver {
         }
         if let Some(canonical) = self.latest_prior_by_evidence.get(&fact.evidence_id) {
             return canonical.clone();
+        }
+        if self
+            .latest_prior_eligible_evidence
+            .contains(&fact.evidence_id)
+        {
+            return fallback;
         }
         self.canonical_by_node
             .get(&IdentityNode::Fallback(fallback.clone()))
