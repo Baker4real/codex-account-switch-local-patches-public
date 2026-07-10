@@ -29,16 +29,17 @@ fn sha256_hex(value: &[u8]) -> String {
 }
 
 pub(super) struct CanonicalAccountResolver {
-    canonical_by_alias: BTreeMap<String, String>,
+    canonical_by_node: BTreeMap<String, String>,
 }
 
 impl CanonicalAccountResolver {
-    pub(super) fn from_facts(facts: &[UsageFact]) -> Self {
+    pub(super) fn from_facts(facts: &[UsageFact], fallback_keys: &[String]) -> Self {
+        debug_assert_eq!(facts.len(), fallback_keys.len());
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
-        let mut owner_by_alias = BTreeMap::<String, usize>::new();
-        for (index, fact) in facts.iter().enumerate() {
-            for alias in aliases(fact) {
-                if let Some(owner) = owner_by_alias.insert(alias.to_string(), index) {
+        let mut owner_by_node = BTreeMap::<String, usize>::new();
+        for (index, (fact, fallback_key)) in facts.iter().zip(fallback_keys).enumerate() {
+            for node in identity_nodes(fact, fallback_key) {
+                if let Some(owner) = owner_by_node.insert(node.to_string(), index) {
                     union(&mut parents, index, owner);
                 }
             }
@@ -54,28 +55,41 @@ impl CanonicalAccountResolver {
             if let Some(alias) = non_empty_alias(fact.email_alias.as_deref()) {
                 component.emails.insert(alias.to_string());
             }
+            component.fallbacks.insert(fallback_keys[index].clone());
         }
 
-        let mut canonical_by_alias = BTreeMap::new();
+        let mut canonical_by_node = BTreeMap::new();
         for component in components.into_values() {
             let canonical = component
                 .account_ids
                 .first()
                 .or_else(|| component.emails.first())
+                .or_else(|| component.fallbacks.first())
                 .cloned();
             let Some(canonical) = canonical else {
                 continue;
             };
-            for alias in component.account_ids.into_iter().chain(component.emails) {
-                canonical_by_alias.insert(alias, canonical.clone());
+            for node in component
+                .account_ids
+                .into_iter()
+                .chain(component.emails)
+                .chain(component.fallbacks)
+            {
+                canonical_by_node.insert(node, canonical.clone());
             }
         }
-        Self { canonical_by_alias }
+        Self { canonical_by_node }
     }
 
     pub(super) fn canonical_key(&self, fact: &UsageFact, fallback: String) -> String {
-        aliases(fact)
-            .find_map(|alias| self.canonical_by_alias.get(alias).cloned())
+        if let Some(canonical) =
+            aliases(fact).find_map(|alias| self.canonical_by_node.get(alias).cloned())
+        {
+            return canonical;
+        }
+        self.canonical_by_node
+            .get(&fallback)
+            .cloned()
             .unwrap_or(fallback)
     }
 }
@@ -84,6 +98,11 @@ impl CanonicalAccountResolver {
 struct ComponentAliases {
     account_ids: BTreeSet<String>,
     emails: BTreeSet<String>,
+    fallbacks: BTreeSet<String>,
+}
+
+fn identity_nodes<'a>(fact: &'a UsageFact, fallback: &'a str) -> impl Iterator<Item = &'a str> {
+    aliases(fact).chain(std::iter::once(fallback))
 }
 
 fn aliases(fact: &UsageFact) -> impl Iterator<Item = &str> {

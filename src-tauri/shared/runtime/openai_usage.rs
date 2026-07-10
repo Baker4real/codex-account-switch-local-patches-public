@@ -689,7 +689,12 @@ fn build_account_summary_from_facts(
     facts: &[UsageFact],
     query: &OpenAiUsageQuery,
 ) -> OpenAiUsageSummary {
-    let resolver = identity::CanonicalAccountResolver::from_facts(facts);
+    let label_identities = strict_label_identities(facts);
+    let fallback_keys = facts
+        .iter()
+        .map(|fact| account_group_key(fact, &label_identities))
+        .collect::<Vec<_>>();
+    let resolver = identity::CanonicalAccountResolver::from_facts(facts, &fallback_keys);
     build_summary_from_facts_with_resolver(summary, facts, query, Some(&resolver))
 }
 
@@ -4249,6 +4254,48 @@ mod tests {
         assert_eq!(dashboard.account_summary[0].tokens.input_tokens, 1500);
         assert_eq!(dashboard.account_summary[0].tokens.output_tokens, 200);
         assert_eq!(dashboard.account_summary[0].tokens.real_total_tokens, 1700);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_merges_aliasless_history_via_shared_fallback_identity() {
+        let codex_home = temp_codex_home("dashboard-aliasless-history-merge");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"old-strict","account_label":"same@example.com","account_identity_key":"acct_key_same","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"new-strict","account_label":"same@example.com","account_identity_key":"acct_key_same","account_id_alias":"acct:fixture-shared","email_alias":"email:fixture-shared","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144005000,"profile":"legacy","account_label":"same@example.com","account_identity_key":null,"account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-aliasless-history"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1800,"cached_input_tokens":280,"output_tokens":250,"reasoning_output_tokens":50}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        let account = &dashboard.account_summary[0];
+        assert_eq!(account.request_count, 3);
+        assert_eq!(account.tokens.input_tokens, 1800);
+        assert_eq!(account.tokens.cached_input_tokens, 280);
+        assert_eq!(account.tokens.output_tokens, 250);
+        assert_eq!(account.tokens.reasoning_output_tokens, 50);
+        assert_eq!(account.tokens.real_total_tokens, 2050);
         let _ = fs::remove_dir_all(&codex_home);
     }
 
