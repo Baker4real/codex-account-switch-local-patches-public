@@ -64,12 +64,46 @@ interface UsageDomHandlers {
 }
 
 // 仅在 Usage DOM 边界内部使用；测试通过内存实现替代浏览器对象。
-interface UsageDomPort {
+export interface UsageDomPort {
   readonly now: () => number;
   readonly setInterval: (handler: () => void, intervalMs: number) => unknown;
   readonly clearInterval: (id: unknown) => void;
   readonly render: (view: Readonly<UsageWorkspaceView>) => void;
   readonly bind: (handlers: UsageDomHandlers) => () => void;
+}
+
+export interface UsageDocumentLike {
+  readonly getElementById: (id: string) => unknown;
+  readonly addEventListener: (type: string, listener: EventListener) => void;
+  readonly removeEventListener: (type: string, listener: EventListener) => void;
+}
+
+export interface UsageTimerHost {
+  readonly setInterval: (handler: () => void, intervalMs: number) => unknown;
+  readonly clearInterval: (id: unknown) => void;
+}
+
+interface UsageListenerTarget {
+  readonly addEventListener: (type: string, listener: EventListener) => void;
+  readonly removeEventListener: (type: string, listener: EventListener) => void;
+}
+
+interface UsageElementLike extends UsageListenerTarget {
+  readonly nodeType: number;
+  readonly tagName: string;
+  readonly dataset: Record<string, string | undefined>;
+  readonly closest: (selector: string) => unknown;
+  readonly contains: (node: unknown) => boolean;
+}
+
+interface UsageInputLike extends UsageElementLike {
+  readonly value: string;
+  readonly checked: boolean;
+  readonly matches: (selector: string) => boolean;
+}
+
+interface UsageButtonLike extends UsageElementLike {
+  readonly disabled: boolean;
 }
 
 const rangePresets = new Set<string>(["today", "1d", "7d", "14d", "30d", "custom"]);
@@ -93,40 +127,144 @@ function isRangeField(value: string | null): value is "start" | "end" {
   return value === "start" || value === "end";
 }
 
-function optionalElement<T extends HTMLElement>(id: string): T | null {
-  const element = document.getElementById(id);
-  return element instanceof HTMLElement ? element as T : null;
+function isObject(value: unknown): value is Record<PropertyKey, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
-function queryUsageElements(): UsageElements {
+function isUsageElement(value: unknown): value is UsageElementLike {
+  return isObject(value)
+    && Number.isInteger(value.nodeType)
+    && typeof value.tagName === "string"
+    && isObject(value.dataset)
+    && typeof value.addEventListener === "function"
+    && typeof value.removeEventListener === "function"
+    && typeof value.closest === "function"
+    && typeof value.contains === "function";
+}
+
+function isUsageInput(value: unknown): value is UsageInputLike {
+  return isUsageElement(value)
+    && value.tagName.toUpperCase() === "INPUT"
+    && "value" in value
+    && typeof value.value === "string"
+    && "checked" in value
+    && typeof value.checked === "boolean"
+    && "matches" in value
+    && typeof value.matches === "function";
+}
+
+function isUsageButton(value: unknown): value is UsageButtonLike {
+  return isUsageElement(value)
+    && value.tagName.toUpperCase() === "BUTTON"
+    && "disabled" in value
+    && typeof value.disabled === "boolean";
+}
+
+function isUsageNode(value: unknown): boolean {
+  return isObject(value) && Number.isInteger(value.nodeType);
+}
+
+function optionalElement<T extends HTMLElement>(documentLike: UsageDocumentLike, id: string): T | null {
+  const element = documentLike.getElementById(id);
+  return isUsageElement(element) ? element as unknown as T : null;
+}
+
+export function queryUsageElements(documentLike: UsageDocumentLike = document): UsageElements {
   return {
-    refreshButton: optionalElement("usage-refresh-button"),
-    rangeButton: optionalElement("usage-range-button"),
-    rangeLabel: optionalElement("usage-range-label"),
-    rangePopover: optionalElement("usage-range-popover"),
-    scopeSelect: optionalElement("usage-scope-select"),
-    accountFilter: optionalElement("usage-account-filter"),
-    modelFilter: optionalElement("usage-model-filter"),
-    refreshIntervalSelect: optionalElement("usage-refresh-interval-select"),
-    accountPanel: optionalElement("usage-account-panel"),
-    summaryPanel: optionalElement("usage-summary-panel"),
-    trendPanel: optionalElement("usage-trend-panel"),
-    detailPanel: optionalElement("usage-detail-panel"),
+    refreshButton: optionalElement(documentLike, "usage-refresh-button"),
+    rangeButton: optionalElement(documentLike, "usage-range-button"),
+    rangeLabel: optionalElement(documentLike, "usage-range-label"),
+    rangePopover: optionalElement(documentLike, "usage-range-popover"),
+    scopeSelect: optionalElement(documentLike, "usage-scope-select"),
+    accountFilter: optionalElement(documentLike, "usage-account-filter"),
+    modelFilter: optionalElement(documentLike, "usage-model-filter"),
+    refreshIntervalSelect: optionalElement(documentLike, "usage-refresh-interval-select"),
+    accountPanel: optionalElement(documentLike, "usage-account-panel"),
+    summaryPanel: optionalElement(documentLike, "usage-summary-panel"),
+    trendPanel: optionalElement(documentLike, "usage-trend-panel"),
+    detailPanel: optionalElement(documentLike, "usage-detail-panel"),
   };
 }
 
-function browserUsageDomPort(): UsageDomPort {
-  const elements = queryUsageElements();
+const browserTimerHost: UsageTimerHost = {
+  setInterval: (handler, intervalMs) => window.setInterval(handler, intervalMs),
+  clearInterval: (id) => window.clearInterval(Number(id)),
+};
+
+function eventTarget(event: Event): unknown {
+  return event.target;
+}
+
+function closestElement(target: UsageElementLike, selector: string): UsageElementLike | null {
+  const closest = target.closest(selector);
+  return isUsageElement(closest) ? closest : null;
+}
+
+function datasetValue(
+  target: UsageElementLike,
+  selector: string,
+  key: string,
+): string | undefined {
+  return closestElement(target, selector)?.dataset[key];
+}
+
+function parseDayMs(value: string): number | null {
+  if (!/^-?\d+$/.test(value)) return null;
+  const dayMs = Number(value);
+  if (!Number.isSafeInteger(dayMs) || Math.abs(dayMs) > 8_640_000_000_000_000) return null;
+  return Number.isNaN(new Date(dayMs).getTime()) ? null : dayMs;
+}
+
+function parseMonthDelta(value: string): -1 | 1 | null {
+  if (value === "-1") return -1;
+  if (value === "1") return 1;
+  return null;
+}
+
+function parsePage(value: string): number | null {
+  if (!/^\d+$/.test(value)) return null;
+  const page = Number(value);
+  return Number.isSafeInteger(page) && page >= 1 ? page : null;
+}
+
+function isStrictLocalDate(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year
+    && date.getMonth() === month - 1
+    && date.getDate() === day;
+}
+
+function isStrictLocalTime(value: string): boolean {
+  const match = /^(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return false;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const time = new Date(2000, 0, 1, hour, minute);
+  return time.getDate() === 1
+    && time.getHours() === hour
+    && time.getMinutes() === minute;
+}
+
+export function browserUsageDomPort(
+  documentLike: UsageDocumentLike = document,
+  timers: UsageTimerHost = browserTimerHost,
+): UsageDomPort {
+  const elements = queryUsageElements(documentLike);
 
   return {
     now: Date.now,
-    setInterval: (handler, intervalMs) => window.setInterval(handler, intervalMs),
-    clearInterval: (id) => window.clearInterval(Number(id)),
+    setInterval: (handler, intervalMs) => timers.setInterval(handler, intervalMs),
+    clearInterval: (id) => timers.clearInterval(id),
     render: (view) => renderUsage(elements, view),
     bind: (handlers) => {
       const cleanups: Array<() => void> = [];
       const listen = (
-        target: EventTarget | null,
+        target: UsageListenerTarget | null,
         type: string,
         listener: EventListener,
       ) => {
@@ -134,38 +272,34 @@ function browserUsageDomPort(): UsageDomPort {
         target.addEventListener(type, listener);
         cleanups.push(() => target.removeEventListener(type, listener));
       };
-      const targetElement = (event: Event): HTMLElement | null => (
-        event.target instanceof HTMLElement ? event.target : null
-      );
-
       listen(elements.refreshButton, "click", () => handlers.refresh());
       listen(elements.rangeButton, "click", () => handlers.toggleRange());
       listen(elements.rangePopover, "click", (event) => {
-        const target = targetElement(event);
-        if (!target || target instanceof HTMLInputElement) return;
-        const preset = target.closest<HTMLElement>("[data-usage-range-preset]")
-          ?.dataset.usageRangePreset;
+        const target = eventTarget(event);
+        if (!isUsageElement(target) || isUsageInput(target)) return;
+        const preset = datasetValue(
+          target, "[data-usage-range-preset]", "usageRangePreset",
+        );
         if (preset !== undefined) return handlers.rangeAction({ type: "preset", value: preset });
-        const field = target.closest<HTMLElement>("[data-usage-range-field]")
-          ?.dataset.usageRangeField;
+        const field = datasetValue(
+          target, "[data-usage-range-field]", "usageRangeField",
+        );
         if (field !== undefined) return handlers.rangeAction({ type: "field", value: field });
-        const day = target.closest<HTMLElement>("[data-usage-range-day]")
-          ?.dataset.usageRangeDay;
+        const day = datasetValue(target, "[data-usage-range-day]", "usageRangeDay");
         if (day !== undefined) return handlers.rangeAction({ type: "day", value: day });
-        const month = target.closest<HTMLElement>("[data-usage-range-month]")
-          ?.dataset.usageRangeMonth;
+        const month = datasetValue(target, "[data-usage-range-month]", "usageRangeMonth");
         if (month !== undefined) return handlers.rangeAction({ type: "month", value: month });
-        if (target.closest("[data-usage-range-today]")) {
+        if (closestElement(target, "[data-usage-range-today]")) {
           handlers.rangeAction({ type: "today" });
-        } else if (target.closest("[data-usage-range-cancel]")) {
+        } else if (closestElement(target, "[data-usage-range-cancel]")) {
           handlers.rangeAction({ type: "cancel" });
-        } else if (target.closest("[data-usage-range-apply]")) {
+        } else if (closestElement(target, "[data-usage-range-apply]")) {
           handlers.rangeAction({ type: "apply" });
         }
       });
       listen(elements.rangePopover, "change", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLInputElement)) return;
+        const target = eventTarget(event);
+        if (!isUsageInput(target)) return;
         const dateField = target.dataset.usageRangeDate;
         if (dateField !== undefined) {
           handlers.rangeChange({ type: "date", field: dateField, value: target.value });
@@ -181,8 +315,8 @@ function browserUsageDomPort(): UsageDomPort {
         }
       });
       listen(elements.rangePopover, "focusin", (event) => {
-        const target = event.target;
-        if (!(target instanceof HTMLInputElement)) return;
+        const target = eventTarget(event);
+        if (!isUsageInput(target)) return;
         handlers.rangeFocus(target.dataset.usageRangeDate ?? target.dataset.usageRangeTime ?? null);
       });
       listen(elements.scopeSelect, "change", () => handlers.scopeChange(elements.scopeSelect!.value));
@@ -192,17 +326,24 @@ function browserUsageDomPort(): UsageDomPort {
         handlers.intervalChange(elements.refreshIntervalSelect!.value)
       ));
       listen(elements.detailPanel, "click", (event) => {
-        const button = targetElement(event)?.closest<HTMLButtonElement>("[data-usage-log-page]");
-        if (button) handlers.logPage(button.dataset.usageLogPage ?? "", button.disabled);
+        const target = eventTarget(event);
+        if (!isUsageElement(target)) return;
+        const button = closestElement(target, "[data-usage-log-page]");
+        if (isUsageButton(button)) {
+          handlers.logPage(button.dataset.usageLogPage ?? "", button.disabled);
+        }
       });
-      listen(document, "click", (event) => {
-        const picker = document.getElementById("usage-range-picker");
+      listen(documentLike, "click", (event) => {
+        const picker = documentLike.getElementById("usage-range-picker");
+        const target = eventTarget(event);
         handlers.documentClick(Boolean(
-          picker && event.target instanceof Node && !picker.contains(event.target),
+          isUsageElement(picker) && isUsageNode(target) && !picker.contains(target),
         ));
       });
-      listen(document, "keydown", (event) => {
-        handlers.documentKeydown(event instanceof KeyboardEvent ? event.key : "");
+      listen(documentLike, "keydown", (event) => {
+        handlers.documentKeydown(
+          isObject(event) && typeof event.key === "string" ? event.key : "",
+        );
       });
 
       let bound = true;
@@ -257,15 +398,13 @@ export function mountUsageWorkspace(
           }
           return;
         case "day": {
-          if (action.value.trim() === "") return;
-          const dayMs = Number(action.value);
-          if (Number.isFinite(dayMs)) void workspace.dispatch({ type: "pick-range-day", dayMs });
+          const dayMs = parseDayMs(action.value);
+          if (dayMs !== null) void workspace.dispatch({ type: "pick-range-day", dayMs });
           return;
         }
         case "month": {
-          if (action.value.trim() === "") return;
-          const delta = Number(action.value);
-          if (Number.isFinite(delta)) void workspace.dispatch({ type: "move-range-month", delta });
+          const delta = parseMonthDelta(action.value);
+          if (delta !== null) void workspace.dispatch({ type: "move-range-month", delta });
           return;
         }
         case "today":
@@ -281,7 +420,12 @@ export function mountUsageWorkspace(
     rangeChange: (change) => {
       if (change.type === "live") {
         void workspace.dispatch({ type: "set-range-draft-live-end", live: change.value });
-      } else if (isRangeField(change.field)) {
+      } else if (
+        isRangeField(change.field)
+        && (change.type === "date"
+          ? isStrictLocalDate(change.value)
+          : isStrictLocalTime(change.value))
+      ) {
         void workspace.dispatch({
           type: change.type === "date" ? "set-range-draft-date" : "set-range-draft-time",
           field: change.field,
@@ -307,13 +451,13 @@ export function mountUsageWorkspace(
       const intervalMs = Number(value);
       void workspace.dispatch({
         type: "set-refresh-interval",
-        intervalMs: Number.isFinite(intervalMs) ? intervalMs : 0,
+        intervalMs: Number.isSafeInteger(intervalMs) && intervalMs >= 0 ? intervalMs : 0,
       });
     },
     logPage: (value, disabled) => {
       if (disabled) return;
-      const page = Number(value);
-      if (!Number.isFinite(page) || page < 1 || page === workspace.snapshot().logsPage) return;
+      const page = parsePage(value);
+      if (page === null || page === workspace.snapshot().logsPage) return;
       void refreshAfter({ type: "set-page", page });
     },
     documentClick: (outsidePicker) => {

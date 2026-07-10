@@ -278,6 +278,55 @@ describe("UsageWorkspace", () => {
     expect(workspace.snapshot().summary?.total_requests).toBe(2);
   });
 
+  it("首次 initial 在途时 route 重新激活会淘汰旧请求并补刷", async () => {
+    const staleRequest = deferred<OpenAiUsageDashboard>();
+    const currentRequest = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(staleRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await workspace.dispatch({ type: "set-refresh-interval", intervalMs: 0 });
+    const staleRefresh = workspace.dispatch({ type: "refresh", mode: "initial" });
+    expect(workspace.snapshot().logsLoading).toBe(false);
+
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+    const reactivate = workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+    staleRequest.resolve(dashboardWithRequests(1));
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    currentRequest.resolve(dashboardWithRequests(2));
+    await Promise.all([staleRefresh, reactivate]);
+
+    expect(workspace.snapshot().summary?.total_requests).toBe(2);
+    expect(workspace.snapshot().logsLoading).toBe(false);
+  });
+
+  it("二次 route 抖动只合并一个 reactivation initial", async () => {
+    const staleRequest = deferred<OpenAiUsageDashboard>();
+    const currentRequest = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(staleRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await workspace.dispatch({ type: "set-refresh-interval", intervalMs: 0 });
+    const staleRefresh = workspace.dispatch({ type: "refresh", mode: "initial" });
+
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+    const firstActivate = workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+    const secondActivate = workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    staleRequest.resolve(dashboardWithRequests(1));
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    currentRequest.resolve(dashboardWithRequests(3));
+    await Promise.all([staleRefresh, firstActivate, secondActivate]);
+
+    expect(loadDashboard).toHaveBeenCalledTimes(2);
+    expect(workspace.snapshot().summary?.total_requests).toBe(3);
+    expect(workspace.snapshot().logsLoading).toBe(false);
+  });
+
   it("只有 manual refresh 错误触发用户通知", async () => {
     const initialError = new Error("initial 失败");
     const autoError = new Error("auto 失败");
@@ -298,19 +347,78 @@ describe("UsageWorkspace", () => {
     expect(onError).toHaveBeenCalledWith(manualError);
   });
 
-  it("合并 in-flight 手动刷新且自动刷新不排队", async () => {
+  it("合并 busy manual 的有界队列 Promise，且 auto 立即跳过", async () => {
     const first = deferred<OpenAiUsageDashboard>();
+    const second = deferred<OpenAiUsageDashboard>();
     const loadDashboard = vi.fn()
       .mockReturnValueOnce(first.promise)
-      .mockResolvedValue(emptyDashboard());
+      .mockReturnValueOnce(second.promise);
     const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
     const running = workspace.dispatch({ type: "refresh", mode: "manual" });
-    await workspace.dispatch({ type: "refresh", mode: "manual" });
+    let queuedSettled = false;
+    const queued = workspace.dispatch({ type: "refresh", mode: "manual" })
+      .then(() => { queuedSettled = true; });
+    const duplicate = workspace.dispatch({ type: "refresh", mode: "manual" });
     await workspace.dispatch({ type: "refresh", mode: "auto" });
+    await Promise.resolve();
+    expect(queuedSettled).toBe(false);
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+
     first.resolve(emptyDashboard());
-    await running;
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    expect(queuedSettled).toBe(false);
+    second.resolve(emptyDashboard());
+    await Promise.all([running, queued, duplicate]);
 
     expect(loadDashboard).toHaveBeenCalledTimes(2);
+    expect(queuedSettled).toBe(true);
+  });
+
+  it("apply-range-draft await 等到实际排队刷新完成", async () => {
+    const first = deferred<OpenAiUsageDashboard>();
+    const second = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    const running = workspace.dispatch({ type: "refresh", mode: "manual" });
+    await workspace.dispatch({ type: "open-range-picker" });
+    let applySettled = false;
+    const apply = workspace.dispatch({ type: "apply-range-draft" })
+      .then(() => { applySettled = true; });
+    await Promise.resolve();
+    expect(applySettled).toBe(false);
+
+    first.resolve(emptyDashboard());
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    expect(applySettled).toBe(false);
+    second.resolve(emptyDashboard());
+    await Promise.all([running, apply]);
+
+    expect(applySettled).toBe(true);
+    expect(workspace.snapshot().rangePreset).toBe("custom");
+  });
+
+  it("initial 覆盖 queued manual，并使用 initial 错误通知语义", async () => {
+    const runningRequest = deferred<OpenAiUsageDashboard>();
+    const initialRequest = deferred<OpenAiUsageDashboard>();
+    const onError = vi.fn();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(runningRequest.promise)
+      .mockReturnValueOnce(initialRequest.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
+    const running = workspace.dispatch({ type: "refresh", mode: "manual" });
+    const queuedManual = workspace.dispatch({ type: "refresh", mode: "manual" });
+    const initial = workspace.dispatch({ type: "refresh", mode: "initial" });
+
+    runningRequest.resolve(emptyDashboard());
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    initialRequest.reject(new Error("initial 队列失败"));
+    await Promise.all([running, queuedManual, initial]);
+
+    expect(loadDashboard).toHaveBeenCalledTimes(2);
+    expect(workspace.snapshot().loadError).toBe("initial 队列失败");
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("普通 manual/auto refresh 保留已有日志且不进入 logsLoading", async () => {

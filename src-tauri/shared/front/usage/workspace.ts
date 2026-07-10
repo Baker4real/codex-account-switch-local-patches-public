@@ -383,21 +383,30 @@ export function createUsageWorkspace(
     }
   }
 
-  async function refresh(mode: "initial" | "manual" | "auto"): Promise<void> {
+  async function refresh(
+    mode: "initial" | "manual" | "auto",
+    options: { readonly forceNewInitial?: boolean } = {},
+  ): Promise<void> {
     if (disposed) return;
     if (refreshRun !== null) {
       if (mode === "initial") {
-        if (activeRefreshMode !== "initial" && queuedRefreshMode !== "initial") {
+        const mustQueueInitial = options.forceNewInitial
+          || activeRefreshMode !== "initial"
+          || queuedRefreshMode === "manual";
+        if (mustQueueInitial && queuedRefreshMode !== "initial") {
           queuedRefreshMode = "initial";
           state.refreshQueued = true;
           invalidateActiveRequest();
           if (active) notifyChange();
         }
         await refreshRun;
-      } else if (mode === "manual" && queuedRefreshMode === null) {
-        queuedRefreshMode = "manual";
-        state.refreshQueued = true;
-        if (active) notifyChange();
+      } else if (mode === "manual") {
+        if (queuedRefreshMode === null) {
+          queuedRefreshMode = "manual";
+          state.refreshQueued = true;
+          if (active) notifyChange();
+        }
+        await refreshRun;
       }
       return;
     }
@@ -421,8 +430,11 @@ export function createUsageWorkspace(
         state.locale = event.locale;
         if (!active) {
           closeRangePicker();
-          if (activeChanged) {
-            refreshOnActivate ||= state.logsLoading;
+          const refreshPending = refreshRun !== null
+            || activeRefreshMode !== null
+            || queuedRefreshMode !== null;
+          refreshOnActivate ||= state.logsLoading || !state.loaded || refreshPending;
+          if (activeChanged || refreshPending) {
             invalidateActiveRequest();
             state.loading = false;
             state.logsLoading = false;
@@ -437,7 +449,9 @@ export function createUsageWorkspace(
           syncRangeLiveEndTimer();
         }
         notifyChange();
-        if (shouldRefreshOnActivate) await refresh("initial");
+        if (shouldRefreshOnActivate) {
+          await refresh("initial", { forceNewInitial: true });
+        }
         return;
       case "open-range-picker":
         if (!state.rangePickerOpen) resetRangeDraftFromCurrent();

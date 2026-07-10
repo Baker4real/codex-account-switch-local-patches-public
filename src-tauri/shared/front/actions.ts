@@ -48,6 +48,7 @@ import type {
   CurrentQuotaResponse,
 } from "@front-shared/types";
 import { mountUsageWorkspace, type UsageWorkspace } from "@front-shared/usage";
+import { replaceUsageWorkspace } from "@front-shared/usage/replace";
 import {
   applyLocale,
   elements,
@@ -1007,13 +1008,15 @@ export function bootstrap(): void {
   applyTheme(state.theme);
   applyLocale();
   renderShellRoute();
-  usageWorkspace = mountUsageWorkspace({
-    loadDashboard: getOpenAiUsageDashboard,
-    getContext: () => ({ active: state.route === "usage", locale: state.locale }),
-    onError: (error, notifyUser) => {
-      if (notifyUser) showToast(error.message, true);
-    },
-  });
+  usageWorkspace = replaceUsageWorkspace(usageWorkspace, () =>
+    mountUsageWorkspace({
+      loadDashboard: getOpenAiUsageDashboard,
+      getContext: () => ({ active: state.route === "usage", locale: state.locale }),
+      onError: (error, notifyUser) => {
+        if (notifyUser) showToast(error.message, true);
+      },
+    }),
+  );
 
   window.addEventListener("hashchange", () => {
     rerenderDashboard();
