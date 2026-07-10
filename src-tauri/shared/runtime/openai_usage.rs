@@ -3290,6 +3290,8 @@ fn official_data_source() -> &'static str {
     "codex_session"
 }
 
+/// Persisted v1 identity key. Golden vectors lock the historical
+/// `DefaultHasher` output so a toolchain/hash drift fails before release.
 fn account_identity_key(identity: &AccountIdentity) -> String {
     let mut hasher = DefaultHasher::new();
     "openai-account-identity-v1".hash(&mut hasher);
@@ -4039,6 +4041,33 @@ mod tests {
     }
 
     #[test]
+    fn account_identity_key_v1_matches_published_golden_vectors() {
+        let identities = [
+            AccountIdentity {
+                account_id: None,
+                email: Some("User@Example.com".to_string()),
+            },
+            AccountIdentity {
+                account_id: Some("acct_A".to_string()),
+                email: None,
+            },
+            AccountIdentity {
+                account_id: Some("acct_A".to_string()),
+                email: Some("User@Example.com".to_string()),
+            },
+        ];
+
+        assert_eq!(
+            identities.map(|identity| account_identity_key(&identity)),
+            [
+                "acct_681356aab274b3b0",
+                "acct_4e434b75e0952ae5",
+                "acct_b12448b5e4c359a3",
+            ]
+        );
+    }
+
+    #[test]
     fn calculates_cached_input_and_output_cost_without_reasoning_double_count() {
         let delta = UsageCounts {
             input_tokens: 1_000_000,
@@ -4324,18 +4353,13 @@ mod tests {
         setup_profile(&codex_home, None);
         let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
         fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
-        let history_identity_key = account_identity_key(&AccountIdentity {
-            account_id: None,
-            email: Some("User@Example.com".to_string()),
-        });
         fs::write(
             attribution_path,
             [
-                r#"{"observed_at_ms":32472144000000,"profile":"email-only-history","account_label":" User@Example.com ","account_identity_key":"acct_key_email_only","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144000000,"profile":"email-only-history","account_label":" User@Example.com ","account_identity_key":"acct_681356aab274b3b0","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144003000,"profile":"dual-current","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
-            .join("\n")
-            .replace("acct_key_email_only", &history_identity_key),
+            .join("\n"),
         )
         .unwrap();
         write_session(
@@ -4369,18 +4393,13 @@ mod tests {
         setup_profile(&codex_home, None);
         let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
         fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
-        let history_identity_key = account_identity_key(&AccountIdentity {
-            account_id: Some("acct_A".to_string()),
-            email: None,
-        });
         fs::write(
             attribution_path,
             [
-                r#"{"observed_at_ms":32472144000000,"profile":"account-only-history","account_label":" acct_A ","account_identity_key":"acct_key_account_only","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144000000,"profile":"account-only-history","account_label":" acct_A ","account_identity_key":"acct_4e434b75e0952ae5","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144003000,"profile":"dual-current","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
-            .join("\n")
-            .replace("acct_key_account_only", &history_identity_key),
+            .join("\n"),
         )
         .unwrap();
         write_session(
@@ -4417,7 +4436,7 @@ mod tests {
         fs::write(
             attribution_path,
             [
-                r#"{"observed_at_ms":32472144000000,"profile":"conflicting-history","account_label":"user@example.com","account_identity_key":"acct_key_conflict_email","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144000000,"profile":"conflicting-history","account_label":"user@example.com","account_identity_key":"acct_4e434b75e0952ae5","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144003000,"profile":"other-account","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
             .join("\n"),
@@ -4466,7 +4485,7 @@ mod tests {
         fs::write(
             attribution_path,
             [
-                r#"{"observed_at_ms":32472144000000,"profile":"conflicting-history","account_label":"acct_A","account_identity_key":"acct_key_conflict_account","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144000000,"profile":"conflicting-history","account_label":"acct_A","account_identity_key":"acct_681356aab274b3b0","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144003000,"profile":"other-account","account_label":"acct_A","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
             .join("\n"),

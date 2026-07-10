@@ -119,8 +119,10 @@ impl CanonicalAccountResolver {
                     account_id_alias(Some(label)).map(IdentityAlias::AccountId),
                 )
             };
-            let candidate_identity_key = account_identity_key(&candidate_identity);
-            if fact.account_identity_key.as_deref() != Some(candidate_identity_key.as_str()) {
+            // Legacy v1 verifier: `account_identity_key` is compatibility-locked by
+            // published golden vectors before it may prove an alias-less history row.
+            let legacy_v1_candidate_key = account_identity_key(&candidate_identity);
+            if fact.account_identity_key.as_deref() != Some(legacy_v1_candidate_key.as_str()) {
                 continue;
             }
             let Some(candidate_alias) = candidate_alias else {
