@@ -479,6 +479,24 @@ describe("UsageWorkspace", () => {
     expect(workspace.snapshot().logsPage).toBe(2);
   });
 
+  it("分页纠偏二次请求失败时按最终 intent 收敛错误状态", async () => {
+    const correctedError = new Error("纠偏后的第 2 页加载失败");
+    const onError = vi.fn();
+    const loadDashboard = vi.fn()
+      .mockResolvedValueOnce(dashboardWithPage({ page: 9, pageSize: 20, total: 25 }))
+      .mockRejectedValueOnce(correctedError);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
+    await workspace.dispatch({ type: "set-page", page: 9 });
+
+    await workspace.dispatch({ type: "refresh", mode: "manual" });
+
+    expect(workspace.snapshot().logsPage).toBe(2);
+    expect(workspace.snapshot().logsLoading).toBe(false);
+    expect(workspace.snapshot().loadError).toBe(correctedError.message);
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(correctedError);
+  });
+
   it("dispose 后忽略完成响应并停止 timer", async () => {
     const pending = deferred<OpenAiUsageDashboard>();
     const timers = fakeTimers();

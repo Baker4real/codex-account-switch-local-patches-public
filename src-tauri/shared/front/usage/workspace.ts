@@ -56,6 +56,12 @@ interface WorkspaceState {
   refreshQueued: boolean;
 }
 
+interface LoadAttempt {
+  readonly serial: number;
+  intentKey: string;
+  readonly query: OpenAiUsageQuery;
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function startOfTodayMs(nowMs: number): number {
@@ -244,36 +250,36 @@ export function createUsageWorkspace(
     state.logsPageSize = copied.logs.page_size;
   }
 
-  async function load(
-    serial: number,
-    intentKey: string,
-    query: OpenAiUsageQuery,
-  ): Promise<void> {
+  async function load(attempt: LoadAttempt): Promise<void> {
     let dashboard: OpenAiUsageDashboard;
     try {
-      dashboard = await dependencies.loadDashboard(query, state.logsPage, state.logsPageSize);
+      dashboard = await dependencies.loadDashboard(
+        attempt.query,
+        state.logsPage,
+        state.logsPageSize,
+      );
     } catch (error) {
-      if (isStaleLoad(serial, intentKey)) return;
+      if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
       throw error;
     }
-    if (isStaleLoad(serial, intentKey)) return;
+    if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
     const pageSize = Math.max(1, dashboard.logs.page_size);
     const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / pageSize));
     if (dashboard.logs.page > totalPages) {
       state.logsPage = totalPages;
-      const correctedIntentKey = currentIntentKey();
+      attempt.intentKey = currentIntentKey();
       let correctedDashboard: OpenAiUsageDashboard;
       try {
         correctedDashboard = await dependencies.loadDashboard(
-          query,
+          attempt.query,
           state.logsPage,
           state.logsPageSize,
         );
       } catch (error) {
-        if (isStaleLoad(serial, correctedIntentKey)) return;
+        if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
         throw error;
       }
-      if (isStaleLoad(serial, correctedIntentKey)) return;
+      if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
       applyDashboard(correctedDashboard);
     } else {
       applyDashboard(dashboard);
@@ -335,15 +341,18 @@ export function createUsageWorkspace(
     if (disposed) return;
     const serial = ++requestSerial;
     activeRequestSerial = serial;
-    const intentKey = currentIntentKey();
-    const query = resolveQuery();
+    const attempt: LoadAttempt = {
+      serial,
+      intentKey: currentIntentKey(),
+      query: resolveQuery(),
+    };
     state.loading = true;
     state.loadError = null;
     if (active) notifyChange();
     try {
-      await load(serial, intentKey, query);
+      await load(attempt);
     } catch (error) {
-      if (isStaleLoad(serial, intentKey)) return;
+      if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
       state.loaded = true;
       state.loadError = error instanceof Error
         ? error.message
