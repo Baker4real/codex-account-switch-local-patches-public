@@ -4059,7 +4059,7 @@ mod tests {
         legacy_account_key: Option<&'a str>,
         ledger_layer: &'a str,
         attribution_kind: &'a str,
-        attribution_window_id: &'a str,
+        attribution_window_id: Option<&'a str>,
         created_at_ms: i64,
     }
 
@@ -4082,7 +4082,7 @@ mod tests {
             legacy_account_key: None,
             ledger_layer: LEDGER_LAYER_STRICT_PROVEN,
             attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT,
-            attribution_window_id,
+            attribution_window_id: Some(attribution_window_id),
             created_at_ms,
         }
     }
@@ -4105,7 +4105,7 @@ mod tests {
             legacy_account_key: Some(legacy_account_key),
             ledger_layer: LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
             attribution_kind: ATTRIBUTION_KIND_LEGACY_PROFILE,
-            attribution_window_id,
+            attribution_window_id: Some(attribution_window_id),
             created_at_ms,
         }
     }
@@ -4951,7 +4951,7 @@ mod tests {
                 "p",
                 "identity-b",
                 &alias_b,
-                "0200-a",
+                "200",
                 200,
             ),
             legacy_identity_fact(
@@ -4959,7 +4959,7 @@ mod tests {
                 "a-legacy-after-b-200",
                 "p",
                 "legacy-p-after-b-200",
-                "0200-b",
+                "201",
                 200,
             ),
             legacy_identity_fact(
@@ -4967,7 +4967,7 @@ mod tests {
                 "z-legacy-before-c-300",
                 "p",
                 "legacy-p-before-c-300",
-                "0300-a",
+                "300",
                 300,
             ),
             confirmed_identity_fact(
@@ -4976,7 +4976,7 @@ mod tests {
                 "p",
                 "identity-c",
                 &alias_c,
-                "0300-b",
+                "301",
                 300,
             ),
         ];
@@ -5040,6 +5040,503 @@ mod tests {
 
         let reversed = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
         assert_eq!(account_counts(&reversed), first_counts);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_latest_prior_rejects_non_strict_typed_aliases() {
+        let codex_home = temp_codex_home("dashboard-latest-prior-strict-confirmation");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "latest-prior-strict-confirmation",
+            &[(10, 1), (30, 3), (60, 6), (100, 10), (150, 15)],
+        );
+        let alias_a = identity::account_id_alias(Some("acct_timeline_a")).unwrap();
+        let alias_b = identity::account_id_alias(Some("acct_timeline_b")).unwrap();
+        let alias_c = identity::account_id_alias(Some("acct_timeline_c")).unwrap();
+        let mut non_strict_layer = confirmed_identity_fact(
+            "e-b-200",
+            "r-b-200",
+            "p",
+            "identity-b",
+            &alias_b,
+            "200",
+            200,
+        );
+        non_strict_layer.ledger_layer = LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED;
+        let mut non_strict_kind = confirmed_identity_fact(
+            "e-c-300",
+            "r-c-300",
+            "p",
+            "identity-c",
+            &alias_c,
+            "300",
+            300,
+        );
+        non_strict_kind.attribution_kind = ATTRIBUTION_KIND_LEGACY_PROFILE;
+        let fixtures = [
+            confirmed_identity_fact(
+                "e-a-100",
+                "r-a-100",
+                "p",
+                "identity-a",
+                &alias_a,
+                "100",
+                100,
+            ),
+            non_strict_layer,
+            legacy_identity_fact(
+                "e-legacy-250",
+                "r-legacy-250",
+                "p",
+                "legacy-p-250",
+                "250",
+                250,
+            ),
+            non_strict_kind,
+            legacy_identity_fact(
+                "e-legacy-350",
+                "r-legacy-350",
+                "p",
+                "legacy-p-350",
+                "350",
+                350,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let accounts = dashboard
+            .account_summary
+            .iter()
+            .map(|account| {
+                (
+                    account.account_group_key.clone().unwrap(),
+                    account.request_count,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(accounts.get(alias_a.as_str()), Some(&3));
+        assert_eq!(accounts.get(alias_b.as_str()), Some(&1));
+        assert_eq!(accounts.get(alias_c.as_str()), Some(&1));
+        assert_eq!(accounts.values().sum::<u64>(), 5);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            165
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_latest_prior_rejects_malformed_strict_typed_alias() {
+        let codex_home = temp_codex_home("dashboard-latest-prior-malformed-alias");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "latest-prior-malformed-alias",
+            &[(10, 1), (30, 3), (60, 6)],
+        );
+        let alias_a = identity::account_id_alias(Some("acct_timeline_a")).unwrap();
+        let malformed = confirmed_identity_fact(
+            "e-b-200",
+            "r-b-200",
+            "p",
+            "identity-b",
+            "acct:not-a-valid-digest",
+            "200",
+            200,
+        );
+        let fixtures = [
+            confirmed_identity_fact(
+                "e-a-100",
+                "r-a-100",
+                "p",
+                "identity-a",
+                &alias_a,
+                "100",
+                100,
+            ),
+            malformed,
+            legacy_identity_fact(
+                "e-legacy-250",
+                "r-legacy-250",
+                "p",
+                "legacy-p-250",
+                "250",
+                250,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let accounts = dashboard
+            .account_summary
+            .iter()
+            .map(|account| {
+                (
+                    account.account_group_key.clone().unwrap(),
+                    account.request_count,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(accounts.get(alias_a.as_str()), Some(&3));
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts.values().sum::<u64>(), 3);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            66
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_snapshot_verified_fact_can_establish_latest_prior() {
+        let codex_home = temp_codex_home("dashboard-snapshot-verified-latest-prior");
+        write_profile_snapshot(
+            &codex_home,
+            "p",
+            r#"{"tokens":{"account_id":"acct_A","id_token":"x.eyJlbWFpbCI6IlVzZXJARXhhbXBsZS5jb20ifQ.x"}}"#,
+        );
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "snapshot-verified-latest-prior",
+            &[(10, 1), (30, 3)],
+        );
+        let alias_a = identity::account_id_alias(Some("acct_A")).unwrap();
+        let mut snapshot_verified = legacy_identity_fact(
+            "e-snapshot-100",
+            "r-snapshot-100",
+            "p",
+            "legacy-p-snapshot",
+            "100",
+            100,
+        );
+        snapshot_verified.account_identity_key = Some("acct_b12448b5e4c359a3");
+        let fixtures = [
+            snapshot_verified,
+            legacy_identity_fact(
+                "e-legacy-150",
+                "r-legacy-150",
+                "p",
+                "legacy-p-150",
+                "150",
+                150,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(dashboard.account_summary.len(), 1);
+        let account = &dashboard.account_summary[0];
+        assert_eq!(account.account_group_key.as_deref(), Some(alias_a.as_str()));
+        assert_eq!(account.request_count, 2);
+        assert_eq!(account.tokens.real_total_tokens, 33);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_ambiguous_confirmed_cohort_keeps_previous_prior_or_unknown() {
+        let codex_home = temp_codex_home("dashboard-ambiguous-confirmed-cohort");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "ambiguous-confirmed-cohort",
+            &[(10, 1), (30, 3), (60, 6), (100, 10), (150, 15), (210, 21)],
+        );
+        let alias_a = identity::account_id_alias(Some("acct_timeline_a")).unwrap();
+        let alias_b = identity::account_id_alias(Some("acct_timeline_b")).unwrap();
+        let alias_c = identity::account_id_alias(Some("acct_timeline_c")).unwrap();
+        let alias_d = identity::account_id_alias(Some("acct_timeline_d")).unwrap();
+        let mut missing_window = confirmed_identity_fact(
+            "e-c-200",
+            "r-c-200",
+            "p",
+            "identity-c",
+            &alias_c,
+            "unused",
+            200,
+        );
+        missing_window.attribution_window_id = None;
+        let fixtures = [
+            confirmed_identity_fact("a-b-050", "r-b-050", "p", "identity-b", &alias_b, "50", 50),
+            legacy_identity_fact(
+                "z-legacy-050",
+                "r-legacy-050",
+                "p",
+                "legacy-p-050",
+                "50",
+                50,
+            ),
+            confirmed_identity_fact(
+                "e-a-100",
+                "r-a-100",
+                "p",
+                "identity-a",
+                &alias_a,
+                "100",
+                100,
+            ),
+            missing_window,
+            confirmed_identity_fact(
+                "e-d-200",
+                "r-d-200",
+                "p",
+                "identity-d",
+                &alias_d,
+                "not-a-number",
+                200,
+            ),
+            legacy_identity_fact(
+                "e-legacy-250",
+                "r-legacy-250",
+                "p",
+                "legacy-p-250",
+                "250",
+                250,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let accounts = dashboard
+            .account_summary
+            .iter()
+            .map(|account| {
+                (
+                    account.account_group_key.clone().unwrap(),
+                    account.request_count,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(accounts.get(alias_a.as_str()), Some(&2));
+        assert_eq!(accounts.get(alias_b.as_str()), Some(&1));
+        assert_eq!(accounts.get(alias_c.as_str()), Some(&1));
+        assert_eq!(accounts.get(alias_d.as_str()), Some(&1));
+        assert_eq!(accounts.get("legacy:legacy-p-050"), Some(&1));
+        assert_eq!(accounts.values().sum::<u64>(), 6);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            231
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_same_millisecond_prior_requires_earlier_numeric_window() {
+        let codex_home = temp_codex_home("dashboard-latest-prior-numeric-window");
+        let cumulative_totals = (1_u64..=13)
+            .map(|value| {
+                let triangular = value * (value + 1) / 2;
+                (triangular * 10, triangular)
+            })
+            .collect::<Vec<_>>();
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "latest-prior-numeric-window",
+            &cumulative_totals,
+        );
+        let aliases = (b'a'..=b'g')
+            .map(|suffix| {
+                identity::account_id_alias(Some(&format!("acct_timeline_{}", char::from(suffix))))
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut missing_confirmed_window = confirmed_identity_fact(
+            "e-c-300",
+            "r-c-300",
+            "p",
+            "identity-c",
+            &aliases[2],
+            "unused",
+            300,
+        );
+        missing_confirmed_window.attribution_window_id = None;
+        let mut missing_event_window = legacy_identity_fact(
+            "e-legacy-400",
+            "r-legacy-400",
+            "p",
+            "legacy-p-400",
+            "unused",
+            400,
+        );
+        missing_event_window.attribution_window_id = None;
+        let fixtures = [
+            confirmed_identity_fact(
+                "e-a-100",
+                "r-a-100",
+                "p",
+                "identity-a",
+                &aliases[0],
+                "100",
+                100,
+            ),
+            confirmed_identity_fact(
+                "a-b-200",
+                "r-b-200",
+                "p",
+                "identity-b",
+                &aliases[1],
+                "200",
+                200,
+            ),
+            legacy_identity_fact(
+                "z-legacy-200",
+                "r-legacy-200",
+                "p",
+                "legacy-p-200",
+                "200",
+                200,
+            ),
+            missing_confirmed_window,
+            legacy_identity_fact(
+                "e-legacy-300",
+                "r-legacy-300",
+                "p",
+                "legacy-p-300",
+                "301",
+                300,
+            ),
+            confirmed_identity_fact(
+                "e-d-400",
+                "r-d-400",
+                "p",
+                "identity-d",
+                &aliases[3],
+                "400",
+                400,
+            ),
+            missing_event_window,
+            confirmed_identity_fact(
+                "e-e-500",
+                "r-e-500",
+                "p",
+                "identity-e",
+                &aliases[4],
+                "500-bad",
+                500,
+            ),
+            legacy_identity_fact(
+                "e-legacy-500",
+                "r-legacy-500",
+                "p",
+                "legacy-p-500",
+                "501",
+                500,
+            ),
+            confirmed_identity_fact(
+                "e-f-600",
+                "r-f-600",
+                "p",
+                "identity-f",
+                &aliases[5],
+                "600",
+                600,
+            ),
+            legacy_identity_fact(
+                "e-legacy-600",
+                "r-legacy-600",
+                "p",
+                "legacy-p-600",
+                "not-a-number",
+                600,
+            ),
+            confirmed_identity_fact(
+                "z-g-700",
+                "r-g-700",
+                "p",
+                "identity-g",
+                &aliases[6],
+                "700",
+                700,
+            ),
+            legacy_identity_fact(
+                "a-legacy-700",
+                "r-legacy-700",
+                "p",
+                "legacy-p-700",
+                "701",
+                700,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        drop(conn);
+
+        let account_counts = |dashboard: &OpenAiUsageDashboard| {
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| {
+                    (
+                        account.account_group_key.clone().unwrap(),
+                        account.request_count,
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let first = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let first_counts = account_counts(&first);
+        for (alias, expected) in aliases.iter().zip([2, 2, 2, 2, 2, 1, 2]) {
+            assert_eq!(first_counts.get(alias), Some(&expected));
+        }
+        assert_eq!(first_counts.values().sum::<u64>(), 13);
+        assert_eq!(
+            first
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            1_001
+        );
+
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET evidence_id = 'swap-temp' WHERE evidence_id = 'a-b-200'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET evidence_id = 'a-b-200' WHERE evidence_id = 'z-legacy-200'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET evidence_id = 'z-legacy-200' WHERE evidence_id = 'swap-temp'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let swapped = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(account_counts(&swapped), first_counts);
         let _ = fs::remove_dir_all(&codex_home);
     }
 

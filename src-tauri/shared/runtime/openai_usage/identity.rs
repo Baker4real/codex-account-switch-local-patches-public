@@ -3,7 +3,10 @@ use std::fmt::Write as _;
 
 use sha2::{Digest, Sha256};
 
-use super::{account_identity_key, AccountIdentity, UsageFact};
+use super::{
+    account_identity_key, AccountIdentity, UsageFact, ATTRIBUTION_KIND_STRICT_ACCOUNT,
+    LEDGER_LAYER_STRICT_PROVEN,
+};
 
 pub(super) fn account_id_alias(value: Option<&str>) -> Option<String> {
     normalized_non_empty(value).map(|value| format!("acct:{}", sha256_hex(value.as_bytes())))
@@ -119,7 +122,10 @@ impl CanonicalAccountResolver {
             .iter()
             .enumerate()
             .map(|(index, fact)| {
-                aliases(fact).next().is_some() || verified_aliases[index].is_some()
+                let strict_typed_alias = fact.ledger_layer == LEDGER_LAYER_STRICT_PROVEN
+                    && fact.attribution_kind == ATTRIBUTION_KIND_STRICT_ACCOUNT
+                    && aliases(fact).next().is_some();
+                strict_typed_alias || verified_aliases[index].is_some()
             })
             .collect::<Vec<_>>();
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
@@ -263,11 +269,7 @@ impl CanonicalAccountResolver {
                 continue;
             };
             let event_order = attribution_order(fact);
-            if let Some(point) = timeline
-                .iter()
-                .rev()
-                .find(|point| point.order < event_order)
-            {
+            if let Some(point) = latest_proven_prior(timeline, &event_order) {
                 latest_prior_by_evidence.insert(fact.evidence_id.clone(), point.canonical.clone());
             }
         }
@@ -300,8 +302,23 @@ impl CanonicalAccountResolver {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct AttributionOrder {
     created_at_ms: u64,
+    numeric_window_id: Option<u64>,
     attribution_window_id: Option<String>,
     evidence_id: String,
+}
+
+impl AttributionOrder {
+    fn is_proven_prior_to(&self, event: &Self) -> bool {
+        match self.created_at_ms.cmp(&event.created_at_ms) {
+            std::cmp::Ordering::Less => true,
+            std::cmp::Ordering::Greater => false,
+            std::cmp::Ordering::Equal => matches!(
+                (self.numeric_window_id, event.numeric_window_id),
+                (Some(confirmed_window), Some(event_window))
+                    if confirmed_window < event_window
+            ),
+        }
+    }
 }
 
 struct ConfirmedIdentityPoint {
@@ -309,12 +326,67 @@ struct ConfirmedIdentityPoint {
     canonical: String,
 }
 
+fn latest_proven_prior<'a>(
+    timeline: &'a [ConfirmedIdentityPoint],
+    event: &AttributionOrder,
+) -> Option<&'a ConfirmedIdentityPoint> {
+    let mut end = timeline.len();
+    while end > 0 {
+        let created_at_ms = timeline[end - 1].order.created_at_ms;
+        let mut start = end - 1;
+        while start > 0 && timeline[start - 1].order.created_at_ms == created_at_ms {
+            start -= 1;
+        }
+        let eligible = timeline[start..end]
+            .iter()
+            .filter(|point| point.order.is_proven_prior_to(event))
+            .collect::<Vec<_>>();
+        if let Some(point) = proven_latest_in_cohort(&eligible) {
+            return Some(point);
+        }
+        end = start;
+    }
+    None
+}
+
+fn proven_latest_in_cohort<'a>(
+    points: &[&'a ConfirmedIdentityPoint],
+) -> Option<&'a ConfirmedIdentityPoint> {
+    let first = *points.first()?;
+    if points
+        .iter()
+        .all(|point| point.canonical == first.canonical)
+    {
+        return Some(first);
+    }
+    let latest_window = points
+        .iter()
+        .map(|point| point.order.numeric_window_id)
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .max()?;
+    let latest = points
+        .iter()
+        .copied()
+        .filter(|point| point.order.numeric_window_id == Some(latest_window))
+        .collect::<Vec<_>>();
+    let first_latest = *latest.first()?;
+    latest
+        .iter()
+        .all(|point| point.canonical == first_latest.canonical)
+        .then_some(first_latest)
+}
+
 fn attribution_order(fact: &UsageFact) -> AttributionOrder {
-    // `created_at_ms` has millisecond precision, so equal timestamps do not prove
-    // observation order. Persisted window/evidence ids are the conservative,
-    // deterministic sequence; request/load order and current profile state are not.
+    // `created_at_ms` has millisecond precision, so equal timestamps require two
+    // numeric persisted windows to prove order. The raw window and evidence id
+    // only stabilize sorting; their lexical order is never attribution proof.
     AttributionOrder {
         created_at_ms: fact.created_at_ms,
+        numeric_window_id: fact
+            .attribution_window_id
+            .as_deref()
+            .and_then(|value| value.parse::<u64>().ok()),
         attribution_window_id: fact.attribution_window_id.clone(),
         evidence_id: fact.evidence_id.clone(),
     }
