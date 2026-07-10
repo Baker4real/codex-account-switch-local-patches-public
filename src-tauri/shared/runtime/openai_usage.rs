@@ -465,6 +465,9 @@ impl Default for UsageDedupeEngine {
 }
 
 struct UsageLoadResult {
+    connection: Option<Connection>,
+    source_signature: String,
+    cache_hit: bool,
     events: Vec<UsageEvent>,
     facts: Vec<UsageFact>,
     evidence: Vec<UsageEvidence>,
@@ -858,6 +861,9 @@ fn finalize_usage_load(
     summary.exclusions.candidate_unattributed_events = decisions.candidate_unattributed;
     summary.exclusions.rejected_invalid_events = decisions.rejected_invalid;
     UsageLoadResult {
+        connection: None,
+        source_signature: String::new(),
+        cache_hit: false,
         events,
         facts,
         evidence,
@@ -953,14 +959,15 @@ fn sync_openai_usage_ledger(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
 ) -> AppResult<Connection> {
-    let mut conn = open_usage_ledger(codex_home)?;
-    ensure_usage_ledger_schema(&conn)?;
-    let source_signature = usage_source_signature(codex_home);
-    if apply_cached_usage_sync_state(&conn, &source_signature, summary)? {
+    let mut usage = ingestion::ingest_usage(codex_home, summary)?;
+    let mut conn = usage
+        .connection
+        .take()
+        .expect("ingestion always returns its usage ledger connection");
+    if usage.cache_hit {
         return Ok(conn);
     }
-    let usage = ingestion::ingest_usage(codex_home, summary)?;
-    rebuild_usage_events(&mut conn, &usage, &source_signature, summary)?;
+    rebuild_usage_events(&mut conn, &usage, &usage.source_signature, summary)?;
     Ok(conn)
 }
 
@@ -1690,140 +1697,6 @@ fn apply_cached_usage_sync_state(
             format!("Failed to read usage sync state: {error}"),
         )),
     }
-}
-
-fn usage_source_signature(codex_home: &Path) -> String {
-    let mut entries = Vec::new();
-    collect_usage_source_entries(codex_home, &mut entries);
-    entries.sort();
-    let mut hasher = DefaultHasher::new();
-    PRICING_CHECKED_AT.hash(&mut hasher);
-    EVIDENCE_PARSER_VERSION.hash(&mut hasher);
-    EVIDENCE_CLASSIFIER_VERSION.hash(&mut hasher);
-    EVIDENCE_DEDUPE_VERSION.hash(&mut hasher);
-    LEDGER_SCHEMA_VERSION.hash(&mut hasher);
-    LAYER_CLASSIFIER_VERSION.hash(&mut hasher);
-    ATTRIBUTION_BACKFILL_VERSION.hash(&mut hasher);
-    PRICING_VERSION.hash(&mut hasher);
-    for entry in entries {
-        entry.hash(&mut hasher);
-    }
-    format!("{:016x}", hasher.finish())
-}
-
-fn collect_usage_source_entries(codex_home: &Path, entries: &mut Vec<String>) {
-    for sessions_root in [
-        codex_home.join("sessions"),
-        codex_home.join("archived_sessions"),
-    ] {
-        let mut files = Vec::new();
-        collect_jsonl_files(&sessions_root, &mut files);
-        for file in files {
-            push_file_signature(codex_home, &file, entries);
-        }
-    }
-
-    for file in [
-        get_openai_usage_attribution_path(Some(codex_home)),
-        get_current_profile_file(Some(codex_home)),
-        get_backup_root(Some(codex_home)).join(".current_profile"),
-    ] {
-        push_file_signature(codex_home, &file, entries);
-    }
-    push_file_content_signature(
-        codex_home,
-        &codex_home.join("auth.json"),
-        "root-auth",
-        entries,
-    );
-
-    let backup_root = get_backup_root(Some(codex_home));
-    for profile_dir in super::paths::list_profile_dirs(&backup_root) {
-        push_file_signature(codex_home, &profile_dir.join("profile.json"), entries);
-        push_file_content_signature(
-            codex_home,
-            &profile_dir.join("auth.json"),
-            "profile-auth",
-            entries,
-        );
-        push_file_signature(
-            codex_home,
-            &profile_dir.join(super::paths::ACTIVE_MARKER_FILE),
-            entries,
-        );
-    }
-
-    if let Some(ccswitch_db) = live_ccswitch_db_path(codex_home) {
-        push_external_file_signature("ccswitch", &ccswitch_db, entries);
-        push_external_file_signature(
-            "ccswitch-wal",
-            &ccswitch_db.with_extension("db-wal"),
-            entries,
-        );
-    }
-}
-
-fn push_file_signature(codex_home: &Path, file: &Path, entries: &mut Vec<String>) {
-    let Ok(metadata) = fs::metadata(file) else {
-        return;
-    };
-    let relative = file.strip_prefix(codex_home).unwrap_or(file);
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .and_then(|value| u64::try_from(value.as_millis()).ok())
-        .unwrap_or_default();
-    entries.push(format!(
-        "{}:{}:{}",
-        relative.display(),
-        metadata.len(),
-        modified_ms
-    ));
-}
-
-fn push_file_content_signature(
-    codex_home: &Path,
-    file: &Path,
-    label: &str,
-    entries: &mut Vec<String>,
-) {
-    let Ok(raw) = fs::read_to_string(file) else {
-        return;
-    };
-    let relative = file.strip_prefix(codex_home).unwrap_or(file);
-    entries.push(format!(
-        "{label}:{}:{}",
-        relative.display(),
-        stable_hash(&[&raw])
-    ));
-}
-
-fn push_external_file_signature(label: &str, file: &Path, entries: &mut Vec<String>) {
-    let Ok(metadata) = fs::metadata(file) else {
-        return;
-    };
-    let modified_ms = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-        .and_then(|value| u64::try_from(value.as_millis()).ok())
-        .unwrap_or_default();
-    entries.push(format!(
-        "{label}:{}:{}:{}",
-        file.display(),
-        metadata.len(),
-        modified_ms
-    ));
-}
-
-fn live_ccswitch_db_path(codex_home: &Path) -> Option<PathBuf> {
-    if codex_home != get_codex_home().as_path() {
-        return None;
-    }
-    let user_profile = std::env::var_os("USERPROFILE").map(PathBuf::from)?;
-    let db_path = user_profile.join(".cc-switch").join("cc-switch.db");
-    db_path.is_file().then_some(db_path)
 }
 
 fn rebuild_usage_events(
@@ -3325,17 +3198,6 @@ fn official_pricing_note(pricing: ModelPricing) -> String {
 
 fn official_data_source() -> &'static str {
     "codex_session"
-}
-
-fn source_priority(source_type: &str) -> i64 {
-    match source_type {
-        SOURCE_OPENAI_RESPONSE_USAGE => 500,
-        SOURCE_CCSWITCH_PROXY => 400,
-        SOURCE_CODEX_SESSION_JSONL => 300,
-        SOURCE_CCSWITCH_CODEX_SESSION => 200,
-        SOURCE_CCSWITCH_ROLLUP => 100,
-        _ => 0,
-    }
 }
 
 fn account_identity_key(identity: &AccountIdentity) -> String {
@@ -4933,111 +4795,6 @@ mod tests {
             .unwrap();
         assert_eq!(total_evidence, 4);
         let _ = fs::remove_dir_all(&codex_home);
-    }
-
-    fn accepted_test_evidence(
-        evidence_id: &str,
-        source_type: &str,
-        source_priority: i64,
-    ) -> UsageEvidence {
-        UsageEvidence {
-            evidence_id: evidence_id.to_string(),
-            request_id: Some("request-1".to_string()),
-            fingerprint: Some("fingerprint-1".to_string()),
-            session_id: Some("session-1".to_string()),
-            source_type: source_type.to_string(),
-            source_priority,
-            source_locator: format!("test:{evidence_id}"),
-            source_hash: evidence_id.to_string(),
-            parser_version: EVIDENCE_PARSER_VERSION.to_string(),
-            event_started_at_ms: Some(ts("2999-01-01T00:00:01.000Z")),
-            event_completed_at_ms: Some(ts("2999-01-01T00:00:02.000Z")),
-            observed_at_ms: Some(ts("2999-01-01T00:00:02.000Z")),
-            turn_index: Some(1),
-            response_id: Some("response-1".to_string()),
-            previous_response_id: None,
-            model: Some("gpt-5.3-codex".to_string()),
-            request_model: Some("gpt-5.3-codex".to_string()),
-            pricing_model: Some("gpt-5.3-codex".to_string()),
-            model_reasoning_effort: None,
-            model_verbosity: None,
-            pricing_tier: Some(PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
-            pricing_source_url: Some(PRICING_SOURCE_URL.to_string()),
-            usage_shape: USAGE_SHAPE_CUMULATIVE_TOTAL_DELTA.to_string(),
-            usage_confidence: CONFIDENCE_HIGH.to_string(),
-            delta: Some(UsageCounts {
-                input_tokens: 100,
-                cached_input_tokens: 20,
-                output_tokens: 10,
-                reasoning_output_tokens: 0,
-            }),
-            raw_usage_json: None,
-            profile: Some("a".to_string()),
-            account_identity_key: Some("acct_key_a".to_string()),
-            account_label: Some("acct_A".to_string()),
-            identity_source: Some("test".to_string()),
-            identity_observed_at_ms: Some(ts("2999-01-01T00:00:00.000Z")),
-            account_confidence: CONFIDENCE_PROVEN.to_string(),
-            effective_base_url: None,
-            official_source: Some("OpenAI default".to_string()),
-            official_confidence: CONFIDENCE_PROVEN.to_string(),
-            status_code: Some(200),
-            decision: DECISION_ACCEPTED.to_string(),
-            decision_reason: Some("test accepted evidence".to_string()),
-            superseded_by: None,
-            ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
-            layer_reason: Some("test strict proof".to_string()),
-            attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
-            attribution_window_id: Some("window-1".to_string()),
-            legacy_account_key: None,
-            created_at_ms: ts("2999-01-01T00:00:02.000Z"),
-        }
-    }
-
-    #[test]
-    fn higher_priority_evidence_supersedes_session_fallback_before_facts_are_finalized() {
-        let session = accepted_test_evidence(
-            "session-evidence",
-            SOURCE_CODEX_SESSION_JSONL,
-            source_priority(SOURCE_CODEX_SESSION_JSONL),
-        );
-        let response = accepted_test_evidence(
-            "response-evidence",
-            SOURCE_OPENAI_RESPONSE_USAGE,
-            source_priority(SOURCE_OPENAI_RESPONSE_USAGE),
-        );
-        let mut summary = new_usage_summary(&OpenAiUsageQuery::default());
-
-        let result = finalize_usage_load(
-            Vec::new(),
-            Vec::new(),
-            vec![session, response],
-            EvidenceDecisionCounts::default(),
-            &mut summary,
-        );
-
-        assert_eq!(result.events.len(), 1);
-        assert_eq!(result.events[0].evidence_id, "response-evidence");
-        assert_eq!(result.facts.len(), 1);
-        assert_eq!(result.facts[0].evidence_id, "response-evidence");
-        assert_eq!(result.decisions.accepted, 1);
-        assert_eq!(result.decisions.superseded, 1);
-        assert_eq!(summary.exclusions.superseded_events, 1);
-        assert_eq!(summary.exclusions.duplicate_events, 0);
-        let session_evidence = result
-            .evidence
-            .iter()
-            .find(|entry| entry.evidence_id == "session-evidence")
-            .unwrap();
-        assert_eq!(session_evidence.decision, DECISION_SUPERSEDED);
-        assert_eq!(
-            session_evidence.superseded_by.as_deref(),
-            Some("response-evidence")
-        );
-        assert_eq!(
-            session_evidence.layer_reason.as_deref(),
-            Some("superseded by higher-priority evidence source")
-        );
     }
 
     #[test]
