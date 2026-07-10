@@ -160,64 +160,94 @@ describe("UsageWorkspace", () => {
     });
   });
 
-  it("忽略晚到的旧 intent 响应", async () => {
-    const first = deferred<OpenAiUsageDashboard>();
-    const second = deferred<OpenAiUsageDashboard>();
-    const loadDashboard = vi.fn()
-      .mockReturnValueOnce(first.promise)
-      .mockReturnValueOnce(second.promise);
-    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
-    const older = workspace.dispatch({ type: "refresh", mode: "initial" });
-    await workspace.dispatch({ type: "set-filters", model: "gpt-5.3-codex" });
-    const newer = workspace.dispatch({ type: "refresh", mode: "initial" });
-
-    second.resolve(dashboardWithRequests(2));
-    await newer;
-    first.resolve(dashboardWithRequests(1));
-    await older;
-
-    expect(workspace.snapshot().summary?.total_requests).toBe(2);
-  });
-
-  it("忽略旧 intent 的 reject 且不触发用户通知", async () => {
-    const first = deferred<OpenAiUsageDashboard>();
-    const second = deferred<OpenAiUsageDashboard>();
+  it.each(["manual", "auto"] as const)("%s in-flight 时 initial 提高优先级且旧结果失效", async (mode) => {
+    const olderRequest = deferred<OpenAiUsageDashboard>();
+    const initialRequest = deferred<OpenAiUsageDashboard>();
     const onError = vi.fn();
     const loadDashboard = vi.fn()
-      .mockReturnValueOnce(first.promise)
-      .mockReturnValueOnce(second.promise);
+      .mockReturnValueOnce(olderRequest.promise)
+      .mockReturnValueOnce(initialRequest.promise);
     const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
-    const older = workspace.dispatch({ type: "refresh", mode: "manual" });
-    await workspace.dispatch({ type: "set-filters", model: "gpt-5.3-codex" });
-    const newer = workspace.dispatch({ type: "refresh", mode: "initial" });
+    const older = workspace.dispatch({ type: "refresh", mode });
+    const initial = workspace.dispatch({ type: "refresh", mode: "initial" });
 
-    second.resolve(dashboardWithRequests(2));
-    await newer;
-    first.reject(new Error("旧请求失败"));
-    await older;
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+    olderRequest.reject(new Error("旧请求失败"));
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    initialRequest.resolve(dashboardWithRequests(2));
+    await Promise.all([older, initial]);
 
     expect(workspace.snapshot().summary?.total_requests).toBe(2);
     expect(workspace.snapshot().loadError).toBeNull();
     expect(onError).not.toHaveBeenCalled();
   });
 
-  it("旧 initial 完成时保持最新 pending 请求的 loading", async () => {
-    const first = deferred<OpenAiUsageDashboard>();
-    const second = deferred<OpenAiUsageDashboard>();
+  it("多次 initial 合并成一个最高优先级刷新", async () => {
+    const olderRequest = deferred<OpenAiUsageDashboard>();
+    const initialRequest = deferred<OpenAiUsageDashboard>();
     const loadDashboard = vi.fn()
-      .mockReturnValueOnce(first.promise)
-      .mockReturnValueOnce(second.promise);
+      .mockReturnValueOnce(olderRequest.promise)
+      .mockReturnValueOnce(initialRequest.promise);
     const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
-    const older = workspace.dispatch({ type: "refresh", mode: "initial" });
-    const newer = workspace.dispatch({ type: "refresh", mode: "initial" });
+    const older = workspace.dispatch({ type: "refresh", mode: "manual" });
+    const initials = [
+      workspace.dispatch({ type: "refresh", mode: "initial" }),
+      workspace.dispatch({ type: "refresh", mode: "initial" }),
+      workspace.dispatch({ type: "refresh", mode: "initial" }),
+    ];
 
-    first.resolve(dashboardWithRequests(1));
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+    olderRequest.resolve(dashboardWithRequests(1));
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    initialRequest.resolve(dashboardWithRequests(2));
+    await Promise.all([older, ...initials]);
+
+    expect(loadDashboard).toHaveBeenCalledTimes(2);
+    expect(workspace.snapshot().summary?.total_requests).toBe(2);
+  });
+
+  it.each([
+    ["filter", { type: "set-filters", model: "gpt-5.3-codex" }],
+    ["page", { type: "set-page", page: 2 }],
+    ["range", { type: "set-range", preset: "7d" }],
+  ] as const)("旧请求在新 %s intent 后 reject 不污染状态", async (_label, event) => {
+    const request = deferred<OpenAiUsageDashboard>();
+    const onError = vi.fn();
+    const workspace = createUsageWorkspace(fakeDependencies({
+      loadDashboard: () => request.promise,
+      onError,
+    }));
+    const older = workspace.dispatch({ type: "refresh", mode: "manual" });
+    await workspace.dispatch(event);
+
+    request.reject(new Error("旧请求失败"));
     await older;
-    expect(workspace.snapshot().loading).toBe(true);
 
-    second.resolve(dashboardWithRequests(2));
-    await newer;
-    expect(workspace.snapshot().loading).toBe(false);
+    expect(workspace.snapshot().loadError).toBeNull();
+    expect(workspace.snapshot().logsLoading).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("route inactive 后旧 manual reject 不渲染也不通知", async () => {
+    const request = deferred<OpenAiUsageDashboard>();
+    const onChange = vi.fn();
+    const onError = vi.fn();
+    const workspace = createUsageWorkspace(fakeDependencies({
+      loadDashboard: () => request.promise,
+      onChange,
+      onError,
+    }));
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    const older = workspace.dispatch({ type: "refresh", mode: "manual" });
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+    const renderCountAfterDeactivate = onChange.mock.calls.length;
+
+    request.reject(new Error("离开页面后的旧错误"));
+    await older;
+
+    expect(onChange).toHaveBeenCalledTimes(renderCountAfterDeactivate);
+    expect(workspace.snapshot().loadError).toBeNull();
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("只有 manual refresh 错误触发用户通知", async () => {

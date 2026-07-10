@@ -161,7 +161,9 @@ export function createUsageWorkspace(
   let refreshTimerId: unknown = null;
   let rangeLiveEndTimerId: unknown = null;
   let disposed = false;
-  let refreshInFlight = false;
+  let refreshRun: Promise<void> | null = null;
+  let activeRefreshMode: "initial" | "manual" | "auto" | null = null;
+  let queuedRefreshMode: "initial" | "manual" | null = null;
   let requestSerial = 0;
   let activeRequestSerial = 0;
 
@@ -194,6 +196,10 @@ export function createUsageWorkspace(
 
   function isStaleLoad(serial: number, intentKey: string): boolean {
     return disposed || serial !== activeRequestSerial || intentKey !== currentIntentKey();
+  }
+
+  function invalidateActiveRequest(): void {
+    activeRequestSerial = ++requestSerial;
   }
 
   function markLogsLoadingIfIntentChanged(previousIntentKey: string): void {
@@ -331,11 +337,11 @@ export function createUsageWorkspace(
     const query = resolveQuery();
     state.loading = true;
     state.loadError = null;
-    notifyChange();
+    if (active) notifyChange();
     try {
       await load(serial, intentKey, query);
     } catch (error) {
-      if (disposed) return;
+      if (isStaleLoad(serial, intentKey)) return;
       state.loaded = true;
       state.loadError = error instanceof Error
         ? error.message
@@ -349,39 +355,57 @@ export function createUsageWorkspace(
     } finally {
       if (!disposed && serial === activeRequestSerial) {
         state.loading = false;
-        notifyChange();
+        if (active) notifyChange();
       }
+    }
+  }
+
+  async function runRefreshLoop(firstMode: "initial" | "manual" | "auto"): Promise<void> {
+    state.refreshInFlight = true;
+    let nextMode: "initial" | "manual" | "auto" | null = firstMode;
+    try {
+      while (!disposed && nextMode !== null) {
+        activeRefreshMode = nextMode;
+        queuedRefreshMode = null;
+        state.refreshQueued = false;
+        await performRefresh(nextMode);
+        nextMode = queuedRefreshMode;
+      }
+    } finally {
+      activeRefreshMode = null;
+      queuedRefreshMode = null;
+      state.refreshInFlight = false;
+      state.refreshQueued = false;
+      refreshRun = null;
+      if (!disposed && active) notifyChange();
     }
   }
 
   async function refresh(mode: "initial" | "manual" | "auto"): Promise<void> {
     if (disposed) return;
-    if (mode === "initial") {
-      await performRefresh(mode);
-      return;
-    }
-    if (refreshInFlight) {
-      if (mode === "manual") {
+    if (refreshRun !== null) {
+      if (mode === "initial") {
+        if (activeRefreshMode !== "initial" && queuedRefreshMode !== "initial") {
+          queuedRefreshMode = "initial";
+          state.refreshQueued = true;
+          invalidateActiveRequest();
+          if (active) notifyChange();
+        }
+        await refreshRun;
+      } else if (mode === "manual" && queuedRefreshMode === null) {
+        queuedRefreshMode = "manual";
         state.refreshQueued = true;
-        notifyChange();
+        if (active) notifyChange();
       }
       return;
     }
 
-    refreshInFlight = true;
-    state.refreshInFlight = true;
-    let nextMode = mode;
+    const run = runRefreshLoop(mode);
+    refreshRun = run;
     try {
-      do {
-        state.refreshQueued = false;
-        await performRefresh(nextMode);
-        nextMode = "manual";
-      } while (!disposed && state.refreshQueued);
+      await run;
     } finally {
-      refreshInFlight = false;
-      state.refreshInFlight = false;
-      state.refreshQueued = false;
-      notifyChange();
+      if (refreshRun === run) refreshRun = null;
     }
   }
 
@@ -392,7 +416,13 @@ export function createUsageWorkspace(
         const activeChanged = active !== event.active;
         active = event.active;
         state.locale = event.locale;
-        if (!active) closeRangePicker();
+        if (!active) {
+          closeRangePicker();
+          if (activeChanged) {
+            invalidateActiveRequest();
+            state.loading = false;
+          }
+        }
         if (activeChanged) {
           syncRefreshTimer();
           syncRangeLiveEndTimer();
