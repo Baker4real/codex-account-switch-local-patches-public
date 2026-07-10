@@ -1593,6 +1593,67 @@ mod tests {
     }
 
     #[test]
+    fn freeze_ccswitch_db_preserves_wal_state_in_read_only_snapshot() {
+        let codex_home = temp_codex_home("ccswitch-freeze-wal");
+        let live_dir = codex_home.join("live-ccswitch");
+        fs::create_dir_all(&live_dir).unwrap();
+        let live_db = live_dir.join("cc-switch.db");
+        let live_conn = Connection::open(&live_db).unwrap();
+        let journal_mode = live_conn
+            .query_row("PRAGMA journal_mode = WAL", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+        live_conn
+            .pragma_update(None, "wal_autocheckpoint", 0)
+            .unwrap();
+        live_conn
+            .execute_batch(
+                r#"
+                CREATE TABLE wal_fixture (value TEXT NOT NULL);
+                INSERT INTO wal_fixture VALUES ('visible-through-snapshot-wal');
+                "#,
+            )
+            .unwrap();
+
+        let live_wal = live_db.with_extension("db-wal");
+        let live_shm = live_db.with_extension("db-shm");
+        assert!(live_wal.is_file());
+        assert!(live_shm.is_file());
+
+        let snapshot = freeze_ccswitch_db(&codex_home, &live_db).unwrap();
+        assert_eq!(
+            snapshot,
+            codex_home
+                .join(USAGE_EVIDENCE_DIRNAME)
+                .join("ccswitch")
+                .join("cc-switch-latest.db")
+        );
+        assert!(snapshot.with_extension("db-wal").is_file());
+        assert!(snapshot.with_extension("db-shm").is_file());
+
+        let snapshot_conn = Connection::open_with_flags(
+            &snapshot,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .unwrap();
+        let value = snapshot_conn
+            .query_row("SELECT value FROM wal_fixture", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap();
+        assert_eq!(value, "visible-through-snapshot-wal");
+        assert!(snapshot_conn
+            .execute("INSERT INTO wal_fixture VALUES ('must-fail')", [])
+            .is_err());
+
+        drop(snapshot_conn);
+        drop(live_conn);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn future_response_source_has_highest_priority_without_collecting_rows() {
         let adapter = FutureOpenAiResponseUsageAdapter;
         assert_eq!(adapter.source_type(), SOURCE_OPENAI_RESPONSE_USAGE);

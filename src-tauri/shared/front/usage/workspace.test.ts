@@ -418,6 +418,42 @@ describe("UsageWorkspace", () => {
     expect(queuedSettled).toBe(true);
   });
 
+  it("route inactive 吸收 queued manual，调用 Promise 结算且重新激活只补 initial", async () => {
+    const runningRequest = deferred<OpenAiUsageDashboard>();
+    const reactivationRequest = deferred<OpenAiUsageDashboard>();
+    const onError = vi.fn();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(runningRequest.promise)
+      .mockReturnValueOnce(reactivationRequest.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await workspace.dispatch({ type: "set-refresh-interval", intervalMs: 0 });
+
+    let runningSettled = false;
+    let queuedSettled = false;
+    const running = workspace.dispatch({ type: "refresh", mode: "manual" })
+      .then(() => { runningSettled = true; });
+    const queued = workspace.dispatch({ type: "refresh", mode: "manual" })
+      .then(() => { queuedSettled = true; });
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+
+    runningRequest.resolve(emptyDashboard());
+    await Promise.all([running, queued]);
+
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+    expect(runningSettled).toBe(true);
+    expect(queuedSettled).toBe(true);
+    expect(onError).not.toHaveBeenCalled();
+
+    const reactivate = workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    reactivationRequest.resolve(emptyDashboard());
+    await reactivate;
+
+    expect(loadDashboard).toHaveBeenCalledTimes(2);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("apply-range-draft await 等到实际排队刷新完成", async () => {
     const first = deferred<OpenAiUsageDashboard>();
     const second = deferred<OpenAiUsageDashboard>();

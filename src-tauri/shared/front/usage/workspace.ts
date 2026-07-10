@@ -450,6 +450,8 @@ export function createUsageWorkspace(
             || activeRefreshMode !== null
             || queuedRefreshMode !== null;
           refreshOnActivate ||= state.logsLoading || !state.loaded || refreshPending;
+          queuedRefreshMode = null;
+          state.refreshQueued = false;
           if (activeChanged || refreshPending) {
             invalidateActiveRequest();
             state.loading = false;
