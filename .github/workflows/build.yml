@@ -57,6 +57,9 @@ jobs:
       - name: Test front-end
         run: npm run test:front
 
+      - name: Check Windows release hygiene
+        run: npm run check:windows-release-hygiene
+
       - name: Check for hardcoded version literals in HTML
         run: npm run version:check
 

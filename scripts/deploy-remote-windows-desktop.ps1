@@ -349,28 +349,64 @@ $backupDir = Join-Path $targetDir ("backup\deploy-" + $config.stamp)
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 
 $beforeExeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetExe).Hash
-$beforeLoaderHash = if (Test-Path -LiteralPath $targetLoader) { (Get-FileHash -Algorithm SHA256 -LiteralPath $targetLoader).Hash } else { $null }
+$hadOriginalLoader = Test-Path -LiteralPath $targetLoader
+$beforeLoaderHash = if ($hadOriginalLoader) { (Get-FileHash -Algorithm SHA256 -LiteralPath $targetLoader).Hash } else { $null }
+$backupExe = Join-Path $backupDir 'codex_switch.exe'
+$backupLoader = Join-Path $backupDir 'WebView2Loader.dll'
 
-Copy-Item -LiteralPath $targetExe -Destination (Join-Path $backupDir 'codex_switch.exe') -Force
-if (Test-Path -LiteralPath $targetLoader) {
-    Copy-Item -LiteralPath $targetLoader -Destination (Join-Path $backupDir 'WebView2Loader.dll') -Force
+Copy-Item -LiteralPath $targetExe -Destination $backupExe -Force
+if ($hadOriginalLoader) {
+    Copy-Item -LiteralPath $targetLoader -Destination $backupLoader -Force
 }
 
 $stopped = @()
 Get-Process -Name 'codex_switch' -ErrorAction SilentlyContinue | ForEach-Object {
     $processPath = $null
     try { $processPath = $_.Path } catch { $processPath = $null }
-    $stopped += [pscustomobject]@{ id = $_.Id; path = $processPath }
-    Stop-Process -Id $_.Id -Force
+    if ($processPath -and [string]::Equals($processPath, $targetExe, [StringComparison]::OrdinalIgnoreCase)) {
+        $stopped += [pscustomobject]@{ id = $_.Id; path = $processPath }
+        Stop-Process -Id $_.Id -Force
+    }
 }
 
-Copy-Item -LiteralPath $stageExe -Destination $targetExe -Force
-Copy-Item -LiteralPath $stageLoader -Destination $targetLoader -Force
+try {
+    Copy-Item -LiteralPath $stageExe -Destination $targetExe -Force
+    Copy-Item -LiteralPath $stageLoader -Destination $targetLoader -Force
 
-$afterExeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetExe).Hash
-$afterLoaderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetLoader).Hash
-if ($afterExeHash -ne $config.expectedExeHash) { throw "Target exe hash mismatch after copy: $afterExeHash" }
-if ($afterLoaderHash -ne $config.expectedLoaderHash) { throw "Target loader hash mismatch after copy: $afterLoaderHash" }
+    $afterExeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetExe).Hash
+    $afterLoaderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetLoader).Hash
+    if ($afterExeHash -ne $config.expectedExeHash) { throw "Target exe hash mismatch after copy: $afterExeHash" }
+    if ($afterLoaderHash -ne $config.expectedLoaderHash) { throw "Target loader hash mismatch after copy: $afterLoaderHash" }
+} catch {
+    $deployError = $_.Exception.Message
+    $rollbackStatus = 'started'
+    try {
+        Copy-Item -LiteralPath $backupExe -Destination $targetExe -Force
+        $restoredExeHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetExe).Hash
+        if ($restoredExeHash -ne $beforeExeHash) {
+            throw "Restored executable hash mismatch: $restoredExeHash"
+        }
+
+        if (-not $hadOriginalLoader) {
+            if (Test-Path -LiteralPath $targetLoader) {
+                Remove-Item -LiteralPath $targetLoader -Force
+            }
+            if (Test-Path -LiteralPath $targetLoader) {
+                throw "Restored loader state mismatch: expected no file at $targetLoader"
+            }
+        } else {
+            Copy-Item -LiteralPath $backupLoader -Destination $targetLoader -Force
+            $restoredLoaderHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $targetLoader).Hash
+            if ($restoredLoaderHash -ne $beforeLoaderHash) {
+                throw "Restored loader hash mismatch: $restoredLoaderHash"
+            }
+        }
+        $rollbackStatus = 'succeeded'
+    } catch {
+        $rollbackStatus = "failed: $($_.Exception.Message)"
+    }
+    throw "Deployment failed: $deployError; backupDir=$backupDir; rollback=$rollbackStatus"
+}
 
 [pscustomobject]@{
     computerName = $env:COMPUTERNAME
@@ -401,14 +437,14 @@ if ([string]::IsNullOrWhiteSpace($RemoteTarget)) {
 if ([string]::IsNullOrWhiteSpace($RemoteDesktopLink)) {
     throw 'RemoteDesktopLink is required. Pass -RemoteDesktopLink or set CODEX_SWITCH_REMOTE_DESKTOP_LINK.'
 }
-if ([string]::IsNullOrWhiteSpace($RemoteStageRoot)) {
+if (-not $InspectOnly -and [string]::IsNullOrWhiteSpace($RemoteStageRoot)) {
     throw 'RemoteStageRoot is required. Pass -RemoteStageRoot or set CODEX_REMOTE_STAGE_ROOT.'
 }
 if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
     if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
         $EvidenceRoot = Join-Path (Join-Path $env:CODEX_HOME 'run-evidence') 'codex-account-switch'
     } else {
-        $EvidenceRoot = Join-Path (Join-Path (Join-Path $repoRoot '.scratch') 'run-evidence') 'codex-account-switch'
+        throw 'EvidenceRoot is required. Pass -EvidenceRoot, set CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT, or set CODEX_HOME.'
     }
 }
 if (-not $ReleaseRoot) {

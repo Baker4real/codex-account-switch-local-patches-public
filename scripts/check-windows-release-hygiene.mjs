@@ -37,6 +37,9 @@ const allowedEmailDomains = new Set([
   "example.invalid",
 ]);
 
+const deployScriptPath = join(repoRoot, "scripts/deploy-remote-windows-desktop.ps1");
+const buildWorkflowPath = join(repoRoot, ".github/workflows/build.yml");
+
 function toRepoPath(path) {
   return relative(repoRoot, path).replaceAll("\\", "/");
 }
@@ -82,6 +85,49 @@ function isAllowedEmail(email) {
 }
 
 const failures = [];
+
+const deployScript = read(deployScriptPath);
+const deployRequirements = [
+  {
+    pattern:
+      /if\s*\(\s*-not\s+\$InspectOnly\s+-and\s+\[string\]::IsNullOrWhiteSpace\(\$RemoteStageRoot\)\s*\)/i,
+    message: "must require RemoteStageRoot only for deploy mode",
+  },
+  {
+    pattern: /EvidenceRoot is required[\s\S]*CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT[\s\S]*CODEX_HOME/i,
+    message: "must fail clearly when no explicit evidence root is available",
+  },
+  {
+    pattern:
+      /\[string\]::Equals\(\$processPath,\s*\$targetExe,\s*\[StringComparison\]::OrdinalIgnoreCase\)/i,
+    message: "must stop only the process launched from the shortcut target",
+  },
+  {
+    pattern: /\$hadOriginalLoader[\s\S]*catch\s*\{[\s\S]*rollback[\s\S]*backupDir/i,
+    message: "must roll back failed replacement from the backup directory",
+  },
+  {
+    pattern: /-not\s+\$hadOriginalLoader[\s\S]*Remove-Item\s+-LiteralPath\s+\$targetLoader/i,
+    message: "must remove a newly introduced loader when rollback restores an absent loader",
+  },
+];
+
+if (/\.scratch[\s\S]{0,100}run-evidence/i.test(deployScript)) {
+  failures.push("scripts/deploy-remote-windows-desktop.ps1 must not fall back to .scratch evidence");
+}
+
+for (const requirement of deployRequirements) {
+  if (!requirement.pattern.test(deployScript)) {
+    failures.push(`scripts/deploy-remote-windows-desktop.ps1 ${requirement.message}`);
+  }
+}
+
+const buildWorkflow = read(buildWorkflowPath);
+const frontTestIndex = buildWorkflow.indexOf("npm run test:front");
+const hygieneIndex = buildWorkflow.indexOf("npm run check:windows-release-hygiene");
+if (hygieneIndex < 0 || frontTestIndex < 0 || hygieneIndex < frontTestIndex) {
+  failures.push(".github/workflows/build.yml must run release hygiene after front-end tests");
+}
 
 for (const file of todoFiles.map((entry) => join(repoRoot, entry))) {
   const text = read(file);
