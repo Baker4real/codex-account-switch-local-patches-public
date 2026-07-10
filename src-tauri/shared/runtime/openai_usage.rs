@@ -394,8 +394,10 @@ fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> O
         profile,
         account_label: evidence.account_label.clone(),
         account_identity_key: evidence.account_identity_key.clone(),
-        account_id_alias: evidence.account_id_alias.clone(),
-        email_alias: evidence.email_alias.clone(),
+        account_id_alias: identity::validated_account_id_alias(
+            evidence.account_id_alias.as_deref(),
+        ),
+        email_alias: identity::validated_email_alias(evidence.email_alias.as_deref()),
         legacy_account_key: evidence.legacy_account_key.clone(),
         official_source,
         ledger_layer: evidence.ledger_layer.clone(),
@@ -515,8 +517,10 @@ impl AttributionRecord {
                 .unwrap_or_else(|| "OpenAI default".to_string()),
             attribution_since_ms: self.observed_at_ms,
             account_identity_key: Some(account_identity_key),
-            account_id_alias: self.account_id_alias.clone(),
-            email_alias: self.email_alias.clone(),
+            account_id_alias: identity::validated_account_id_alias(
+                self.account_id_alias.as_deref(),
+            ),
+            email_alias: identity::validated_email_alias(self.email_alias.as_deref()),
             legacy_account_key: None,
             identity_source: Some("attribution_record".to_string()),
             identity_observed_at_ms: Some(self.observed_at_ms),
@@ -1993,6 +1997,9 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
         })?;
     for entry in evidence {
         let delta = entry.delta.unwrap_or_default();
+        let account_id_alias =
+            identity::validated_account_id_alias(entry.account_id_alias.as_deref());
+        let email_alias = identity::validated_email_alias(entry.email_alias.as_deref());
         stmt.execute(params![
             &entry.evidence_id,
             entry.request_id.as_deref(),
@@ -2043,8 +2050,8 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
             &entry.attribution_kind,
             entry.attribution_window_id.as_deref(),
             entry.legacy_account_key.as_deref(),
-            entry.account_id_alias.as_deref(),
-            entry.email_alias.as_deref(),
+            account_id_alias.as_deref(),
+            email_alias.as_deref(),
             i64_from_u64(entry.created_at_ms),
         ])
         .map_err(|error| {
@@ -2092,6 +2099,9 @@ fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()
         })?;
     let inserted_at_ms = i64_from_u64(current_time_ms());
     for fact in facts {
+        let account_id_alias =
+            identity::validated_account_id_alias(fact.account_id_alias.as_deref());
+        let email_alias = identity::validated_email_alias(fact.email_alias.as_deref());
         stmt.execute(params![
             &fact.evidence_id,
             &fact.request_id,
@@ -2138,8 +2148,8 @@ fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()
             &fact.source_type,
             fact.source_priority,
             &fact.usage_confidence,
-            fact.account_id_alias.as_deref(),
-            fact.email_alias.as_deref(),
+            account_id_alias.as_deref(),
+            email_alias.as_deref(),
             inserted_at_ms,
         ])
         .map_err(|error| {
@@ -2358,6 +2368,8 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
                 scope
             ],
             |row| {
+                let persisted_account_id_alias = row.get::<_, Option<String>>(37)?;
+                let persisted_email_alias = row.get::<_, Option<String>>(38)?;
                 let input_tokens = u64_from_i64(row.get::<_, i64>(17)?);
                 let cached_input_tokens = u64_from_i64(row.get::<_, i64>(18)?);
                 let output_tokens = u64_from_i64(row.get::<_, i64>(19)?);
@@ -2370,8 +2382,10 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
                     profile: row.get(4)?,
                     account_label: row.get(5)?,
                     account_identity_key: row.get(6)?,
-                    account_id_alias: row.get(37)?,
-                    email_alias: row.get(38)?,
+                    account_id_alias: identity::validated_account_id_alias(
+                        persisted_account_id_alias.as_deref(),
+                    ),
+                    email_alias: identity::validated_email_alias(persisted_email_alias.as_deref()),
                     legacy_account_key: row.get(7)?,
                     official_source: row.get(8)?,
                     ledger_layer: row.get(9)?,
@@ -2512,6 +2526,8 @@ fn load_evidence_usage_facts(
             ],
             |row| {
                 let evidence_id: String = row.get(0)?;
+                let persisted_account_id_alias = row.get::<_, Option<String>>(34)?;
+                let persisted_email_alias = row.get::<_, Option<String>>(35)?;
                 let request_id = row
                     .get::<_, Option<String>>(1)?
                     .unwrap_or_else(|| evidence_id.clone());
@@ -2563,8 +2579,10 @@ fn load_evidence_usage_facts(
                         .unwrap_or_else(|| "evidence".to_string()),
                     account_label: row.get(23)?,
                     account_identity_key: row.get(22)?,
-                    account_id_alias: row.get(34)?,
-                    email_alias: row.get(35)?,
+                    account_id_alias: identity::validated_account_id_alias(
+                        persisted_account_id_alias.as_deref(),
+                    ),
+                    email_alias: identity::validated_email_alias(persisted_email_alias.as_deref()),
                     legacy_account_key: row.get(32)?,
                     official_source: row
                         .get::<_, Option<String>>(24)?
@@ -4193,8 +4211,8 @@ mod tests {
         fs::write(
             attribution_path,
             [
-                r#"{"observed_at_ms":32472144000000,"profile":"email-only","account_label":"User@Example.com","account_identity_key":"acct_key_email_only","account_id_alias":null,"email_alias":"email:fixture-shared","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
-                r#"{"observed_at_ms":32472144003000,"profile":"dual","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:fixture-account","email_alias":"email:fixture-shared","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144000000,"profile":"email-only","account_label":"User@Example.com","account_identity_key":"acct_key_email_only","account_id_alias":null,"email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"dual","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
             .join("\n"),
         )
@@ -4230,8 +4248,8 @@ mod tests {
         fs::write(
             attribution_path,
             [
-                r#"{"observed_at_ms":32472144000000,"profile":"account-only","account_label":"acct_shared","account_identity_key":"acct_key_account_only","account_id_alias":"acct:fixture-shared","email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
-                r#"{"observed_at_ms":32472144003000,"profile":"dual","account_label":"dual@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:fixture-shared","email_alias":"email:fixture-dual","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144000000,"profile":"account-only","account_label":"acct_shared","account_identity_key":"acct_key_account_only","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"dual","account_label":"dual@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
             .join("\n"),
         )
@@ -4268,7 +4286,7 @@ mod tests {
             attribution_path,
             [
                 r#"{"observed_at_ms":32472144000000,"profile":"old-strict","account_label":"same@example.com","account_identity_key":"acct_key_same","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
-                r#"{"observed_at_ms":32472144003000,"profile":"new-strict","account_label":"same@example.com","account_identity_key":"acct_key_same","account_id_alias":"acct:fixture-shared","email_alias":"email:fixture-shared","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"new-strict","account_label":"same@example.com","account_identity_key":"acct_key_same","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
                 r#"{"observed_at_ms":32472144005000,"profile":"legacy","account_label":"same@example.com","account_identity_key":null,"account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
             ]
             .join("\n"),
@@ -4296,6 +4314,313 @@ mod tests {
         assert_eq!(account.tokens.output_tokens, 250);
         assert_eq!(account.tokens.reasoning_output_tokens, 50);
         assert_eq!(account.tokens.real_total_tokens, 2050);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_bridges_email_label_history_to_matching_known_alias() {
+        let codex_home = temp_codex_home("dashboard-email-label-alias-bridge");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"email-only-history","account_label":" User@Example.com ","account_identity_key":"acct_key_email_only","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"dual-current","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-email-label-alias-bridge"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        let account = &dashboard.account_summary[0];
+        assert_eq!(account.request_count, 2);
+        assert_eq!(account.tokens.real_total_tokens, 1700);
+        assert_eq!(
+            account.account_group_key.as_deref(),
+            Some("acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829")
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_bridges_account_id_label_history_to_matching_known_alias() {
+        let codex_home = temp_codex_home("dashboard-account-label-alias-bridge");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"account-only-history","account_label":" acct_A ","account_identity_key":"acct_key_account_only","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"dual-current","account_label":"user@example.com","account_identity_key":"acct_key_dual","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-account-label-alias-bridge"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        let account = &dashboard.account_summary[0];
+        assert_eq!(account.request_count, 2);
+        assert_eq!(account.tokens.real_total_tokens, 1700);
+        assert_eq!(
+            account.account_group_key.as_deref(),
+            Some("acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829")
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_keeps_matching_labels_isolated_when_candidate_hash_misses() {
+        let codex_home = temp_codex_home("dashboard-label-hash-miss-isolated");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"label-history","account_label":"same@example.com","account_identity_key":"acct_key_history","account_id_alias":null,"email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"different-account","account_label":"same@example.com","account_identity_key":"acct_key_different","account_id_alias":"acct:05e6a0f2f34cad8c8aa359b9e96915d4ec025bfabae0a1af07c5e385edfcbf65","email_alias":"email:5b71ed5f946240dc76f3b7c24bdcbbc3528284ec5f4519249fb702686f0df5b8","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-label-hash-miss"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 2);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            1700
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_rejects_invalid_persisted_aliases() {
+        let codex_home = temp_codex_home("dashboard-invalid-aliases");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"raw-id","account_label":"raw-id","account_identity_key":"acct_key_raw","account_id_alias":"acct_A","email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"wrong-prefix","account_label":"wrong-prefix","account_identity_key":"acct_key_wrong_prefix","account_id_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144005000,"profile":"short","account_label":"short","account_identity_key":"acct_key_short","account_id_alias":null,"email_alias":"email:abc","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144007000,"profile":"non-hex","account_label":"non-hex","account_identity_key":"acct_key_non_hex","account_id_alias":"acct:gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg","email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-invalid-aliases"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":200,"cached_input_tokens":30,"output_tokens":20,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":300,"cached_input_tokens":40,"output_tokens":30,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:08.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":400,"cached_input_tokens":50,"output_tokens":40,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 4);
+        assert!(dashboard.account_summary.iter().all(|account| account
+            .account_group_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("identity:"))));
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for table in ["openai_usage_evidence", "openai_usage_facts"] {
+            let persisted_aliases = conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE account_id_alias IS NOT NULL OR email_alias IS NOT NULL"
+                    ),
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert_eq!(persisted_aliases, 0, "invalid alias persisted in {table}");
+        }
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_does_not_union_cross_typed_alias_fields() {
+        let codex_home = temp_codex_home("dashboard-cross-typed-aliases");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"wrong-field","account_label":"not-an-email","account_identity_key":"acct_key_wrong_field","account_id_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","email_alias":null,"openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"real-email","account_label":"user@example.com","account_identity_key":"acct_key_real_email","account_id_alias":null,"email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-cross-typed-aliases"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 2);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            1700
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_prefers_lexicographically_smallest_account_alias() {
+        let codex_home = temp_codex_home("dashboard-canonical-alias-order");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let attribution_path = get_openai_usage_attribution_path(Some(&codex_home));
+        fs::create_dir_all(attribution_path.parent().unwrap()).unwrap();
+        fs::write(
+            attribution_path,
+            [
+                r#"{"observed_at_ms":32472144000000,"profile":"account-a","account_label":"user@example.com","account_identity_key":"acct_key_a","account_id_alias":"acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+                r#"{"observed_at_ms":32472144003000,"profile":"account-b","account_label":"user@example.com","account_identity_key":"acct_key_b","account_id_alias":"acct:05e6a0f2f34cad8c8aa359b9e96915d4ec025bfabae0a1af07c5e385edfcbf65","email_alias":"email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514","openai_base_url":null,"official_source":"OpenAI default","is_official_openai":true,"exclusion_reason":null,"model_reasoning_effort":null,"model_verbosity":null}"#,
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-canonical-alias-order"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":200,"output_tokens":100,"reasoning_output_tokens":20}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1500,"cached_input_tokens":250,"output_tokens":200,"reasoning_output_tokens":40}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        assert_eq!(
+            dashboard.account_summary[0].account_group_key.as_deref(),
+            Some("acct:05e6a0f2f34cad8c8aa359b9e96915d4ec025bfabae0a1af07c5e385edfcbf65")
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_ignores_invalid_aliases_loaded_from_existing_ledger() {
+        let codex_home = temp_codex_home("dashboard-invalid-ledger-aliases");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-invalid-ledger-aliases"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+        let first = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(first.account_summary.len(), 1);
+
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET account_id_alias = ?1, email_alias = ?2",
+            [
+                "email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514",
+                "email:abc",
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        assert!(dashboard.account_summary[0]
+            .account_group_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("identity:")));
         let _ = fs::remove_dir_all(&codex_home);
     }
 

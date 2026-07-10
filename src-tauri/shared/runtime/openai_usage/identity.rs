@@ -28,20 +28,85 @@ fn sha256_hex(value: &[u8]) -> String {
     encoded
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum IdentityAlias {
+    AccountId(String),
+    Email(String),
+}
+
+impl IdentityAlias {
+    fn parse_account_id(value: Option<&str>) -> Option<Self> {
+        parse_persisted_alias(value, "acct:").map(Self::AccountId)
+    }
+
+    fn parse_email(value: Option<&str>) -> Option<Self> {
+        parse_persisted_alias(value, "email:").map(Self::Email)
+    }
+
+    fn into_key(self) -> String {
+        match self {
+            Self::AccountId(value) | Self::Email(value) => value,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum IdentityNode {
+    Alias(IdentityAlias),
+    Fallback(String),
+}
+
+fn parse_persisted_alias(value: Option<&str>, prefix: &str) -> Option<String> {
+    let value = value?;
+    let digest = value.strip_prefix(prefix)?;
+    (digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then(|| value.to_string())
+}
+
+pub(super) fn validated_account_id_alias(value: Option<&str>) -> Option<String> {
+    IdentityAlias::parse_account_id(value).map(IdentityAlias::into_key)
+}
+
+pub(super) fn validated_email_alias(value: Option<&str>) -> Option<String> {
+    IdentityAlias::parse_email(value).map(IdentityAlias::into_key)
+}
+
 pub(super) struct CanonicalAccountResolver {
-    canonical_by_node: BTreeMap<String, String>,
+    canonical_by_node: BTreeMap<IdentityNode, String>,
 }
 
 impl CanonicalAccountResolver {
     pub(super) fn from_facts(facts: &[UsageFact], fallback_keys: &[String]) -> Self {
         debug_assert_eq!(facts.len(), fallback_keys.len());
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
-        let mut owner_by_node = BTreeMap::<String, usize>::new();
+        let mut owner_by_node = BTreeMap::<IdentityNode, usize>::new();
         for (index, (fact, fallback_key)) in facts.iter().zip(fallback_keys).enumerate() {
             for node in identity_nodes(fact, fallback_key) {
-                if let Some(owner) = owner_by_node.insert(node.to_string(), index) {
+                if let Some(owner) = owner_by_node.insert(node, index) {
                     union(&mut parents, index, owner);
                 }
+            }
+        }
+        for (index, fact) in facts.iter().enumerate() {
+            if aliases(fact).next().is_some() || fact.account_identity_key.is_none() {
+                continue;
+            }
+            let Some(label) = fact.account_label.as_deref() else {
+                continue;
+            };
+            let candidate = if label.contains('@') {
+                email_alias(Some(label)).map(IdentityAlias::Email)
+            } else {
+                account_id_alias(Some(label)).map(IdentityAlias::AccountId)
+            };
+            let Some(candidate) = candidate else {
+                continue;
+            };
+            if let Some(owner) = owner_by_node.get(&IdentityNode::Alias(candidate)) {
+                union(&mut parents, index, *owner);
             }
         }
 
@@ -49,11 +114,15 @@ impl CanonicalAccountResolver {
         for (index, fact) in facts.iter().enumerate() {
             let root = find(&mut parents, index);
             let component = components.entry(root).or_default();
-            if let Some(alias) = non_empty_alias(fact.account_id_alias.as_deref()) {
-                component.account_ids.insert(alias.to_string());
-            }
-            if let Some(alias) = non_empty_alias(fact.email_alias.as_deref()) {
-                component.emails.insert(alias.to_string());
+            for alias in aliases(fact) {
+                match alias {
+                    IdentityAlias::AccountId(value) => {
+                        component.account_ids.insert(value);
+                    }
+                    IdentityAlias::Email(value) => {
+                        component.emails.insert(value);
+                    }
+                }
             }
             component.fallbacks.insert(fallback_keys[index].clone());
         }
@@ -72,8 +141,14 @@ impl CanonicalAccountResolver {
             for node in component
                 .account_ids
                 .into_iter()
-                .chain(component.emails)
-                .chain(component.fallbacks)
+                .map(|value| IdentityNode::Alias(IdentityAlias::AccountId(value)))
+                .chain(
+                    component
+                        .emails
+                        .into_iter()
+                        .map(|value| IdentityNode::Alias(IdentityAlias::Email(value))),
+                )
+                .chain(component.fallbacks.into_iter().map(IdentityNode::Fallback))
             {
                 canonical_by_node.insert(node, canonical.clone());
             }
@@ -82,13 +157,17 @@ impl CanonicalAccountResolver {
     }
 
     pub(super) fn canonical_key(&self, fact: &UsageFact, fallback: String) -> String {
-        if let Some(canonical) =
-            aliases(fact).find_map(|alias| self.canonical_by_node.get(alias).cloned())
-        {
-            return canonical;
+        for alias in aliases(fact) {
+            if let Some(canonical) = self
+                .canonical_by_node
+                .get(&IdentityNode::Alias(alias))
+                .cloned()
+            {
+                return canonical;
+            }
         }
         self.canonical_by_node
-            .get(&fallback)
+            .get(&IdentityNode::Fallback(fallback.clone()))
             .cloned()
             .unwrap_or(fallback)
     }
@@ -101,21 +180,24 @@ struct ComponentAliases {
     fallbacks: BTreeSet<String>,
 }
 
-fn identity_nodes<'a>(fact: &'a UsageFact, fallback: &'a str) -> impl Iterator<Item = &'a str> {
-    aliases(fact).chain(std::iter::once(fallback))
+fn identity_nodes<'a>(
+    fact: &'a UsageFact,
+    fallback: &str,
+) -> impl Iterator<Item = IdentityNode> + 'a {
+    aliases(fact)
+        .map(IdentityNode::Alias)
+        .chain(std::iter::once(IdentityNode::Fallback(
+            fallback.to_string(),
+        )))
 }
 
-fn aliases(fact: &UsageFact) -> impl Iterator<Item = &str> {
+fn aliases(fact: &UsageFact) -> impl Iterator<Item = IdentityAlias> + '_ {
     [
-        non_empty_alias(fact.account_id_alias.as_deref()),
-        non_empty_alias(fact.email_alias.as_deref()),
+        IdentityAlias::parse_account_id(fact.account_id_alias.as_deref()),
+        IdentityAlias::parse_email(fact.email_alias.as_deref()),
     ]
     .into_iter()
     .flatten()
-}
-
-fn non_empty_alias(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn find(parents: &mut [usize], index: usize) -> usize {

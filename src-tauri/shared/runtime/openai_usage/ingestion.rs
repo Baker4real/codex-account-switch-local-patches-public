@@ -1407,8 +1407,13 @@ mod tests {
             raw_usage_json: None,
             profile: Some("a".to_string()),
             account_identity_key: Some("acct_key_a".to_string()),
-            account_id_alias: Some("acct:test".to_string()),
-            email_alias: Some("email:test".to_string()),
+            account_id_alias: Some(
+                "acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829".to_string(),
+            ),
+            email_alias: Some(
+                "email:b4c9a289323b21a01c3e940f150eb9b8c542587f1abfd8f0e1cc1ffc5e475514"
+                    .to_string(),
+            ),
             account_label: Some("acct_A".to_string()),
             identity_source: Some("test".to_string()),
             identity_observed_at_ms: Some(ts("2999-01-01T00:00:00.000Z")),
