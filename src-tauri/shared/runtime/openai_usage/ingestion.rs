@@ -386,6 +386,8 @@ fn collect_ccswitch_proxy_request_evidence(
             raw_usage_json: None,
             profile,
             account_identity_key: normalized_account_identity_key,
+            account_id_alias: None,
+            email_alias: None,
             account_label: profile_name.or(profile_id),
             identity_source: account_identity_source,
             identity_observed_at_ms: has_strict_account_proof.then_some(created_at_ms),
@@ -551,6 +553,8 @@ fn collect_ccswitch_rollup_evidence(
             raw_usage_json: None,
             profile: None,
             account_identity_key: None,
+            account_id_alias: None,
+            email_alias: None,
             account_label: None,
             identity_source: None,
             identity_observed_at_ms: None,
@@ -608,6 +612,8 @@ fn session_usage_evidence(input: SessionEvidenceInput<'_>) -> UsageEvidence {
         session_evidence_identity(input.file, input.line_number, input.line, input.request_id);
     let profile = attribution.map(|value| value.profile.clone());
     let account_identity_key = attribution.and_then(|value| value.account_identity_key.clone());
+    let account_id_alias = attribution.and_then(|value| value.account_id_alias.clone());
+    let email_alias = attribution.and_then(|value| value.email_alias.clone());
     let account_label = attribution.and_then(|value| value.account_label.clone());
     let model_reasoning_effort = input
         .model_reasoning_effort
@@ -663,6 +669,8 @@ fn session_usage_evidence(input: SessionEvidenceInput<'_>) -> UsageEvidence {
         raw_usage_json: Some(input.line.to_string()),
         profile,
         account_identity_key: account_identity_key.clone(),
+        account_id_alias,
+        email_alias,
         account_label,
         identity_source,
         identity_observed_at_ms,
@@ -1399,6 +1407,8 @@ mod tests {
             raw_usage_json: None,
             profile: Some("a".to_string()),
             account_identity_key: Some("acct_key_a".to_string()),
+            account_id_alias: Some("acct:test".to_string()),
+            email_alias: Some("email:test".to_string()),
             account_label: Some("acct_A".to_string()),
             identity_source: Some("test".to_string()),
             identity_observed_at_ms: Some(ts("2999-01-01T00:00:00.000Z")),
