@@ -705,7 +705,7 @@ git add -- README.md README.zh-CN.md docs/IMPLEMENTATION.md docs/plans/2026-07-1
 git commit -m "docs: describe usage deep modules"
 ```
 
-- [ ] **Step 6: 全分支 review 与对抗性审查**
+- [x] **Step 6: 全分支 review 与对抗性审查**
 
 从 `main` merge-base 生成 review package。最终 reviewer 必须同时给出 spec compliance 和 code quality 结论；独立 adversarial reviewer 必须攻击：
 
@@ -724,7 +724,7 @@ git commit -m "docs: describe usage deep modules"
 
 此阶段由主 agent 执行，不委托实现子代理。
 
-- [ ] 确认 `codex/deepen-usage-modules` 上所有任务提交存在，完整测试和最终 review 通过。
+- [x] 确认 `codex/deepen-usage-modules` 上所有任务提交存在，完整测试和最终 review 通过。
 - [ ] 记录用户未提交 `.gitignore`、`AGENTS.md` diff，确认切换分支不会覆盖。
 - [ ] 切换 `main`，以 `git merge --ff-only codex/deepen-usage-modules` 合入临时分支；不得 squash 掉任务级审查提交。
 - [ ] 在 `main` 上重新运行 `npm run test:front`、`npm test` 与 `git status --short --branch`。
