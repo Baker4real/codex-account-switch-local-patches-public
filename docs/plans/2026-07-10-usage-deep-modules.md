@@ -57,7 +57,7 @@ export function createUsageWorkspace(
 - `UsageWorkspaceEvent` 至少覆盖 `set-context`、`set-range`、`set-filters`、`set-page`、`set-refresh-interval`、`refresh`。
 - `refresh.mode` 固定为 `initial | manual | auto`；只有 `manual` 错误要求用户可见通知。
 
-- [ ] **Step 1: 安装并固定 Vitest 4.1.10**
+- [x] **Step 1: 安装并固定 Vitest 4.1.10**
 
 Run:
 
@@ -76,7 +76,7 @@ npm install --save-dev --save-exact vitest@4.1.10
 
 Expected: `package-lock.json` 锁定 Vitest；`npm test` 仍调用 Cargo。
 
-- [ ] **Step 2: 写第一个失败测试——preset/custom range 只通过 workspace interface 生成 query**
+- [x] **Step 2: 写第一个失败测试——preset/custom range 只通过 workspace interface 生成 query**
 
 在 `workspace.test.ts` 使用 fake loader 捕获调用参数：
 
@@ -226,13 +226,13 @@ it("把 preset 与自定义范围转换成 dashboard query", async () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试并确认 RED**
+- [x] **Step 3: 运行测试并确认 RED**
 
 Run: `npm run test:front -- workspace.test.ts`
 
 Expected: FAIL，原因是 `createUsageWorkspace`/module 尚不存在，而不是测试基础设施错误。
 
-- [ ] **Step 4: 实现最小 workspace state、query 与只读 snapshot**
+- [x] **Step 4: 实现最小 workspace state、query 与只读 snapshot**
 
 `model.ts` 定义内部状态和 view：
 
@@ -257,7 +257,7 @@ export interface UsageWorkspaceView {
 
 `workspace.ts` 内部保存可变 state，通过 `snapshot()` 返回新对象和新数组；不得把 internal state 引用交给调用者。
 
-- [ ] **Step 5: 逐个 TDD stale response、刷新队列、分页纠偏与 dispose**
+- [x] **Step 5: 逐个 TDD stale response、刷新队列、分页纠偏与 dispose**
 
 每个行为执行一个 red → green cycle，测试必须通过 public interface：
 
@@ -332,7 +332,7 @@ if (stale) return;
 
 手动排队使用布尔合并，不保存无界队列；分页纠偏最多二次 loader 调用。`initial` load 允许被新的 intent load 取代，并依赖 request serial 丢弃旧响应；`manual`/`auto` 使用刷新队列规则。
 
-- [ ] **Step 6: 验证任务 1**
+- [x] **Step 6: 验证任务 1**
 
 Run:
 
@@ -343,7 +343,7 @@ npx tsc --noEmit
 
 Expected: 5 个 workspace 行为测试 PASS；TypeScript 0 errors。
 
-- [ ] **Step 7: 提交任务 1**
+- [x] **Step 7: 提交任务 1**
 
 ```powershell
 git add -- package.json package-lock.json src-tauri/shared/front/usage
@@ -374,7 +374,7 @@ git commit -m "test: define usage workspace interface"
 - Produces: `mountUsageWorkspace({ loadDashboard, getContext, onError }): UsageWorkspace`，供共享 `actions.ts` bootstrap 一次；调用者只派发 `set-context` 和 `refresh`，不读取 Usage internal state。
 - `render.ts` 不再导出 `renderOpenAiUsage`；`state.ts` 不再包含任何 `usage*` 字段。
 
-- [ ] **Step 1: 写失败测试——locale/context 与 picker/timer 仍属于 workspace**
+- [x] **Step 1: 写失败测试——locale/context 与 picker/timer 仍属于 workspace**
 
 扩展 public-interface tests：
 
@@ -394,7 +394,7 @@ Run: `npm run test:front -- workspace.test.ts`
 
 Expected: FAIL，因为 context/picker 生命周期尚未进入 workspace。
 
-- [ ] **Step 2: 先让 renderer 消费 `UsageWorkspaceView`，不再读全局 state**
+- [x] **Step 2: 先让 renderer 消费 `UsageWorkspaceView`，不再读全局 state**
 
 把 `render.ts` 中 Usage 专属实现（当前约 848-1938）移动到 `usage/render.ts`。所有 formatter/render helper 接收 `view` 与 `locale`，例如：
 
@@ -416,7 +416,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
 
 不得从 `usage/render.ts` 反向导入共享 `render.ts`；需要的 `escapeHtml`、数字/日期 formatter 在 Usage module 内保持纯函数。
 
-- [ ] **Step 3: 把 Usage DOM elements 与事件 binding 移入 `usage/dom.ts`**
+- [x] **Step 3: 把 Usage DOM elements 与事件 binding 移入 `usage/dom.ts`**
 
 `dom.ts` 只查询现有 ID/data attributes，不改 HTML contract：
 
@@ -438,7 +438,7 @@ export interface UsageElements {
 
 `mountUsageWorkspace` 安装 click/change/focusin/document click/Escape listeners，并在 `dispose()` 中逐一移除。所有 DOM intent 转换成 `workspace.dispatch(event)`。
 
-- [ ] **Step 4: 迁移 actions 中的 Usage 状态机与 timer**
+- [x] **Step 4: 迁移 actions 中的 Usage 状态机与 timer**
 
 删除 `actions.ts` 当前约 134-590、760-840 的 Usage-only implementation，以及约 1598-1685 的 Usage-only listeners。共享代码只保留：
 
@@ -454,7 +454,7 @@ const usageWorkspace = mountUsageWorkspace({
 
 `rerenderDashboard()` 只派发 context，不调用 Usage renderer/timer helper；`refreshAllData()` 使用 `await usageWorkspace.dispatch({ type: "refresh", mode: "initial" })`。
 
-- [ ] **Step 5: 删除共享全局 Usage state 与 renderer surface**
+- [x] **Step 5: 删除共享全局 Usage state 与 renderer surface**
 
 从 `state.ts` 删除全部 `usage*` 字段和对应 imports。从共享 `render.ts` 删除 Usage-only imports、elements、formatter 和 `renderOpenAiUsage` export；保留 1938 行后的账号/设置/主题 renderer 行为。
 
@@ -462,7 +462,7 @@ Run: `rg -n 'state\.usage|renderOpenAiUsage|syncUsageAutoRefresh|syncUsageRangeL
 
 Expected: 0 matches；允许 `usage` module 内部 state 名称，但不得出现 `state.usage*`。
 
-- [ ] **Step 6: 验证任务 2**
+- [x] **Step 6: 验证任务 2**
 
 Run:
 
@@ -473,7 +473,7 @@ npm run build -- --mode windows
 
 Expected: Vitest 全绿；`tsc` 与 Windows Vite production build 成功；`dist/web` 生成。
 
-- [ ] **Step 7: 提交任务 2**
+- [x] **Step 7: 提交任务 2**
 
 ```powershell
 git add -- src-tauri/shared/front/usage src-tauri/shared/front/actions.ts src-tauri/shared/front/render.ts src-tauri/shared/front/state.ts
@@ -508,7 +508,7 @@ pub(super) fn ingest_usage(
 - `UsageEvidenceAdapter` trait、adapter list 与 ingestion context 必须 private to `ingestion.rs`。
 - Parent `sync_openai_usage_ledger` 只调用 `ingestion::ingest_usage`；不得直接调用来源 collector。
 
-- [ ] **Step 1: 写失败测试——三个真实 adapters 以固定顺序参与**
+- [x] **Step 1: 写失败测试——三个真实 adapters 以固定顺序参与**
 
 在 `ingestion.rs` tests 通过内部 adapter seam 注入 recording adapters：
 
@@ -537,7 +537,7 @@ Run: `cargo test --manifest-path src-tauri/Cargo.toml adapters_collect_in_stable
 
 Expected: FAIL，因为 ingestion module/真实 adapter seam 尚不存在。
 
-- [ ] **Step 2: 建立 private trait 与三个 adapters，不改变 collector 实现**
+- [x] **Step 2: 建立 private trait 与三个 adapters，不改变 collector 实现**
 
 ```rust
 trait UsageEvidenceAdapter {
@@ -556,7 +556,7 @@ struct CcSwitchAdapter;
 
 先让 adapters 调用现有 collector，跑测试变绿；随后 Step 3 再移动 implementation，避免大爆炸式重写。
 
-- [ ] **Step 3: 机械移动来源 implementation 到 ingestion module**
+- [x] **Step 3: 机械移动来源 implementation 到 ingestion module**
 
 移动并保持代码主体不变：
 
@@ -566,7 +566,7 @@ struct CcSwitchAdapter;
 
 Parent 可保留 attribution、classification、dedupe、pricing、schema、projection helpers；child 通过 `super::*` 使用这些 implementation details。不要复制逻辑，不改变字符串常量、SQL、evidence id/hash 或错误码。
 
-- [ ] **Step 4: 让 ledger 只调用一个 ingestion interface**
+- [x] **Step 4: 让 ledger 只调用一个 ingestion interface**
 
 在 `openai_usage.rs` 顶部声明：
 
@@ -588,7 +588,7 @@ let usage = ingestion::ingest_usage(codex_home, summary)?;
 
 删除 parent 中旧 trait、future adapter 和所有来源直接 collector。Parent 保留 `finalize_usage_load`，除非移动它能进一步缩小 interface 且不复制 classification。
 
-- [ ] **Step 5: 增加 adapter fixture 回归**
+- [x] **Step 5: 增加 adapter fixture 回归**
 
 把 parent tests 中以下已有 fixture 与断言机械移动到 `ingestion.rs`，函数体保持不变，只调整 module path：
 
@@ -612,7 +612,7 @@ fn future_adapter_collects_no_evidence() {
 
 保留 parent 现有 `future_response_source_has_highest_priority_without_collecting_rows` 的行为断言；如果测试移动，名称与断言语义保持一致。
 
-- [ ] **Step 6: 验证任务 3**
+- [x] **Step 6: 验证任务 3**
 
 Run:
 
@@ -623,7 +623,7 @@ cargo test --manifest-path src-tauri/Cargo.toml openai_usage
 
 Expected: ingestion tests 与现有 openai usage tests 全部 PASS；无 schema/version 常量变化。
 
-- [ ] **Step 7: 提交任务 3**
+- [x] **Step 7: 提交任务 3**
 
 ```powershell
 git add -- src-tauri/shared/runtime/openai_usage.rs src-tauri/shared/runtime/openai_usage/ingestion.rs
@@ -648,7 +648,7 @@ git commit -m "refactor: deepen usage evidence ingestion"
 - Consumes: 任务 1-3 已评审通过的实现。
 - Produces: 项目结构说明、验证证据和可合并提交；不改变 runtime behavior。
 
-- [ ] **Step 1: 更新仓库结构与 implementation 文档**
+- [x] **Step 1: 更新仓库结构与 implementation 文档**
 
 README 两份同步说明：
 
@@ -659,7 +659,7 @@ src-tauri/shared/runtime/openai_usage/ingestion.rs：Usage evidence 内部 adapt
 
 `docs/IMPLEMENTATION.md` 记录外部 Tauri interface、ledger schema 与 evidence 语义未变。
 
-- [ ] **Step 2: 运行格式与静态检查**
+- [x] **Step 2: 运行格式与静态检查**
 
 Run:
 
@@ -672,13 +672,13 @@ npm run check:windows-release-hygiene
 
 Expected: 全部 exit 0。
 
-- [ ] **Step 3: 运行完整 Rust suite**
+- [x] **Step 3: 运行完整 Rust suite**
 
 Run: `npm test`
 
 Expected: 全部 Rust tests PASS。
 
-- [ ] **Step 4: 验证架构完成信号与 Git 范围**
+- [x] **Step 4: 验证架构完成信号与 Git 范围**
 
 Run:
 
@@ -690,7 +690,7 @@ git status --short
 
 Expected: 两组 `rg` 均 0 matches；Git status 只包含计划内文件和用户原有 `.gitignore`、`AGENTS.md`。
 
-- [ ] **Step 5: 提交任务 4**
+- [x] **Step 5: 提交任务 4**
 
 ```powershell
 git add -- README.md README.zh-CN.md docs/IMPLEMENTATION.md docs/plans/2026-07-10-usage-deep-modules.md

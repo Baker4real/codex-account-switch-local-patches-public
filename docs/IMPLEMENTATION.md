@@ -23,6 +23,7 @@
     - controller/orchestration in `src-tauri/shared/front/actions.ts`
     - dashboard view-model shaping in `src-tauri/shared/front/dashboard-view-model.ts`
     - native invoke wrapper in `src-tauri/shared/front/tauri.ts`
+    - `src-tauri/shared/front/usage/` 是 Usage workspace deep module；它通过单一 workspace interface 内聚 Usage 状态、异步请求时序、刷新与 timer 生命周期、DOM binding 和渲染
 - macOS desktop shell now has a separate frontend root under `src-tauri/mac/front/`
   - `src-tauri/mac/front/index.html` removes the Windows-style custom title bar
   - `src-tauri/mac/front/styles.css` carries macOS-specific shell styling overrides
@@ -34,6 +35,7 @@
   - `src-tauri/win/runtime/` holds Windows-only bootstrap, install, process, refresh, and windowing code
   - `src-tauri/mac/runtime/` holds macOS-only bootstrap, CLI shim, install, process, switch, and windowing code
   - `src-tauri/shared/runtime/` holds platform-neutral profile, metadata, quota, path, config, CLI, error, and model logic
+    - `src-tauri/shared/runtime/openai_usage/ingestion.rs` 是 Usage evidence 的 private adapter seam，负责 session JSONL、future OpenAI response usage 与 cc-switch 来源采集
   - `src-tauri/shared/platform/` defines platform lifecycle hooks so window close, login, auth refresh, and app reopen can be routed without hard-coding those call sites to Windows modules
   - `src-tauri/shared/commands/` holds the Tauri command boundary used by both platforms
   - `src-tauri/src/` is now kept as the crate entry layer only, because Cargo expects `lib.rs` and `main.rs` there by default
@@ -167,6 +169,9 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 
 ## OpenAI 使用统计账本
 
+- Usage 前端深化只改变内部责任边界：现有 Tauri Usage command 名称、参数和返回模型保持不变。`src-tauri/shared/front/usage/` 通过 workspace interface 独占查询 intent、过期响应抑制、刷新队列、分页纠偏、timer、DOM binding 与专属渲染；共享 `actions.ts` 只负责挂载、路由 context 和调用现有 dashboard adapter。
+- `src-tauri/shared/runtime/openai_usage/ingestion.rs` 通过 private adapter seam 按固定顺序采集 session JSONL、future OpenAI response 与 cc-switch evidence；ledger 仍负责分类、去重、priority resolution、定价、schema、sync state 和 projection。该重构不改变 `openai_usage.sqlite` schema/version、重建条件、`source_locator` / `source_hash` / `evidence_id`、decision reason、证据分层或 strict/candidate 判定语义。
+- 这两个 deep modules 不删减或替换公开上游核心功能：账号快照、plan/quota、登录、刷新、增删改、Base URL、CLI 路径和账号切换的 Tauri command interface 与既有行为保持不变；provider sync 也未接入账号切换或 Usage 默认流程。
 - `openai_usage.sqlite` 是可重建的本机 usage ledger，不是不可变审计账单；source signature 或 schema / classifier / dedupe / layer / pricing 版本变化时会重建。
 - `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据；`openai_usage_facts` 只投影可计量层；`openai_usage_events` 保持 strict accepted-only 兼容表。
 - 默认摘要、趋势和日志只读 strict proven。历史槽位归因进入 `legacy_profile_attributed` 估算层，同屏展示但不合并成官方账号账单；`candidate_unattributed` 作为独立对账层展示，用于解释 cc-switch session-only 差额。candidate / excluded scope 从 `openai_usage_evidence` 投影证据行用于审计查看，但 candidate、rejected 和 superseded 不进入严格或历史费用总额。

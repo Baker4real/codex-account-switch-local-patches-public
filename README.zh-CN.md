@@ -71,9 +71,9 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 - `src-tauri/`：Rust + Tauri 应用根目录。
 - `src-tauri/mac/front/`：macOS HTML 壳、样式、原生窗口控制。
 - `src-tauri/win/front/`：Windows HTML 壳、样式、自绘标题栏与窗口按钮。
-- `src-tauri/shared/front/`：跨平台前端 — state / render / actions / theme / i18n / Tauri bridge / mock preview。
+- `src-tauri/shared/front/`：跨平台前端 — state / render / actions / theme / i18n / Tauri bridge / mock preview；其中 `usage/` 是 Usage workspace deep module，内聚 Usage 状态、异步时序、DOM binding 与渲染。
 - `src-tauri/mac/runtime/` / `src-tauri/win/runtime/`：各自平台的 runtime adapter（profile_actions / switch / login spawn / Windows 定向浏览器登录）。
-- `src-tauri/shared/runtime/`：共享 runtime — `chatgpt_api`、`codex_app_server`、`models`、`switch_core`、`profiles_index`、`paths`、`metadata`、`process_lock`、`fs_ops`。
+- `src-tauri/shared/runtime/`：共享 runtime — `chatgpt_api`、`codex_app_server`、`models`、`switch_core`、`profiles_index`、`paths`、`metadata`、`process_lock`、`fs_ops`；其中 `openai_usage/ingestion.rs` 是 Usage evidence 内部 adapter seam，负责 session JSONL、cc-switch 与 future response 来源采集。
 - `src-tauri/shared/commands/`：前端可见的 Tauri command 层（dashboard / switch / profile lifecycle）。
 - `macOS-backup/`：兼容老的 shell 流程（`install.sh` / `uninstall.sh` / `codex-switch.sh`），用于 desktop 不可用的回退场景。
 - `scripts/`：version-sync、macOS 产物布局、`.pkg` 生成、CHANGELOG 校验。
