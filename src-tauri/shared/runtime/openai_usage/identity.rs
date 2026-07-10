@@ -78,13 +78,49 @@ pub(super) struct CanonicalAccountResolver {
     canonical_by_node: BTreeMap<IdentityNode, String>,
 }
 
+pub(super) type VerifiedProfileAliases = BTreeMap<(String, String), VerifiedIdentityAliases>;
+
+pub(super) struct VerifiedIdentityAliases {
+    account_id: IdentityAlias,
+    email: IdentityAlias,
+}
+
+pub(super) fn verified_identity_aliases(
+    identity: &AccountIdentity,
+) -> Option<(String, VerifiedIdentityAliases)> {
+    let account_id =
+        account_id_alias(identity.account_id.as_deref()).map(IdentityAlias::AccountId)?;
+    let email = email_alias(identity.email.as_deref()).map(IdentityAlias::Email)?;
+    Some((
+        account_identity_key(identity),
+        VerifiedIdentityAliases { account_id, email },
+    ))
+}
+
+impl VerifiedIdentityAliases {
+    fn aliases(&self) -> impl Iterator<Item = IdentityAlias> + '_ {
+        [self.account_id.clone(), self.email.clone()].into_iter()
+    }
+}
+
 impl CanonicalAccountResolver {
-    pub(super) fn from_facts(facts: &[UsageFact], fallback_keys: &[String]) -> Self {
+    pub(super) fn from_facts(
+        facts: &[UsageFact],
+        fallback_keys: &[String],
+        verified_profile_aliases: &VerifiedProfileAliases,
+    ) -> Self {
         debug_assert_eq!(facts.len(), fallback_keys.len());
+        let verified_aliases = facts
+            .iter()
+            .map(|fact| verified_aliases_for_fact(fact, verified_profile_aliases))
+            .collect::<Vec<_>>();
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
         let mut owner_by_node = BTreeMap::<IdentityNode, usize>::new();
         for (index, (fact, fallback_key)) in facts.iter().zip(fallback_keys).enumerate() {
-            for node in identity_nodes(fact, fallback_key) {
+            let recovered = verified_aliases[index]
+                .iter()
+                .flat_map(|value| value.aliases());
+            for node in identity_nodes(fact, fallback_key, recovered) {
                 if let Some(owner) = owner_by_node.insert(node, index) {
                     union(&mut parents, index, owner);
                 }
@@ -137,7 +173,11 @@ impl CanonicalAccountResolver {
         for (index, fact) in facts.iter().enumerate() {
             let root = find(&mut parents, index);
             let component = components.entry(root).or_default();
-            for alias in aliases(fact) {
+            for alias in aliases(fact).chain(
+                verified_aliases[index]
+                    .iter()
+                    .flat_map(|value| value.aliases()),
+            ) {
                 match alias {
                     IdentityAlias::AccountId(value) => {
                         component.account_ids.insert(value);
@@ -206,8 +246,10 @@ struct ComponentAliases {
 fn identity_nodes<'a>(
     fact: &'a UsageFact,
     fallback: &str,
+    recovered: impl Iterator<Item = IdentityAlias> + 'a,
 ) -> impl Iterator<Item = IdentityNode> + 'a {
     aliases(fact)
+        .chain(recovered)
         .map(IdentityNode::Alias)
         .chain(std::iter::once(IdentityNode::Fallback(
             fallback.to_string(),
@@ -221,6 +263,17 @@ fn aliases(fact: &UsageFact) -> impl Iterator<Item = IdentityAlias> + '_ {
     ]
     .into_iter()
     .flatten()
+}
+
+fn verified_aliases_for_fact<'a>(
+    fact: &UsageFact,
+    verified_profile_aliases: &'a VerifiedProfileAliases,
+) -> Option<&'a VerifiedIdentityAliases> {
+    if aliases(fact).next().is_some() {
+        return None;
+    }
+    let identity_key = fact.account_identity_key.as_deref()?;
+    verified_profile_aliases.get(&(fact.profile.clone(), identity_key.to_string()))
 }
 
 fn find(parents: &mut [usize], index: usize) -> usize {
