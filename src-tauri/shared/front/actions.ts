@@ -46,14 +46,12 @@ import type {
   CodexCliRedetectResult,
   CodexCliStatus,
   CurrentQuotaResponse,
-  OpenAiUsageDashboard,
-  OpenAiUsageQuery,
 } from "@front-shared/types";
+import { mountUsageWorkspace, type UsageWorkspace } from "@front-shared/usage";
 import {
   applyLocale,
   elements,
   renderCurrentCard,
-  renderOpenAiUsage,
   renderPaging,
   renderProfiles,
   renderShellOverview,
@@ -68,8 +66,6 @@ type ErrorWithCode = Error & {
   code?: string;
 };
 
-type UsageRefreshMode = "manual" | "auto";
-
 function rerenderDashboard(): void {
   state.route = routeFromLocation();
   applyLocale();
@@ -79,9 +75,11 @@ function rerenderDashboard(): void {
   if (!dashboard) {
     renderPaging({ has_previous: false, has_next: false, page: 1, total_pages: 1 });
     renderShellOverview(null);
-    renderOpenAiUsage(state.usageSummary);
-    syncUsageAutoRefresh();
-    syncUsageRangeLiveEndTimer();
+    void usageWorkspace?.dispatch({
+      type: "set-context",
+      active: state.route === "usage",
+      locale: state.locale,
+    });
     return;
   }
 
@@ -99,9 +97,11 @@ function rerenderDashboard(): void {
   renderCurrentCard(dashboard);
   renderPaging(dashboard.paging);
   renderShellOverview(dashboard);
-  renderOpenAiUsage(state.usageSummary);
-  syncUsageAutoRefresh();
-  syncUsageRangeLiveEndTimer();
+  void usageWorkspace?.dispatch({
+    type: "set-context",
+    active: state.route === "usage",
+    locale: state.locale,
+  });
 }
 
 let renameSourceProfile: string | null = null;
@@ -113,481 +113,7 @@ let cancelledLoginProfile: string | null = null;
 const LOGIN_CANCEL_RETRY_DELAY_MS = 250;
 const LOGIN_CANCEL_RETRY_LIMIT = 6;
 let lastUnmanagedAccountPrompt: string | null = null;
-let usageRefreshTimer: number | null = null;
-let usageRefreshTimerMs = 0;
-let usageRangeLiveEndTimer: number | null = null;
-let usageLoadRequestSerial = 0;
-
-function toUnixSeconds(valueMs: number): number {
-  return Math.floor(valueMs / 1000);
-}
-
-function startOfTodayMs(nowMs: number): number {
-  const now = new Date(nowMs);
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-}
-
-function presetLookbackStartMs(dayCount: number, nowMs: number): number {
-  return startOfTodayMs(nowMs - (dayCount - 1) * 24 * 60 * 60 * 1000);
-}
-
-function presetUsageRange(nowMs: number): { startMs: number | null; endMs: number | null } {
-  switch (state.usageRangePreset) {
-    case "today":
-      return { startMs: startOfTodayMs(nowMs), endMs: nowMs };
-    case "7d":
-      return { startMs: presetLookbackStartMs(7, nowMs), endMs: nowMs };
-    case "14d":
-      return { startMs: presetLookbackStartMs(14, nowMs), endMs: nowMs };
-    case "30d":
-      return { startMs: presetLookbackStartMs(30, nowMs), endMs: nowMs };
-    case "1d":
-    default:
-      return { startMs: nowMs - 24 * 60 * 60 * 1000, endMs: nowMs };
-  }
-}
-
-function ensureUsageCustomRange(nowMs = Date.now()): void {
-  const fallback = presetUsageRange(nowMs);
-  if (state.usageCustomStartDate == null) {
-    state.usageCustomStartDate = fallback.startMs;
-  }
-  if (state.usageCustomEndDate == null) {
-    state.usageCustomEndDate = fallback.endMs;
-  }
-}
-
-function hydrateUsageCustomRangeFromPreset(nowMs = Date.now()): void {
-  if (state.usageRangePreset === "custom") {
-    ensureUsageCustomRange(nowMs);
-    return;
-  }
-  const range = presetUsageRange(nowMs);
-  state.usageCustomStartDate = range.startMs;
-  state.usageCustomEndDate = range.endMs;
-}
-
-function clampUsageCustomRange(nowMs = Date.now()): void {
-  const startMs = state.usageCustomStartDate;
-  const endMs = state.usageLiveEnd ? nowMs : state.usageCustomEndDate;
-  if (startMs != null && endMs != null && endMs < startMs) {
-    state.usageCustomEndDate = startMs;
-    state.usageLiveEnd = false;
-  }
-}
-
-function resolveUsageRange(nowMs = Date.now()): { startMs: number | null; endMs: number | null } {
-  if (state.usageRangePreset === "custom") {
-    ensureUsageCustomRange(nowMs);
-    clampUsageCustomRange(nowMs);
-    return {
-      startMs: state.usageCustomStartDate,
-      endMs: state.usageLiveEnd ? nowMs : state.usageCustomEndDate,
-    };
-  }
-  return presetUsageRange(nowMs);
-}
-
-function resolveUsageQuery(): OpenAiUsageQuery {
-  const { startMs, endMs } = resolveUsageRange();
-  state.usageLastResolvedEndDate = endMs;
-
-  return {
-    start_date: startMs == null ? null : toUnixSeconds(startMs),
-    end_date: endMs == null ? null : toUnixSeconds(endMs),
-    account_group_key: state.usageProfileFilter,
-    model: state.usageModelFilter,
-    status_code: state.usageStatusCodeFilter,
-    scope: state.usageScope,
-  };
-}
-
-function usageLoadIntentKey(page: number, pageSize: number): string {
-  return JSON.stringify({
-    rangePreset: state.usageRangePreset,
-    customStartDate: state.usageCustomStartDate,
-    customEndDate: state.usageCustomEndDate,
-    liveEnd: state.usageLiveEnd,
-    profile: state.usageProfileFilter,
-    model: state.usageModelFilter,
-    statusCode: state.usageStatusCodeFilter,
-    scope: state.usageScope,
-    page,
-    pageSize,
-  });
-}
-
-function isStaleUsageLoad(requestSerial: number, intentKey: string): boolean {
-  return requestSerial !== usageLoadRequestSerial
-    || intentKey !== usageLoadIntentKey(state.usageLogsPage, state.usageLogsPageSize);
-}
-
-function finishStaleUsageLoad(requestSerial: number): void {
-  state.usageLoaded = true;
-  state.usageLoadError = null;
-  if (requestSerial === usageLoadRequestSerial && !state.usageRefreshQueued) {
-    state.usageLogsLoading = false;
-  }
-}
-
-function startOfLocalMonthMs(valueMs: number): number {
-  const date = new Date(valueMs);
-  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
-}
-
-function setDateKeepTime(valueMs: number, dayMs: number): number {
-  const base = new Date(valueMs);
-  const day = new Date(dayMs);
-  return new Date(
-    day.getFullYear(),
-    day.getMonth(),
-    day.getDate(),
-    base.getHours(),
-    base.getMinutes(),
-  ).getTime();
-}
-
-function parseDateKeepTime(valueMs: number, value: string): number | null {
-  const [year, month, day] = value.split("-").map(Number);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-    return null;
-  }
-  const base = new Date(valueMs);
-  return new Date(year, month - 1, day, base.getHours(), base.getMinutes()).getTime();
-}
-
-function parseTimeKeepDate(valueMs: number, value: string): number | null {
-  const [hour, minute] = value.split(":").map(Number);
-  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
-    return null;
-  }
-  const base = new Date(valueMs);
-  return new Date(
-    base.getFullYear(),
-    base.getMonth(),
-    base.getDate(),
-    hour,
-    minute,
-  ).getTime();
-}
-
-function resetUsageRangeDraftFromCurrent(nowMs = Date.now()): void {
-  const range = resolveUsageRange(nowMs);
-  const startMs = range.startMs ?? nowMs - 24 * 60 * 60 * 1000;
-  const endMs = range.endMs ?? nowMs;
-  state.usageRangeDraftStartDate = startMs;
-  state.usageRangeDraftEndDate = endMs;
-  state.usageRangeDraftLiveEnd = state.usageRangePreset === "custom"
-    ? state.usageLiveEnd
-    : false;
-  state.usageRangeDraftActiveField = "start";
-  state.usageRangeDisplayMonth = startOfLocalMonthMs(startMs);
-  state.usageRangeError = null;
-}
-
-function openUsageRangePicker(): void {
-  if (!state.usageRangePickerOpen) {
-    resetUsageRangeDraftFromCurrent();
-  }
-  state.usageRangePickerOpen = true;
-  rerenderDashboard();
-}
-
-function closeUsageRangePicker(): void {
-  if (!state.usageRangePickerOpen) {
-    return;
-  }
-  state.usageRangePickerOpen = false;
-  state.usageRangeError = null;
-  syncUsageRangeLiveEndTimer();
-  rerenderDashboard();
-}
-
-function applyUsagePreset(preset: typeof state.usageRangePreset): void {
-  state.usageRangePreset = preset;
-  state.usageRangePickerOpen = false;
-  state.usageRangeError = null;
-  state.usageLogsPage = 1;
-  state.usageLogsLoading = true;
-  syncUsageRangeLiveEndTimer();
-  void refreshUsageData();
-}
-
-function applyUsageCustomRange(): void {
-  const startMs = state.usageRangeDraftStartDate;
-  const endMs = state.usageRangeDraftLiveEnd
-    ? Date.now()
-    : state.usageRangeDraftEndDate;
-  if (startMs == null || endMs == null) {
-    state.usageRangeError = t(state.locale, "usageInvalidTimeRange");
-    rerenderDashboard();
-    return;
-  }
-  if (startMs > endMs) {
-    state.usageRangeError = t(state.locale, "usageInvalidTimeRangeOrder");
-    rerenderDashboard();
-    return;
-  }
-  state.usageRangePreset = "custom";
-  state.usageCustomStartDate = startMs;
-  state.usageCustomEndDate = endMs;
-  state.usageLiveEnd = state.usageRangeDraftLiveEnd;
-  state.usageRangePickerOpen = false;
-  state.usageRangeError = null;
-  state.usageLogsPage = 1;
-  state.usageLogsLoading = true;
-  syncUsageRangeLiveEndTimer();
-  void refreshUsageData();
-}
-
-function updateUsageDraftDate(field: "start" | "end", value: string): void {
-  if (field === "end" && state.usageRangeDraftLiveEnd) {
-    return;
-  }
-  const current = field === "start"
-    ? state.usageRangeDraftStartDate
-    : state.usageRangeDraftEndDate;
-  if (current == null) {
-    return;
-  }
-  const next = parseDateKeepTime(current, value);
-  if (next == null) {
-    return;
-  }
-  if (field === "start") {
-    state.usageRangeDraftStartDate = next;
-  } else {
-    state.usageRangeDraftEndDate = next;
-  }
-  state.usageRangeDisplayMonth = startOfLocalMonthMs(next);
-  state.usageRangeDraftActiveField = field;
-  state.usageRangeError = null;
-  rerenderDashboard();
-}
-
-function updateUsageDraftTime(field: "start" | "end", value: string): void {
-  if (field === "end" && state.usageRangeDraftLiveEnd) {
-    return;
-  }
-  const current = field === "start"
-    ? state.usageRangeDraftStartDate
-    : state.usageRangeDraftEndDate;
-  if (current == null) {
-    return;
-  }
-  const next = parseTimeKeepDate(current, value);
-  if (next == null) {
-    return;
-  }
-  if (field === "start") {
-    state.usageRangeDraftStartDate = next;
-  } else {
-    state.usageRangeDraftEndDate = next;
-  }
-  state.usageRangeDraftActiveField = field;
-  state.usageRangeError = null;
-  rerenderDashboard();
-}
-
-function pickUsageCalendarDay(dayMs: number): void {
-  const startMs = state.usageRangeDraftStartDate;
-  const endMs = state.usageRangeDraftEndDate;
-  if (startMs == null || endMs == null) {
-    return;
-  }
-
-  if (state.usageRangeDraftLiveEnd) {
-    state.usageRangeDraftStartDate = setDateKeepTime(startMs, dayMs);
-    state.usageRangeDraftActiveField = "start";
-  } else if (state.usageRangeDraftActiveField === "start") {
-    const nextStart = setDateKeepTime(startMs, dayMs);
-    state.usageRangeDraftStartDate = nextStart;
-    if (nextStart > endMs) {
-      state.usageRangeDraftEndDate = nextStart;
-    }
-    state.usageRangeDraftActiveField = "end";
-  } else {
-    const nextEnd = setDateKeepTime(endMs, dayMs);
-    if (nextEnd < startMs) {
-      state.usageRangeDraftStartDate = nextEnd;
-      state.usageRangeDraftActiveField = "end";
-    } else {
-      state.usageRangeDraftEndDate = nextEnd;
-    }
-  }
-  state.usageRangeDisplayMonth = startOfLocalMonthMs(dayMs);
-  state.usageRangeError = null;
-  rerenderDashboard();
-}
-
-function setUsageDraftLiveEnd(live: boolean): void {
-  state.usageRangeDraftLiveEnd = live;
-  if (live) {
-    state.usageRangeDraftEndDate = Date.now();
-    state.usageRangeDraftActiveField = "start";
-  } else if (state.usageRangeDraftEndDate == null) {
-    state.usageRangeDraftEndDate = Date.now();
-  }
-  state.usageRangeError = null;
-  syncUsageRangeLiveEndTimer();
-  rerenderDashboard();
-}
-
-function moveUsageCalendarMonth(delta: number): void {
-  const current = state.usageRangeDisplayMonth
-    ?? startOfLocalMonthMs(state.usageRangeDraftStartDate ?? Date.now());
-  const month = new Date(current);
-  state.usageRangeDisplayMonth = new Date(
-    month.getFullYear(),
-    month.getMonth() + delta,
-    1,
-  ).getTime();
-  rerenderDashboard();
-}
-
-function showUsageCalendarToday(): void {
-  state.usageRangeDisplayMonth = startOfLocalMonthMs(Date.now());
-  rerenderDashboard();
-}
-
-function syncUsageRangeLiveEndTimer(): void {
-  const shouldRun = state.route === "usage"
-    && state.usageRangePickerOpen
-    && state.usageRangeDraftLiveEnd;
-  if (!shouldRun) {
-    if (usageRangeLiveEndTimer != null) {
-      window.clearInterval(usageRangeLiveEndTimer);
-      usageRangeLiveEndTimer = null;
-    }
-    return;
-  }
-  if (usageRangeLiveEndTimer != null) {
-    return;
-  }
-  usageRangeLiveEndTimer = window.setInterval(() => {
-    if (!state.usageRangePickerOpen || !state.usageRangeDraftLiveEnd) {
-      syncUsageRangeLiveEndTimer();
-      return;
-    }
-    state.usageRangeDraftEndDate = Date.now();
-    rerenderDashboard();
-  }, 1000);
-}
-
-function handleUsageRangePopoverClick(event: Event): void {
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) {
-    return;
-  }
-  if (target instanceof HTMLInputElement) {
-    return;
-  }
-
-  const presetButton = target.closest<HTMLElement>("[data-usage-range-preset]");
-  if (presetButton) {
-    const preset = presetButton.dataset.usageRangePreset as typeof state.usageRangePreset | undefined;
-    if (preset && preset !== "custom") {
-      applyUsagePreset(preset);
-    }
-    return;
-  }
-
-  const field = target.closest<HTMLElement>("[data-usage-range-field]");
-  if (field?.dataset.usageRangeField === "start" || field?.dataset.usageRangeField === "end") {
-    if (!field.classList.contains("is-readonly")) {
-      state.usageRangeDraftActiveField = field.dataset.usageRangeField;
-      rerenderDashboard();
-    }
-    return;
-  }
-
-  const dayButton = target.closest<HTMLElement>("[data-usage-range-day]");
-  if (dayButton?.dataset.usageRangeDay) {
-    const dayMs = Number(dayButton.dataset.usageRangeDay);
-    if (Number.isFinite(dayMs)) {
-      pickUsageCalendarDay(dayMs);
-    }
-    return;
-  }
-
-  const monthButton = target.closest<HTMLElement>("[data-usage-range-month]");
-  if (monthButton?.dataset.usageRangeMonth) {
-    const delta = Number(monthButton.dataset.usageRangeMonth);
-    if (Number.isFinite(delta)) {
-      moveUsageCalendarMonth(delta);
-    }
-    return;
-  }
-
-  if (target.closest("[data-usage-range-today]")) {
-    showUsageCalendarToday();
-    return;
-  }
-
-  if (target.closest("[data-usage-range-cancel]")) {
-    closeUsageRangePicker();
-    return;
-  }
-
-  if (target.closest("[data-usage-range-apply]")) {
-    applyUsageCustomRange();
-  }
-}
-
-function handleUsageRangePopoverChange(event: Event): void {
-  const target = event.target;
-  if (!(target instanceof HTMLInputElement)) {
-    return;
-  }
-  const dateField = target.dataset.usageRangeDate;
-  if (dateField === "start" || dateField === "end") {
-    updateUsageDraftDate(dateField, target.value);
-    return;
-  }
-  const timeField = target.dataset.usageRangeTime;
-  if (timeField === "start" || timeField === "end") {
-    updateUsageDraftTime(timeField, target.value);
-    return;
-  }
-  if (target.matches("[data-usage-range-live]")) {
-    setUsageDraftLiveEnd(target.checked);
-  }
-}
-
-function handleUsageRangePopoverFocus(event: Event): void {
-  const target = event.target;
-  if (!(target instanceof HTMLInputElement)) {
-    return;
-  }
-  const field = target.dataset.usageRangeDate ?? target.dataset.usageRangeTime;
-  if (field === "start" || field === "end") {
-    if (field === "end" && state.usageRangeDraftLiveEnd) {
-      return;
-    }
-    state.usageRangeDraftActiveField = field;
-    rerenderDashboard();
-  }
-}
-
-function syncUsageAutoRefresh(): void {
-  const usageUiAvailable = elements.usageSummaryPanel != null;
-  const desiredMs = state.route === "usage" && usageUiAvailable ? state.usageRefreshIntervalMs : 0;
-  if (desiredMs === usageRefreshTimerMs) {
-    return;
-  }
-
-  if (usageRefreshTimer != null) {
-    window.clearInterval(usageRefreshTimer);
-    usageRefreshTimer = null;
-  }
-  usageRefreshTimerMs = desiredMs;
-
-  if (desiredMs > 0) {
-    usageRefreshTimer = window.setInterval(() => {
-      void refreshUsageData(false, "auto");
-    }, desiredMs);
-  }
-}
+let usageWorkspace: UsageWorkspace | null = null;
 
 function isRefreshPending(profile: string): boolean {
   return state.refreshActiveProfiles.includes(profile);
@@ -738,104 +264,13 @@ async function refreshAllData(showError = true): Promise<void> {
 
     applySnapshot(snapshot);
     applyCurrentQuota(currentQuota);
-    try {
-      await loadUsageData();
-    } catch (usageError) {
-      state.usageLoaded = true;
-      state.usageLogsLoading = false;
-      state.usageLoadError = usageError instanceof Error
-        ? usageError.message
-        : t(state.locale, "usageLoadFailed");
-    }
+    await usageWorkspace?.dispatch({ type: "refresh", mode: "initial" });
     await reconcileSnapshotAfterCurrentQuota(currentQuota);
     rerenderDashboard();
     maybePromptUnmanagedAccount(state.snapshot?.unmanaged_live_account ?? null);
   } catch (error) {
     if (showError) {
       showToast(error instanceof Error ? error.message : "Failed to load dashboard.", true);
-    }
-  }
-}
-
-async function loadUsageData(): Promise<void> {
-  const query = resolveUsageQuery();
-  const requestSerial = usageLoadRequestSerial + 1;
-  usageLoadRequestSerial = requestSerial;
-  const requestedLogsPage = state.usageLogsPage;
-  const requestedPageSize = state.usageLogsPageSize;
-  const intentKey = usageLoadIntentKey(requestedLogsPage, requestedPageSize);
-  const dashboard = await getOpenAiUsageDashboard(query, requestedLogsPage, requestedPageSize);
-
-  if (isStaleUsageLoad(requestSerial, intentKey)) {
-    finishStaleUsageLoad(requestSerial);
-    return;
-  }
-  const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / dashboard.logs.page_size));
-  applyUsageDashboard(dashboard);
-  if (dashboard.logs.page > totalPages) {
-    state.usageLogsPage = totalPages;
-    const clampedIntentKey = usageLoadIntentKey(state.usageLogsPage, state.usageLogsPageSize);
-    const clampedDashboard = await getOpenAiUsageDashboard(query, state.usageLogsPage, state.usageLogsPageSize);
-    if (isStaleUsageLoad(requestSerial, clampedIntentKey)) {
-      finishStaleUsageLoad(requestSerial);
-      return;
-    }
-    applyUsageDashboard(clampedDashboard);
-  }
-  state.usageLoaded = true;
-  state.usageLoadError = null;
-  state.usageLogsLoading = false;
-}
-
-function applyUsageDashboard(dashboard: OpenAiUsageDashboard): void {
-  state.usageSummary = dashboard.summary;
-  state.usageAccountSummary = dashboard.account_summary.length > 0
-    ? dashboard.account_summary
-    : dashboard.summary.accounts;
-  state.usageModelOptions = dashboard.model_options.length > 0
-    ? dashboard.model_options
-    : dashboard.summary.models;
-  state.usageTrends = dashboard.trends;
-  state.usageLogs = dashboard.logs;
-  state.usageDataSources = dashboard.data_sources;
-}
-
-async function refreshUsageData(showError = true, mode: UsageRefreshMode = "manual"): Promise<void> {
-  if (state.usageRefreshInFlight) {
-    if (mode === "auto") {
-      return;
-    }
-    state.usageRefreshQueued = true;
-    state.usageRefreshQueuedShowError = state.usageRefreshQueuedShowError || showError;
-    rerenderDashboard();
-    return;
-  }
-  state.usageRefreshInFlight = true;
-  state.usageRefreshQueued = false;
-  state.usageRefreshQueuedShowError = false;
-  rerenderDashboard();
-  try {
-    await loadUsageData();
-    rerenderDashboard();
-  } catch (error) {
-    state.usageLoaded = true;
-    state.usageLogsLoading = false;
-    state.usageLoadError = error instanceof Error
-      ? error.message
-      : t(state.locale, "usageLoadFailed");
-    rerenderDashboard();
-    if (showError) {
-      showToast(error instanceof Error ? error.message : t(state.locale, "usageLoadFailed"), true);
-    }
-  } finally {
-    state.usageRefreshInFlight = false;
-    if (state.usageRefreshQueued) {
-      const queuedShowError = state.usageRefreshQueuedShowError;
-      state.usageRefreshQueued = false;
-      state.usageRefreshQueuedShowError = false;
-      void refreshUsageData(queuedShowError, "manual");
-    } else {
-      rerenderDashboard();
     }
   }
 }
@@ -1572,6 +1007,13 @@ export function bootstrap(): void {
   applyTheme(state.theme);
   applyLocale();
   renderShellRoute();
+  usageWorkspace = mountUsageWorkspace({
+    loadDashboard: getOpenAiUsageDashboard,
+    getContext: () => ({ active: state.route === "usage", locale: state.locale }),
+    onError: (error, notifyUser) => {
+      if (notifyUser) showToast(error.message, true);
+    },
+  });
 
   window.addEventListener("hashchange", () => {
     rerenderDashboard();
@@ -1599,87 +1041,6 @@ export function bootstrap(): void {
   });
   elements.settingsCheckUpdateButton.addEventListener("click", () => {
     void handleCheckUpdate();
-  });
-  elements.usageRefreshButton?.addEventListener("click", () => {
-    void refreshUsageData();
-  });
-  elements.usageRangeButton?.addEventListener("click", () => {
-    if (state.usageRangePickerOpen) {
-      closeUsageRangePicker();
-    } else {
-      openUsageRangePicker();
-    }
-  });
-  elements.usageRangePopover?.addEventListener("click", handleUsageRangePopoverClick);
-  elements.usageRangePopover?.addEventListener("change", handleUsageRangePopoverChange);
-  elements.usageRangePopover?.addEventListener("focusin", handleUsageRangePopoverFocus);
-  document.addEventListener("click", (event) => {
-    const picker = document.getElementById("usage-range-picker");
-    const target = event.target;
-    if (
-      state.usageRangePickerOpen &&
-      picker &&
-      target instanceof Node &&
-      !picker.contains(target)
-    ) {
-      closeUsageRangePicker();
-    }
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && state.usageRangePickerOpen) {
-      closeUsageRangePicker();
-    }
-  });
-  elements.usageScopeSelect?.addEventListener("change", () => {
-    if (!elements.usageScopeSelect) {
-      return;
-    }
-    state.usageScope = elements.usageScopeSelect.value as typeof state.usageScope;
-    state.usageLogsPage = 1;
-    state.usageLogsLoading = true;
-    void refreshUsageData();
-  });
-  elements.usageAccountFilter?.addEventListener("change", () => {
-    if (!elements.usageAccountFilter) {
-      return;
-    }
-    state.usageProfileFilter = elements.usageAccountFilter.value || null;
-    state.usageLogsPage = 1;
-    state.usageLogsLoading = true;
-    void refreshUsageData();
-  });
-  elements.usageModelFilter?.addEventListener("change", () => {
-    if (!elements.usageModelFilter) {
-      return;
-    }
-    state.usageModelFilter = elements.usageModelFilter.value || null;
-    state.usageLogsPage = 1;
-    state.usageLogsLoading = true;
-    void refreshUsageData();
-  });
-  elements.usageRefreshIntervalSelect?.addEventListener("change", () => {
-    if (!elements.usageRefreshIntervalSelect) {
-      return;
-    }
-    const intervalMs = Number(elements.usageRefreshIntervalSelect.value);
-    state.usageRefreshIntervalMs = Number.isFinite(intervalMs) ? intervalMs : 0;
-    rerenderDashboard();
-  });
-  elements.usageDetailPanel?.addEventListener("click", (event) => {
-    const button = (event.target as HTMLElement | null)?.closest<HTMLButtonElement>(
-      "[data-usage-log-page]",
-    );
-    if (!button || button.disabled) {
-      return;
-    }
-    const page = Number(button.dataset.usageLogPage);
-    if (!Number.isFinite(page) || page < 1 || page === state.usageLogsPage) {
-      return;
-    }
-    state.usageLogsPage = page;
-    state.usageLogsLoading = true;
-    rerenderDashboard();
-    void refreshUsageData();
   });
   elements.updateDialogLaterButton.addEventListener("click", () => {
     elements.updateDialog.close();

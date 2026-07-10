@@ -287,6 +287,21 @@ describe("UsageWorkspace", () => {
     expect(workspace.snapshot().summary).toBeNull();
   });
 
+  it("切出 Usage route 时停止自动刷新并关闭 range picker", async () => {
+    const timers = fakeTimers();
+    const workspace = createUsageWorkspace(fakeDependencies({
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    }));
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    await workspace.dispatch({ type: "open-range-picker" });
+    await workspace.dispatch({ type: "set-refresh-interval", intervalMs: 30_000 });
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+
+    expect(workspace.snapshot().rangePickerOpen).toBe(false);
+    expect(timers.activeCount()).toBe(0);
+  });
+
   it("snapshot 返回不泄漏内部状态的深拷贝", async () => {
     const workspace = createUsageWorkspace(fakeDependencies({
       loadDashboard: async () => dashboardWithRequests(7),

@@ -8,3 +8,8 @@ export {
   type UsageWorkspace,
   type UsageWorkspaceDependencies,
 } from "./workspace";
+export {
+  mountUsageWorkspace,
+  type MountUsageWorkspaceDependencies,
+  type UsageElements,
+} from "./dom";

@@ -1,4 +1,5 @@
 import type { OpenAiUsageDashboard, OpenAiUsageQuery, OpenAiUsageRangePreset } from "../types";
+import { t } from "../i18n";
 import type { UsageWorkspaceEvent, UsageWorkspaceView } from "./model";
 
 export interface UsageWorkspaceDependencies {
@@ -29,10 +30,27 @@ interface WorkspaceState {
   dataSources: OpenAiUsageDashboard["data_sources"];
   rangePreset: UsageWorkspaceView["rangePreset"];
   scope: UsageWorkspaceView["scope"];
+  customStartMs: number | null;
+  customEndMs: number | null;
+  liveEnd: boolean;
+  rangePickerOpen: boolean;
+  rangeDraftStartMs: number | null;
+  rangeDraftEndMs: number | null;
+  rangeDraftLiveEnd: boolean;
+  rangeDraftActiveField: "start" | "end";
+  rangeDisplayMonthMs: number | null;
+  rangeError: string | null;
+  profileFilter: string | null;
+  modelFilter: string | null;
+  statusCodeFilter: number | null;
   logsPage: number;
   logsPageSize: number;
+  refreshIntervalMs: number;
+  lastResolvedEndMs: number | null;
+  locale: UsageWorkspaceView["locale"];
   loaded: boolean;
   loading: boolean;
+  refreshInFlight: boolean;
   loadError: string | null;
   refreshQueued: boolean;
 }
@@ -61,6 +79,37 @@ function presetRange(preset: OpenAiUsageRangePreset, nowMs: number) {
   }
 }
 
+function startOfLocalMonthMs(valueMs: number): number {
+  const date = new Date(valueMs);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
+}
+
+function setDateKeepTime(valueMs: number, dayMs: number): number {
+  const value = new Date(valueMs);
+  const day = new Date(dayMs);
+  return new Date(
+    day.getFullYear(), day.getMonth(), day.getDate(), value.getHours(), value.getMinutes(),
+  ).getTime();
+}
+
+function parseDateKeepTime(valueMs: number, value: string): number | null {
+  const [year, month, day] = value.split("-").map(Number);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  const current = new Date(valueMs);
+  return new Date(
+    year, month - 1, day, current.getHours(), current.getMinutes(),
+  ).getTime();
+}
+
+function parseTimeKeepDate(valueMs: number, value: string): number | null {
+  const [hour, minute] = value.split(":").map(Number);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  const current = new Date(valueMs);
+  return new Date(
+    current.getFullYear(), current.getMonth(), current.getDate(), hour, minute,
+  ).getTime();
+}
+
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
@@ -77,25 +126,38 @@ export function createUsageWorkspace(
     dataSources: [],
     rangePreset: "1d",
     scope: "strict",
+    customStartMs: null,
+    customEndMs: null,
+    liveEnd: true,
+    rangePickerOpen: false,
+    rangeDraftStartMs: null,
+    rangeDraftEndMs: null,
+    rangeDraftLiveEnd: false,
+    rangeDraftActiveField: "start",
+    rangeDisplayMonthMs: null,
+    rangeError: null,
+    profileFilter: null,
+    modelFilter: null,
+    statusCodeFilter: null,
     logsPage: 1,
     logsPageSize: 20,
+    refreshIntervalMs: 30_000,
+    lastResolvedEndMs: null,
+    locale: "en",
     loaded: false,
     loading: false,
+    refreshInFlight: false,
     loadError: null,
     refreshQueued: false,
   };
-  let customStartMs: number | null = null;
-  let customEndMs: number | null = null;
-  let liveEnd = true;
   let profile: string | null = null;
   let accountGroupKey: string | null = null;
   let accountLabel: string | null = null;
   let model: string | null = null;
   let statusCode: number | null = null;
   let active = false;
-  let locale = "en";
-  let refreshIntervalMs = 0;
-  let timerId: unknown = null;
+  let refreshTimerId: unknown = null;
+  let rangeLiveEndTimerId: unknown = null;
   let disposed = false;
   let refreshInFlight = false;
   let requestSerial = 0;
@@ -114,9 +176,9 @@ export function createUsageWorkspace(
   function currentIntentKey(): string {
     return JSON.stringify({
       rangePreset: state.rangePreset,
-      customStartMs,
-      customEndMs,
-      liveEnd,
+      customStartMs: state.customStartMs,
+      customEndMs: state.customEndMs,
+      liveEnd: state.liveEnd,
       profile,
       accountGroupKey,
       accountLabel,
@@ -136,10 +198,11 @@ export function createUsageWorkspace(
     const nowMs = dependencies.now();
     const range = state.rangePreset === "custom"
       ? {
-        startMs: customStartMs,
-        endMs: liveEnd ? nowMs : customEndMs,
+        startMs: state.customStartMs,
+        endMs: state.liveEnd ? nowMs : state.customEndMs,
       }
       : presetRange(state.rangePreset, nowMs);
+    state.lastResolvedEndMs = range.endMs;
     return {
       start_date: range.startMs == null ? null : Math.floor(range.startMs / 1000),
       end_date: range.endMs == null ? null : Math.floor(range.endMs / 1000),
@@ -155,8 +218,12 @@ export function createUsageWorkspace(
   function applyDashboard(dashboard: OpenAiUsageDashboard): void {
     const copied = clone(dashboard);
     state.summary = copied.summary;
-    state.accountSummary = copied.account_summary;
-    state.modelOptions = copied.model_options;
+    state.accountSummary = copied.account_summary.length > 0
+      ? copied.account_summary
+      : copied.summary.accounts;
+    state.modelOptions = copied.model_options.length > 0
+      ? copied.model_options
+      : copied.summary.models;
     state.trends = copied.trends;
     state.logs = copied.logs;
     state.dataSources = copied.data_sources;
@@ -202,16 +269,51 @@ export function createUsageWorkspace(
     state.loadError = null;
   }
 
-  function syncTimer(): void {
-    if (timerId !== null) {
-      dependencies.clearInterval(timerId);
-      timerId = null;
+  function syncRefreshTimer(): void {
+    if (refreshTimerId !== null) {
+      dependencies.clearInterval(refreshTimerId);
+      refreshTimerId = null;
     }
-    if (!disposed && active && refreshIntervalMs > 0) {
-      timerId = dependencies.setInterval(() => {
+    if (!disposed && active && state.refreshIntervalMs > 0) {
+      refreshTimerId = dependencies.setInterval(() => {
         void dispatch({ type: "refresh", mode: "auto" });
-      }, refreshIntervalMs);
+      }, state.refreshIntervalMs);
     }
+  }
+
+  function syncRangeLiveEndTimer(): void {
+    if (rangeLiveEndTimerId !== null) {
+      dependencies.clearInterval(rangeLiveEndTimerId);
+      rangeLiveEndTimerId = null;
+    }
+    if (!disposed && active && state.rangePickerOpen && state.rangeDraftLiveEnd) {
+      rangeLiveEndTimerId = dependencies.setInterval(() => {
+        state.rangeDraftEndMs = dependencies.now();
+        notifyChange();
+      }, 1_000);
+    }
+  }
+
+  function resetRangeDraftFromCurrent(): void {
+    const nowMs = dependencies.now();
+    const range = state.rangePreset === "custom"
+      ? {
+        startMs: state.customStartMs ?? nowMs - DAY_MS,
+        endMs: state.liveEnd ? nowMs : state.customEndMs ?? nowMs,
+      }
+      : presetRange(state.rangePreset, nowMs);
+    state.rangeDraftStartMs = range.startMs;
+    state.rangeDraftEndMs = range.endMs;
+    state.rangeDraftLiveEnd = state.rangePreset === "custom" ? state.liveEnd : false;
+    state.rangeDraftActiveField = "start";
+    state.rangeDisplayMonthMs = startOfLocalMonthMs(range.startMs ?? nowMs);
+    state.rangeError = null;
+  }
+
+  function closeRangePicker(): void {
+    state.rangePickerOpen = false;
+    state.rangeError = null;
+    syncRangeLiveEndTimer();
   }
 
   async function performRefresh(mode: "initial" | "manual" | "auto"): Promise<void> {
@@ -228,9 +330,13 @@ export function createUsageWorkspace(
     } catch (error) {
       if (disposed) return;
       state.loaded = true;
-      state.loadError = error instanceof Error ? error.message : String(error);
+      state.loadError = error instanceof Error
+        ? error.message
+        : t(state.locale, "usageLoadFailed");
       if (mode === "manual") {
-        dependencies.onError(error);
+        dependencies.onError(
+          error instanceof Error ? error : new Error(t(state.locale, "usageLoadFailed")),
+        );
       }
     } finally {
       if (!disposed && serial === activeRequestSerial) {
@@ -255,6 +361,7 @@ export function createUsageWorkspace(
     }
 
     refreshInFlight = true;
+    state.refreshInFlight = true;
     let nextMode = mode;
     try {
       do {
@@ -264,7 +371,9 @@ export function createUsageWorkspace(
       } while (!disposed && state.refreshQueued);
     } finally {
       refreshInFlight = false;
+      state.refreshInFlight = false;
       state.refreshQueued = false;
+      notifyChange();
     }
   }
 
@@ -272,28 +381,154 @@ export function createUsageWorkspace(
     if (disposed) return;
     switch (event.type) {
       case "set-context":
+        const activeChanged = active !== event.active;
         active = event.active;
-        locale = event.locale;
-        void locale;
-        syncTimer();
+        state.locale = event.locale;
+        if (!active) closeRangePicker();
+        if (activeChanged) {
+          syncRefreshTimer();
+          syncRangeLiveEndTimer();
+        }
         notifyChange();
         return;
+      case "open-range-picker":
+        if (!state.rangePickerOpen) resetRangeDraftFromCurrent();
+        state.rangePickerOpen = true;
+        syncRangeLiveEndTimer();
+        notifyChange();
+        return;
+      case "close-range-picker":
+        closeRangePicker();
+        notifyChange();
+        return;
+      case "set-range-draft-field":
+        if (event.field === "end" && state.rangeDraftLiveEnd) return;
+        state.rangeDraftActiveField = event.field;
+        notifyChange();
+        return;
+      case "set-range-draft-date": {
+        if (event.field === "end" && state.rangeDraftLiveEnd) return;
+        const current = event.field === "start" ? state.rangeDraftStartMs : state.rangeDraftEndMs;
+        if (current == null) return;
+        const next = parseDateKeepTime(current, event.value);
+        if (next == null) return;
+        if (event.field === "start") state.rangeDraftStartMs = next;
+        else state.rangeDraftEndMs = next;
+        state.rangeDisplayMonthMs = startOfLocalMonthMs(next);
+        state.rangeDraftActiveField = event.field;
+        state.rangeError = null;
+        notifyChange();
+        return;
+      }
+      case "set-range-draft-time": {
+        if (event.field === "end" && state.rangeDraftLiveEnd) return;
+        const current = event.field === "start" ? state.rangeDraftStartMs : state.rangeDraftEndMs;
+        if (current == null) return;
+        const next = parseTimeKeepDate(current, event.value);
+        if (next == null) return;
+        if (event.field === "start") state.rangeDraftStartMs = next;
+        else state.rangeDraftEndMs = next;
+        state.rangeDraftActiveField = event.field;
+        state.rangeError = null;
+        notifyChange();
+        return;
+      }
+      case "pick-range-day": {
+        const startMs = state.rangeDraftStartMs;
+        const endMs = state.rangeDraftEndMs;
+        if (startMs == null || endMs == null) return;
+        if (state.rangeDraftLiveEnd) {
+          state.rangeDraftStartMs = setDateKeepTime(startMs, event.dayMs);
+          state.rangeDraftActiveField = "start";
+        } else if (state.rangeDraftActiveField === "start") {
+          const nextStart = setDateKeepTime(startMs, event.dayMs);
+          state.rangeDraftStartMs = nextStart;
+          if (nextStart > endMs) state.rangeDraftEndMs = nextStart;
+          state.rangeDraftActiveField = "end";
+        } else {
+          const nextEnd = setDateKeepTime(endMs, event.dayMs);
+          if (nextEnd < startMs) {
+            state.rangeDraftStartMs = nextEnd;
+            state.rangeDraftActiveField = "end";
+          } else {
+            state.rangeDraftEndMs = nextEnd;
+          }
+        }
+        state.rangeDisplayMonthMs = startOfLocalMonthMs(event.dayMs);
+        state.rangeError = null;
+        notifyChange();
+        return;
+      }
+      case "move-range-month": {
+        const current = state.rangeDisplayMonthMs
+          ?? startOfLocalMonthMs(state.rangeDraftStartMs ?? dependencies.now());
+        const date = new Date(current);
+        state.rangeDisplayMonthMs = new Date(
+          date.getFullYear(), date.getMonth() + event.delta, 1,
+        ).getTime();
+        notifyChange();
+        return;
+      }
+      case "show-range-today":
+        state.rangeDisplayMonthMs = startOfLocalMonthMs(dependencies.now());
+        notifyChange();
+        return;
+      case "set-range-draft-live-end":
+        state.rangeDraftLiveEnd = event.live;
+        if (event.live) {
+          state.rangeDraftEndMs = dependencies.now();
+          state.rangeDraftActiveField = "start";
+        } else if (state.rangeDraftEndMs == null) {
+          state.rangeDraftEndMs = dependencies.now();
+        }
+        state.rangeError = null;
+        syncRangeLiveEndTimer();
+        notifyChange();
+        return;
+      case "apply-range-draft": {
+        const startMs = state.rangeDraftStartMs;
+        const endMs = state.rangeDraftLiveEnd ? dependencies.now() : state.rangeDraftEndMs;
+        if (startMs == null || endMs == null) {
+          state.rangeError = t(state.locale, "usageInvalidTimeRange");
+          notifyChange();
+          return;
+        }
+        if (endMs < startMs) {
+          state.rangeError = t(state.locale, "usageInvalidTimeRangeOrder");
+          notifyChange();
+          return;
+        }
+        state.rangePreset = "custom";
+        state.customStartMs = startMs;
+        state.customEndMs = endMs;
+        state.liveEnd = state.rangeDraftLiveEnd;
+        closeRangePicker();
+        state.logsPage = 1;
+        notifyChange();
+        await refresh("manual");
+        return;
+      }
       case "set-range":
         state.rangePreset = event.preset;
         if (event.preset === "custom") {
-          customStartMs = event.startMs ?? customStartMs;
-          customEndMs = event.endMs ?? customEndMs;
-          liveEnd = event.liveEnd ?? liveEnd;
+          state.customStartMs = event.startMs ?? state.customStartMs;
+          state.customEndMs = event.endMs ?? state.customEndMs;
+          state.liveEnd = event.liveEnd ?? state.liveEnd;
+        } else {
+          closeRangePicker();
         }
         state.logsPage = 1;
         notifyChange();
         return;
       case "set-filters":
-        profile = event.profile ?? null;
-        accountGroupKey = event.accountGroupKey ?? null;
-        accountLabel = event.accountLabel ?? null;
-        model = event.model ?? null;
-        statusCode = event.statusCode ?? null;
+        if (event.profile !== undefined) profile = event.profile;
+        if (event.accountGroupKey !== undefined) accountGroupKey = event.accountGroupKey;
+        if (event.accountLabel !== undefined) accountLabel = event.accountLabel;
+        if (event.model !== undefined) model = event.model;
+        if (event.statusCode !== undefined) statusCode = event.statusCode;
+        state.profileFilter = accountGroupKey ?? profile;
+        state.modelFilter = model;
+        state.statusCodeFilter = statusCode;
         state.scope = event.scope ?? state.scope;
         state.logsPage = 1;
         notifyChange();
@@ -306,8 +541,8 @@ export function createUsageWorkspace(
         notifyChange();
         return;
       case "set-refresh-interval":
-        refreshIntervalMs = Math.max(0, event.intervalMs);
-        syncTimer();
+        state.refreshIntervalMs = Math.max(0, event.intervalMs);
+        syncRefreshTimer();
         notifyChange();
         return;
       case "refresh":
@@ -318,9 +553,13 @@ export function createUsageWorkspace(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    if (timerId !== null) {
-      dependencies.clearInterval(timerId);
-      timerId = null;
+    if (refreshTimerId !== null) {
+      dependencies.clearInterval(refreshTimerId);
+      refreshTimerId = null;
+    }
+    if (rangeLiveEndTimerId !== null) {
+      dependencies.clearInterval(rangeLiveEndTimerId);
+      rangeLiveEndTimerId = null;
     }
   }
 
