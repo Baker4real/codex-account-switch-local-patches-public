@@ -359,14 +359,34 @@ if ($hadOriginalLoader) {
     Copy-Item -LiteralPath $targetLoader -Destination $backupLoader -Force
 }
 
+function Get-TargetProcesses {
+    param([string]$TargetExe)
+
+    @(
+        Get-Process -Name 'codex_switch' -ErrorAction SilentlyContinue | Where-Object {
+            $processPath = $null
+            try { $processPath = $_.Path } catch { $processPath = $null }
+            $processPath -and [string]::Equals($processPath, $TargetExe, [StringComparison]::OrdinalIgnoreCase)
+        }
+    )
+}
+
 $stopped = @()
-Get-Process -Name 'codex_switch' -ErrorAction SilentlyContinue | ForEach-Object {
-    $processPath = $null
-    try { $processPath = $_.Path } catch { $processPath = $null }
-    if ($processPath -and [string]::Equals($processPath, $targetExe, [StringComparison]::OrdinalIgnoreCase)) {
-        $stopped += [pscustomobject]@{ id = $_.Id; path = $processPath }
-        Stop-Process -Id $_.Id -Force
+Get-TargetProcesses -TargetExe $targetExe | ForEach-Object {
+    $processId = $_.Id
+    $processPath = $_.Path
+    $stopped += [pscustomobject]@{ id = $processId; path = $processPath }
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    Wait-Process -Id $processId -Timeout 15 -ErrorAction SilentlyContinue
+    if (Get-Process -Id $processId -ErrorAction SilentlyContinue) {
+        throw "Target process did not exit after Stop-Process: PID $processId ($processPath)"
     }
+}
+
+$remainingTargetProcesses = @(Get-TargetProcesses -TargetExe $targetExe)
+if ($remainingTargetProcesses.Count -gt 0) {
+    $remainingIds = ($remainingTargetProcesses | ForEach-Object { $_.Id }) -join ', '
+    throw "Target process still running before deployment copy: PID(s) $remainingIds ($targetExe)"
 }
 
 try {

@@ -103,6 +103,11 @@ const deployRequirements = [
     message: "must stop only the process launched from the shortcut target",
   },
   {
+    pattern:
+      /Stop-Process\s+-Id\s+\$processId\s+-Force\s+-ErrorAction\s+SilentlyContinue[\s\S]{0,240}Wait-Process\s+-Id\s+\$processId/i,
+    message: "must tolerate already-exited PIDs and wait for every target process",
+  },
+  {
     pattern: /\$hadOriginalLoader[\s\S]*catch\s*\{[\s\S]*rollback[\s\S]*backupDir/i,
     message: "must roll back failed replacement from the backup directory",
   },
@@ -120,6 +125,29 @@ for (const requirement of deployRequirements) {
   if (!requirement.pattern.test(deployScript)) {
     failures.push(`scripts/deploy-remote-windows-desktop.ps1 ${requirement.message}`);
   }
+}
+
+const residualProcessCheckIndex = deployScript.indexOf(
+  "Target process still running before deployment copy",
+);
+const safeStopIndex = deployScript.indexOf(
+  "Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue",
+);
+const waitProcessIndex = deployScript.indexOf("Wait-Process -Id $processId");
+const targetCopyIndex = deployScript.indexOf(
+  "Copy-Item -LiteralPath $stageExe -Destination $targetExe -Force",
+);
+if (
+  safeStopIndex < 0 ||
+  waitProcessIndex < safeStopIndex ||
+  residualProcessCheckIndex < 0 ||
+  residualProcessCheckIndex < waitProcessIndex ||
+  targetCopyIndex < 0 ||
+  residualProcessCheckIndex > targetCopyIndex
+) {
+  failures.push(
+    "scripts/deploy-remote-windows-desktop.ps1 must reject residual target processes before replacement",
+  );
 }
 
 const buildWorkflow = read(buildWorkflowPath);
