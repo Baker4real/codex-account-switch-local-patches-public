@@ -128,6 +128,10 @@ export function createUsageWorkspace(
     });
   }
 
+  function isStaleLoad(serial: number, intentKey: string): boolean {
+    return disposed || serial !== activeRequestSerial || intentKey !== currentIntentKey();
+  }
+
   function resolveQuery(): OpenAiUsageQuery {
     const nowMs = dependencies.now();
     const range = state.rangePreset === "custom"
@@ -160,28 +164,36 @@ export function createUsageWorkspace(
     state.logsPageSize = copied.logs.page_size;
   }
 
-  async function load(): Promise<void> {
-    const serial = ++requestSerial;
-    activeRequestSerial = serial;
-    const intentKey = currentIntentKey();
-    const query = resolveQuery();
-    const dashboard = await dependencies.loadDashboard(query, state.logsPage, state.logsPageSize);
-    const stale = disposed || serial !== activeRequestSerial || intentKey !== currentIntentKey();
-    if (stale) return;
+  async function load(
+    serial: number,
+    intentKey: string,
+    query: OpenAiUsageQuery,
+  ): Promise<void> {
+    let dashboard: OpenAiUsageDashboard;
+    try {
+      dashboard = await dependencies.loadDashboard(query, state.logsPage, state.logsPageSize);
+    } catch (error) {
+      if (isStaleLoad(serial, intentKey)) return;
+      throw error;
+    }
+    if (isStaleLoad(serial, intentKey)) return;
     const pageSize = Math.max(1, dashboard.logs.page_size);
     const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / pageSize));
     if (dashboard.logs.page > totalPages) {
       state.logsPage = totalPages;
       const correctedIntentKey = currentIntentKey();
-      const correctedDashboard = await dependencies.loadDashboard(
-        query,
-        state.logsPage,
-        state.logsPageSize,
-      );
-      const correctedStale = disposed
-        || serial !== activeRequestSerial
-        || correctedIntentKey !== currentIntentKey();
-      if (correctedStale) return;
+      let correctedDashboard: OpenAiUsageDashboard;
+      try {
+        correctedDashboard = await dependencies.loadDashboard(
+          query,
+          state.logsPage,
+          state.logsPageSize,
+        );
+      } catch (error) {
+        if (isStaleLoad(serial, correctedIntentKey)) return;
+        throw error;
+      }
+      if (isStaleLoad(serial, correctedIntentKey)) return;
       applyDashboard(correctedDashboard);
     } else {
       applyDashboard(dashboard);
@@ -204,11 +216,15 @@ export function createUsageWorkspace(
 
   async function performRefresh(mode: "initial" | "manual" | "auto"): Promise<void> {
     if (disposed) return;
+    const serial = ++requestSerial;
+    activeRequestSerial = serial;
+    const intentKey = currentIntentKey();
+    const query = resolveQuery();
     state.loading = true;
     state.loadError = null;
     notifyChange();
     try {
-      await load();
+      await load(serial, intentKey, query);
     } catch (error) {
       if (disposed) return;
       state.loaded = true;
@@ -217,7 +233,7 @@ export function createUsageWorkspace(
         dependencies.onError(error);
       }
     } finally {
-      if (!disposed) {
+      if (!disposed && serial === activeRequestSerial) {
         state.loading = false;
         notifyChange();
       }

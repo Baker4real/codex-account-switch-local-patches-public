@@ -179,6 +179,67 @@ describe("UsageWorkspace", () => {
     expect(workspace.snapshot().summary?.total_requests).toBe(2);
   });
 
+  it("忽略旧 intent 的 reject 且不触发用户通知", async () => {
+    const first = deferred<OpenAiUsageDashboard>();
+    const second = deferred<OpenAiUsageDashboard>();
+    const onError = vi.fn();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
+    const older = workspace.dispatch({ type: "refresh", mode: "manual" });
+    await workspace.dispatch({ type: "set-filters", model: "gpt-5.3-codex" });
+    const newer = workspace.dispatch({ type: "refresh", mode: "initial" });
+
+    second.resolve(dashboardWithRequests(2));
+    await newer;
+    first.reject(new Error("旧请求失败"));
+    await older;
+
+    expect(workspace.snapshot().summary?.total_requests).toBe(2);
+    expect(workspace.snapshot().loadError).toBeNull();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("旧 initial 完成时保持最新 pending 请求的 loading", async () => {
+    const first = deferred<OpenAiUsageDashboard>();
+    const second = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    const older = workspace.dispatch({ type: "refresh", mode: "initial" });
+    const newer = workspace.dispatch({ type: "refresh", mode: "initial" });
+
+    first.resolve(dashboardWithRequests(1));
+    await older;
+    expect(workspace.snapshot().loading).toBe(true);
+
+    second.resolve(dashboardWithRequests(2));
+    await newer;
+    expect(workspace.snapshot().loading).toBe(false);
+  });
+
+  it("只有 manual refresh 错误触发用户通知", async () => {
+    const initialError = new Error("initial 失败");
+    const autoError = new Error("auto 失败");
+    const manualError = new Error("manual 失败");
+    const onError = vi.fn();
+    const loadDashboard = vi.fn()
+      .mockRejectedValueOnce(initialError)
+      .mockRejectedValueOnce(autoError)
+      .mockRejectedValueOnce(manualError);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
+
+    await workspace.dispatch({ type: "refresh", mode: "initial" });
+    await workspace.dispatch({ type: "refresh", mode: "auto" });
+    expect(onError).not.toHaveBeenCalled();
+
+    await workspace.dispatch({ type: "refresh", mode: "manual" });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(manualError);
+  });
+
   it("合并 in-flight 手动刷新且自动刷新不排队", async () => {
     const first = deferred<OpenAiUsageDashboard>();
     const loadDashboard = vi.fn()
@@ -216,6 +277,7 @@ describe("UsageWorkspace", () => {
     }));
     await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
     await workspace.dispatch({ type: "set-refresh-interval", intervalMs: 30_000 });
+    expect(timers.activeCount()).toBe(1);
     const running = workspace.dispatch({ type: "refresh", mode: "manual" });
     workspace.dispose();
     pending.resolve(dashboardWithRequests(7));
@@ -223,5 +285,25 @@ describe("UsageWorkspace", () => {
 
     expect(timers.activeCount()).toBe(0);
     expect(workspace.snapshot().summary).toBeNull();
+  });
+
+  it("snapshot 返回不泄漏内部状态的深拷贝", async () => {
+    const workspace = createUsageWorkspace(fakeDependencies({
+      loadDashboard: async () => dashboardWithRequests(7),
+    }));
+    await workspace.dispatch({ type: "refresh", mode: "initial" });
+
+    const first = workspace.snapshot();
+    first.summary!.total_requests = 99;
+    first.logs!.page = 99;
+    (first.accountSummary as unknown[]).push({});
+    const second = workspace.snapshot();
+
+    expect(second).not.toBe(first);
+    expect(second.summary).not.toBe(first.summary);
+    expect(second.accountSummary).not.toBe(first.accountSummary);
+    expect(second.summary?.total_requests).toBe(7);
+    expect(second.logs?.page).toBe(1);
+    expect(second.accountSummary).toHaveLength(0);
   });
 });
