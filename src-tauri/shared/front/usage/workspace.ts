@@ -169,6 +169,7 @@ export function createUsageWorkspace(
   let disposed = false;
   let refreshRun: Promise<void> | null = null;
   let activeRefreshMode: "initial" | "manual" | "auto" | null = null;
+  let activeAttempt: LoadAttempt | null = null;
   let queuedRefreshMode: "initial" | "manual" | null = null;
   let refreshOnActivate = false;
   let requestSerial = 0;
@@ -346,6 +347,7 @@ export function createUsageWorkspace(
       intentKey: currentIntentKey(),
       query: resolveQuery(),
     };
+    activeAttempt = attempt;
     state.loading = true;
     state.loadError = null;
     if (active) notifyChange();
@@ -364,6 +366,7 @@ export function createUsageWorkspace(
         );
       }
     } finally {
+      if (activeAttempt === attempt) activeAttempt = null;
       if (!disposed && serial === activeRequestSerial) {
         state.loading = false;
         if (active) notifyChange();
@@ -399,8 +402,12 @@ export function createUsageWorkspace(
     if (disposed) return;
     if (refreshRun !== null) {
       if (mode === "initial") {
+        const activeInitialReusable = activeRefreshMode === "initial"
+          && activeAttempt !== null
+          && activeAttempt.serial === activeRequestSerial
+          && activeAttempt.intentKey === currentIntentKey();
         const mustQueueInitial = options.forceNewInitial
-          || activeRefreshMode !== "initial"
+          || !activeInitialReusable
           || queuedRefreshMode === "manual";
         if (mustQueueInitial && queuedRefreshMode !== "initial") {
           queuedRefreshMode = "initial";

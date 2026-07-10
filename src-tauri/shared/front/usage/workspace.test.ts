@@ -210,6 +210,50 @@ describe("UsageWorkspace", () => {
     ["filter", { type: "set-filters", model: "gpt-5.3-codex" }],
     ["page", { type: "set-page", page: 2 }],
     ["range", { type: "set-range", preset: "7d" }],
+  ] as const)("active initial 后 %s intent 改变会排队最新 initial", async (label, event) => {
+    const staleRequest = deferred<OpenAiUsageDashboard>();
+    const currentRequest = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockReturnValueOnce(staleRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    const staleInitial = workspace.dispatch({ type: "refresh", mode: "initial" });
+    await workspace.dispatch(event);
+    let currentInitialSettled = false;
+    const currentInitial = workspace.dispatch({ type: "refresh", mode: "initial" })
+      .then(() => { currentInitialSettled = true; });
+
+    await Promise.resolve();
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+    expect(currentInitialSettled).toBe(false);
+    staleRequest.resolve(dashboardWithRequests(1));
+    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
+    expect(currentInitialSettled).toBe(false);
+    if (label === "filter") {
+      expect(loadDashboard.mock.calls[1][0].model).toBe("gpt-5.3-codex");
+    } else if (label === "page") {
+      expect(loadDashboard.mock.calls[1][1]).toBe(2);
+    } else {
+      expect(loadDashboard.mock.calls[1][0].start_date).not.toBeNull();
+    }
+    const dashboard = dashboardWithPage({
+      page: label === "page" ? 2 : 1,
+      pageSize: 20,
+      total: label === "page" ? 40 : 0,
+    });
+    dashboard.summary.total_requests = 2;
+    currentRequest.resolve(dashboard);
+    await Promise.all([staleInitial, currentInitial]);
+
+    expect(currentInitialSettled).toBe(true);
+    expect(workspace.snapshot().logsLoading).toBe(false);
+    expect(workspace.snapshot().summary?.total_requests).toBe(2);
+  });
+
+  it.each([
+    ["filter", { type: "set-filters", model: "gpt-5.3-codex" }],
+    ["page", { type: "set-page", page: 2 }],
+    ["range", { type: "set-range", preset: "7d" }],
   ] as const)("旧请求在新 %s intent 后 reject 不污染状态", async (_label, event) => {
     const request = deferred<OpenAiUsageDashboard>();
     const onError = vi.fn();
