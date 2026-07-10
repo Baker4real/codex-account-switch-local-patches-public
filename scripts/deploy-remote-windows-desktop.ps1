@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$RemoteTarget = 'WINDOWS@<jia-li-tailscale-ip>',
-    [string]$RemoteDesktopLink = 'D:\Desktop\codex_switch.exe.lnk',
+    [string]$RemoteTarget = $env:CODEX_SWITCH_REMOTE_TARGET,
+    [string]$RemoteDesktopLink = $env:CODEX_SWITCH_REMOTE_DESKTOP_LINK,
     [string]$RemoteStageRoot = $env:CODEX_REMOTE_STAGE_ROOT,
     [string]$ReleaseRoot,
     [string]$LoaderPath,
@@ -13,18 +13,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
-
-function Get-DefaultCodexRoot {
-    return [System.IO.Path]::Combine(('D:' + [System.IO.Path]::DirectorySeparatorChar), 'Codex')
-}
-
-if (-not $RemoteStageRoot) {
-    $RemoteStageRoot = Join-Path (Join-Path (Get-DefaultCodexRoot) '.tmp') 'codex-account-switch-deploy'
-}
-
-if (-not $EvidenceRoot) {
-    $EvidenceRoot = Join-Path (Join-Path (Join-Path (Get-DefaultCodexRoot) '.codex') 'run-evidence') 'codex-account-switch'
-}
 
 function Resolve-RepoRoot {
     return (Split-Path -Parent $PSScriptRoot)
@@ -407,6 +395,22 @@ if ($afterLoaderHash -ne $config.expectedLoaderHash) { throw "Target loader hash
 }
 
 $repoRoot = Resolve-RepoRoot
+if ([string]::IsNullOrWhiteSpace($RemoteTarget)) {
+    throw 'RemoteTarget is required. Pass -RemoteTarget or set CODEX_SWITCH_REMOTE_TARGET.'
+}
+if ([string]::IsNullOrWhiteSpace($RemoteDesktopLink)) {
+    throw 'RemoteDesktopLink is required. Pass -RemoteDesktopLink or set CODEX_SWITCH_REMOTE_DESKTOP_LINK.'
+}
+if ([string]::IsNullOrWhiteSpace($RemoteStageRoot)) {
+    throw 'RemoteStageRoot is required. Pass -RemoteStageRoot or set CODEX_REMOTE_STAGE_ROOT.'
+}
+if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+        $EvidenceRoot = Join-Path (Join-Path $env:CODEX_HOME 'run-evidence') 'codex-account-switch'
+    } else {
+        $EvidenceRoot = Join-Path (Join-Path (Join-Path $repoRoot '.scratch') 'run-evidence') 'codex-account-switch'
+    }
+}
 if (-not $ReleaseRoot) {
     $ReleaseRoot = Join-Path $repoRoot 'src-tauri\target\x86_64-pc-windows-msvc\release'
 }

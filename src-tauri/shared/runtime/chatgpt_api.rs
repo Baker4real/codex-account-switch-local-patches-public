@@ -92,7 +92,7 @@ const EXPIRY_SKEW_SECONDS: i64 = 300;
 /// `plan_type` is the live plan from `/wham/usage`'s response —
 /// authoritative because OpenAI returns the user's *current* tier even
 /// when the cached id_token claim hasn't rotated yet. Callers feed it
-/// into `metadata::sync_profile_metadata_from_auth_and_quota` so the
+/// into `metadata::sync_profile_metadata_from_auth` so the
 /// dashboard shows plan changes within a refresh cycle instead of
 /// waiting for an id_token re-issue.
 ///

@@ -864,13 +864,12 @@ mod tests {
     }
 
     /// `apply_paid_fallback_for_free_plan` is exercised through
-    /// `apply_auth_metadata` above, but the API-plan override path
-    /// in `sync_profile_metadata_from_auth_and_quota` runs the same
-    /// helper after substituting the plan. Verify the helper itself
-    /// still flips a stale "free" claim to `unknown_paid` when quota is
-    /// present, so the API-plan override path inherits that behavior
-    /// without needing its own dedicated test infrastructure (which
-    /// would require a real on-disk profile.json).
+    /// `apply_auth_metadata` above. `sync_profile_metadata_from_auth`
+    /// also reaches it through `apply_paid_fallback_when_api_unavailable`
+    /// when no authoritative API plan override is present. Verify the
+    /// helper itself still flips a stale "free" claim to `unknown_paid`
+    /// when quota is present without needing dedicated on-disk profile
+    /// infrastructure.
     #[test]
     fn paid_fallback_flips_stale_free_to_unknown_paid_when_quota_present() {
         let mut metadata = ProfileMetadata {

@@ -24,6 +24,10 @@ const hygieneEntries = [
 
 const todoPattern = /\bTODO\b/i;
 const localCodexPathPattern = /[A-Za-z]:[\\/]+Codex(?:[\\/]|$)/i;
+const hardcodedRemoteEndpointPattern =
+  /\b[A-Za-z0-9._-]+@(?:10(?:\.\d{1,3}){3}|100\.(?:6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})\b/i;
+const deviceCodexRootPattern =
+  /\bGet-DefaultCodexRoot\b|['"]D:['"][\s\S]{0,160}['"]Codex['"]/i;
 const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
 const allowedEmailDomains = new Set([
   "example.com",
@@ -94,6 +98,22 @@ for (const file of hygieneEntries.flatMap(listFiles)) {
     failures.push(
       `${toRepoPath(file)}:${lineForOffset(text, localPathMatch.index)} contains a local Codex absolute path`,
     );
+  }
+
+  if (toRepoPath(file).startsWith("scripts/")) {
+    const remoteEndpointMatch = hardcodedRemoteEndpointPattern.exec(text);
+    if (remoteEndpointMatch) {
+      failures.push(
+        `${toRepoPath(file)}:${lineForOffset(text, remoteEndpointMatch.index)} contains a hardcoded private remote endpoint`,
+      );
+    }
+
+    const deviceRootMatch = deviceCodexRootPattern.exec(text);
+    if (deviceRootMatch) {
+      failures.push(
+        `${toRepoPath(file)}:${lineForOffset(text, deviceRootMatch.index)} constructs a device-specific Codex root`,
+      );
+    }
   }
 
   for (const match of text.matchAll(emailPattern)) {
