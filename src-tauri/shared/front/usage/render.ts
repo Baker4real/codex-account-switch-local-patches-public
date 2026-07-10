@@ -10,6 +10,11 @@ import type {
 import type { UsageElements } from "./dom";
 import type { UsageWorkspaceView } from "./model";
 
+interface UsageRenderContext {
+  readonly elements: UsageElements;
+  readonly view: UsageWorkspaceView;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
@@ -68,149 +73,151 @@ function formatDateTimeMs(
 const usageRangePresets: readonly OpenAiUsageRangePreset[] = ["today", "1d", "7d", "14d", "30d"];
 
 export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): void {
-  const summary = view.summary;
+  const context: UsageRenderContext = { elements, view };
+  const summary = context.view.summary;
   if (
-    !elements.summaryPanel ||
-    !elements.trendPanel ||
-    !elements.detailPanel
+    !context.elements.summaryPanel ||
+    !context.elements.trendPanel ||
+    !context.elements.detailPanel
   ) {
     return;
   }
-  renderUsageControls(summary);
-  if (view.loadError) {
-    if (elements.accountPanel) {
-      elements.accountPanel.innerHTML = "";
+  renderUsageControls(context, summary);
+  if (context.view.loadError) {
+    if (context.elements.accountPanel) {
+      context.elements.accountPanel.innerHTML = "";
     }
-    elements.summaryPanel.innerHTML = `
+    context.elements.summaryPanel.innerHTML = `
       <article class="usage-empty-state usage-empty-state--error">
-        <strong>${t(view.locale, "usageLoadFailed")}</strong>
-        <p>${escapeHtml(view.loadError)}</p>
+        <strong>${t(context.view.locale, "usageLoadFailed")}</strong>
+        <p>${escapeHtml(context.view.loadError)}</p>
       </article>
     `;
-    elements.trendPanel.innerHTML = "";
-    elements.detailPanel.innerHTML = "";
+    context.elements.trendPanel.innerHTML = "";
+    context.elements.detailPanel.innerHTML = "";
     return;
   }
 
-  if (!view.loaded) {
-    if (elements.accountPanel) {
-      elements.accountPanel.innerHTML = "";
+  if (!context.view.loaded) {
+    if (context.elements.accountPanel) {
+      context.elements.accountPanel.innerHTML = "";
     }
-    elements.summaryPanel.innerHTML = `
+    context.elements.summaryPanel.innerHTML = `
       <article class="usage-empty-state">
-        <strong>${t(view.locale, "usageLoading")}</strong>
+        <strong>${t(context.view.locale, "usageLoading")}</strong>
       </article>
     `;
-    elements.trendPanel.innerHTML = "";
-    elements.detailPanel.innerHTML = "";
+    context.elements.trendPanel.innerHTML = "";
+    context.elements.detailPanel.innerHTML = "";
     return;
   }
 
-  const accountTable = buildUsageAccountTable(view.accountSummary);
+  const accountTable = buildUsageAccountTable(context.view, context.view.accountSummary);
   const hasLayerUsage = (summary?.layer_summaries ?? []).some((layer) => layer.request_count > 0);
   if (!summary || (summary.total_requests === 0 && !hasLayerUsage)) {
     const hasActiveUsageFilter = Boolean(
-      view.profileFilter ||
-        view.modelFilter ||
-        view.statusCodeFilter != null,
+      context.view.profileFilter ||
+        context.view.modelFilter ||
+        context.view.statusCodeFilter != null,
     );
-    const hasFacetUsage = view.accountSummary.length > 0 || view.modelOptions.length > 0;
+    const hasFacetUsage = context.view.accountSummary.length > 0 || context.view.modelOptions.length > 0;
     const emptyTitleKey = hasActiveUsageFilter && hasFacetUsage
       ? "usageNoFilteredUsage"
       : "usageNoAttribution";
     const emptyCopyKey = hasActiveUsageFilter && hasFacetUsage
       ? "usageNoFilteredUsageCopy"
       : "usageNoAttributionCopy";
-    if (elements.accountPanel) {
-      elements.accountPanel.innerHTML = accountTable;
+    if (context.elements.accountPanel) {
+      context.elements.accountPanel.innerHTML = accountTable;
     }
-    elements.summaryPanel.innerHTML = `
+    context.elements.summaryPanel.innerHTML = `
       <article class="usage-empty-state">
-        <strong>${t(view.locale, emptyTitleKey)}</strong>
-        <p>${t(view.locale, emptyCopyKey)}</p>
+        <strong>${t(context.view.locale, emptyTitleKey)}</strong>
+        <p>${t(context.view.locale, emptyCopyKey)}</p>
       </article>
     `;
-    elements.trendPanel.innerHTML = buildUsageTrendMarkup();
-    elements.detailPanel.innerHTML = `
-      ${elements.accountPanel ? "" : accountTable}
-      ${buildUsageEvidenceMarkup(summary)}
+    context.elements.trendPanel.innerHTML = buildUsageTrendMarkup(context.view);
+    context.elements.detailPanel.innerHTML = `
+      ${context.elements.accountPanel ? "" : accountTable}
+      ${buildUsageEvidenceMarkup(context.view, summary)}
     `;
     return;
   }
 
-  if (elements.accountPanel) {
-    elements.accountPanel.innerHTML = accountTable;
+  if (context.elements.accountPanel) {
+    context.elements.accountPanel.innerHTML = accountTable;
   }
-  elements.summaryPanel.innerHTML = `
-    ${buildUsageLayerSummaryCards(summary)}
+  context.elements.summaryPanel.innerHTML = `
+    ${buildUsageLayerSummaryCards(context.view, summary)}
     <div class="usage-hero-grid">
       <article class="usage-hero-card usage-hero-card--wide">
-        <span>${t(view.locale, "usageLocalTokens")}</span>
-        <strong>${formatInteger(view.locale, summary.tokens.real_total_tokens)}</strong>
-        <small>${t(view.locale, "usageAttributionSince")}: ${formatDateTimeMs(summary.attribution_since_ms, view.locale)}</small>
+        <span>${t(context.view.locale, "usageLocalTokens")}</span>
+        <strong>${formatInteger(context.view.locale, summary.tokens.real_total_tokens)}</strong>
+        <small>${t(context.view.locale, "usageAttributionSince")}: ${formatDateTimeMs(summary.attribution_since_ms, context.view.locale)}</small>
       </article>
       <article class="usage-hero-card">
-        <span>${t(view.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageNonOfficialEstimate")}</span>
-        <strong>${formatUsageCost(summary.cost, view.locale)}</strong>
+        <span>${t(context.view.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageNonOfficialEstimate")}</span>
+        <strong>${formatUsageCost(summary.cost, context.view.locale)}</strong>
         <small>${summary.pricing_source} · ${pricingSourceHost(summary.pricing_source_url)} · ${summary.pricing_checked_at}</small>
       </article>
       <article class="usage-hero-card">
-        <span>${t(view.locale, "usageRequests")}</span>
-        <strong>${formatInteger(view.locale, summary.total_requests)}</strong>
-        <small>${t(view.locale, "usageUpdatedAt")}: ${formatDateTimeMs(summary.generated_at_ms, view.locale)}</small>
+        <span>${t(context.view.locale, "usageRequests")}</span>
+        <strong>${formatInteger(context.view.locale, summary.total_requests)}</strong>
+        <small>${t(context.view.locale, "usageUpdatedAt")}: ${formatDateTimeMs(summary.generated_at_ms, context.view.locale)}</small>
       </article>
       <article class="usage-hero-card">
-        <span>${t(view.locale, "usageCacheHitRate")}</span>
-        <strong>${formatRate(view.locale, summary.cache_hit_rate)}</strong>
-        <small>${t(view.locale, "usageCachedInput")}: ${formatInteger(view.locale, summary.tokens.cached_input_tokens)}</small>
+        <span>${t(context.view.locale, "usageCacheHitRate")}</span>
+        <strong>${formatRate(context.view.locale, summary.cache_hit_rate)}</strong>
+        <small>${t(context.view.locale, "usageCachedInput")}: ${formatInteger(context.view.locale, summary.tokens.cached_input_tokens)}</small>
       </article>
     </div>
 
     <div class="usage-token-grid">
-      ${buildUsageTokenMetric("usageInput", summary.tokens.input_tokens)}
-      ${buildUsageTokenMetric("usageCachedInput", summary.tokens.cached_input_tokens)}
-      ${buildUsageTokenMetric("usageOutput", summary.tokens.output_tokens)}
-      ${buildUsageTokenMetric("usageReasoning", summary.tokens.reasoning_output_tokens)}
+      ${buildUsageTokenMetric(context.view, "usageInput", summary.tokens.input_tokens)}
+      ${buildUsageTokenMetric(context.view, "usageCachedInput", summary.tokens.cached_input_tokens)}
+      ${buildUsageTokenMetric(context.view, "usageOutput", summary.tokens.output_tokens)}
+      ${buildUsageTokenMetric(context.view, "usageReasoning", summary.tokens.reasoning_output_tokens)}
     </div>
   `;
 
-  elements.trendPanel.innerHTML = buildUsageTrendMarkup();
-  elements.detailPanel.innerHTML = `
-    ${buildUsageLogsTable()}
-    ${elements.accountPanel ? "" : accountTable}
-    ${buildUsageModelTable(summary)}
-    ${buildUsageDataSourceMarkup()}
-    ${buildUsageEvidenceMarkup(summary)}
+  context.elements.trendPanel.innerHTML = buildUsageTrendMarkup(context.view);
+  context.elements.detailPanel.innerHTML = `
+    ${buildUsageLogsTable(context.view)}
+    ${context.elements.accountPanel ? "" : accountTable}
+    ${buildUsageModelTable(context.view, summary)}
+    ${buildUsageDataSourceMarkup(context.view)}
+    ${buildUsageEvidenceMarkup(context.view, summary)}
   `;
+}
 
-  function renderUsageControls(summary: OpenAiUsageSummary | null): void {
+function renderUsageControls(context: UsageRenderContext, summary: OpenAiUsageSummary | null): void {
   if (
-    !elements.rangeButton ||
-    !elements.rangeLabel ||
-    !elements.rangePopover ||
-    !elements.scopeSelect ||
-    !elements.refreshIntervalSelect ||
-    !elements.accountFilter ||
-    !elements.modelFilter
+    !context.elements.rangeButton ||
+    !context.elements.rangeLabel ||
+    !context.elements.rangePopover ||
+    !context.elements.scopeSelect ||
+    !context.elements.refreshIntervalSelect ||
+    !context.elements.accountFilter ||
+    !context.elements.modelFilter
   ) {
     return;
   }
-  elements.scopeSelect.value = view.scope;
-  elements.refreshIntervalSelect.value = String(view.refreshIntervalMs);
+  context.elements.scopeSelect.value = context.view.scope;
+  context.elements.refreshIntervalSelect.value = String(context.view.refreshIntervalMs);
   const nowMs = Date.now();
-  const rangeLabel = formatUsageRangeLabel(nowMs);
-  elements.rangeLabel.textContent = rangeLabel;
-  elements.rangeButton.title = rangeLabel;
-  elements.rangeButton.setAttribute("aria-expanded", view.rangePickerOpen ? "true" : "false");
-  elements.rangeButton.classList.toggle("is-active", view.rangePreset === "custom" || view.rangePickerOpen);
-  elements.rangePopover.hidden = !view.rangePickerOpen;
-  elements.rangePopover.innerHTML = view.rangePickerOpen
-    ? buildUsageRangePopover(nowMs)
+  const rangeLabel = formatUsageRangeLabel(context.view, nowMs);
+  context.elements.rangeLabel.textContent = rangeLabel;
+  context.elements.rangeButton.title = rangeLabel;
+  context.elements.rangeButton.setAttribute("aria-expanded", context.view.rangePickerOpen ? "true" : "false");
+  context.elements.rangeButton.classList.toggle("is-active", context.view.rangePreset === "custom" || context.view.rangePickerOpen);
+  context.elements.rangePopover.hidden = !context.view.rangePickerOpen;
+  context.elements.rangePopover.innerHTML = context.view.rangePickerOpen
+    ? buildUsageRangePopover(context.view, nowMs)
     : "";
-  renderUsageRefreshButton();
+  renderUsageRefreshButton(context);
 
-  const accountOptions = view.accountSummary.length > 0
-    ? view.accountSummary
+  const accountOptions = context.view.accountSummary.length > 0
+    ? context.view.accountSummary
     : summary?.accounts ?? [];
   const accounts = new Map<string, string>();
   for (const account of accountOptions) {
@@ -218,40 +225,40 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
     const profiles = usageAccountProfiles(account);
     accounts.set(accountKey, account.account_label ?? profiles.join(", "));
   }
-  if (view.profileFilter && !accounts.has(view.profileFilter)) {
-    accounts.set(view.profileFilter, view.profileFilter);
+  if (context.view.profileFilter && !accounts.has(context.view.profileFilter)) {
+    accounts.set(context.view.profileFilter, context.view.profileFilter);
   }
   const accountOptionsHtml = [
-    `<option value="">${t(view.locale, "usageAllAccounts")}</option>`,
+    `<option value="">${t(context.view.locale, "usageAllAccounts")}</option>`,
     ...Array.from(accounts.entries()).map(([profile, label]) => (
       `<option value="${escapeHtml(profile)}">${escapeHtml(label)}</option>`
     )),
   ].join("");
-  setSelectOptions(elements.accountFilter, accountOptionsHtml, view.profileFilter ?? "");
+  setSelectOptions(context.elements.accountFilter, accountOptionsHtml, context.view.profileFilter ?? "");
 
-  const modelOptions = view.modelOptions.length > 0
-    ? view.modelOptions
+  const modelOptions = context.view.modelOptions.length > 0
+    ? context.view.modelOptions
     : summary?.models ?? [];
   const models = new Set(modelOptions.map((model) => model.model));
-  if (view.modelFilter) {
-    models.add(view.modelFilter);
+  if (context.view.modelFilter) {
+    models.add(context.view.modelFilter);
   }
   const modelOptionsHtml = [
-    `<option value="">${t(view.locale, "usageAllModels")}</option>`,
+    `<option value="">${t(context.view.locale, "usageAllModels")}</option>`,
     ...Array.from(models).map((model) => (
       `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`
     )),
   ].join("");
-  setSelectOptions(elements.modelFilter, modelOptionsHtml, view.modelFilter ?? "");
+  setSelectOptions(context.elements.modelFilter, modelOptionsHtml, context.view.modelFilter ?? "");
 }
 
-  function formatUsageRangeLabel(nowMs: number): string {
+function formatUsageRangeLabel(view: UsageWorkspaceView, nowMs: number): string {
   if (view.rangePreset !== "custom") {
-    return usageRangePresetLabel(view.rangePreset);
+    return usageRangePresetLabel(view, view.rangePreset);
   }
 
-  const startMs = displayUsageStartDate(nowMs);
-  const endMs = displayUsageEndDate(nowMs);
+  const startMs = displayUsageStartDate(view, nowMs);
+  const endMs = displayUsageEndDate(view, nowMs);
   const startLabel = formatDateTimeMs(startMs, view.locale);
   if (view.liveEnd) {
     return `${startLabel} → ${t(view.locale, "usageLiveEndNow")}`;
@@ -259,7 +266,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   return `${startLabel} - ${formatDateTimeMs(endMs, view.locale)}`;
 }
 
-  function usageRangePresetLabel(preset: OpenAiUsageRangePreset): string {
+function usageRangePresetLabel(view: UsageWorkspaceView, preset: OpenAiUsageRangePreset): string {
   switch (preset) {
     case "today":
       return t(view.locale, "usageRangeToday");
@@ -277,9 +284,9 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   }
 }
 
-  function buildUsageRangePopover(nowMs: number): string {
-  const draftStart = view.rangeDraftStartMs ?? displayUsageStartDate(nowMs) ?? nowMs - 24 * 60 * 60 * 1000;
-  const draftEnd = view.rangeDraftEndMs ?? displayUsageEndDate(nowMs) ?? nowMs;
+function buildUsageRangePopover(view: UsageWorkspaceView, nowMs: number): string {
+  const draftStart = view.rangeDraftStartMs ?? displayUsageStartDate(view, nowMs) ?? nowMs - 24 * 60 * 60 * 1000;
+  const draftEnd = view.rangeDraftEndMs ?? displayUsageEndDate(view, nowMs) ?? nowMs;
   const displayMonth = view.rangeDisplayMonthMs ?? startOfLocalMonthMs(draftStart);
   const draftLiveEnd = view.rangeDraftLiveEnd;
   const presets = usageRangePresets.map((preset) => `
@@ -287,15 +294,15 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
       class="usage-range-preset${view.rangePreset === preset ? " is-active" : ""}"
       type="button"
       data-usage-range-preset="${preset}"
-    >${escapeHtml(usageRangePresetLabel(preset))}</button>
+    >${escapeHtml(usageRangePresetLabel(view, preset))}</button>
   `).join("");
   return `
     <div class="usage-range-presets">${presets}</div>
     <div class="usage-range-layout">
       <div class="usage-range-fields">
         <p class="usage-range-hint">${t(view.locale, "usageCustomRangeHint")}</p>
-        ${buildUsageRangeField("start", draftStart, false)}
-        ${buildUsageRangeField("end", draftEnd, draftLiveEnd)}
+        ${buildUsageRangeField(view, "start", draftStart, false)}
+        ${buildUsageRangeField(view, "end", draftEnd, draftLiveEnd)}
         <label class="usage-range-live">
           <input type="checkbox" data-usage-range-live ${draftLiveEnd ? "checked" : ""} />
           <span>${t(view.locale, "usageLiveEnd")}</span>
@@ -306,12 +313,12 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
           <button class="pager-pill usage-range-apply" type="button" data-usage-range-apply>${t(view.locale, "save")}</button>
         </div>
       </div>
-      ${buildUsageCalendar(displayMonth, draftStart, draftEnd)}
+      ${buildUsageCalendar(view, displayMonth, draftStart, draftEnd)}
     </div>
   `;
 }
 
-  function buildUsageRangeField(field: "start" | "end", valueMs: number, liveEnd: boolean): string {
+function buildUsageRangeField(view: UsageWorkspaceView, field: "start" | "end", valueMs: number, liveEnd: boolean): string {
   const active = view.rangeDraftActiveField === field;
   const label = field === "start" ? t(view.locale, "usageStartTime") : t(view.locale, "usageEndTime");
   return `
@@ -345,7 +352,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   `;
 }
 
-  function buildUsageCalendar(monthMs: number, startMs: number, endMs: number): string {
+function buildUsageCalendar(view: UsageWorkspaceView, monthMs: number, startMs: number, endMs: number): string {
   const month = new Date(monthMs);
   const days = getUsageCalendarDays(monthMs);
   const todayMs = startOfLocalDayMs(Date.now());
@@ -382,7 +389,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
     <div class="usage-range-calendar">
       <div class="usage-calendar-header">
         <button type="button" class="usage-calendar-nav" data-usage-range-month="-1" aria-label="${t(view.locale, "previous")}"></button>
-        <button type="button" class="usage-calendar-title" data-usage-range-today>${escapeHtml(formatUsageCalendarMonth(monthMs))}</button>
+        <button type="button" class="usage-calendar-title" data-usage-range-today>${escapeHtml(formatUsageCalendarMonth(view, monthMs))}</button>
         <button type="button" class="usage-calendar-nav usage-calendar-nav--next" data-usage-range-month="1" aria-label="${t(view.locale, "next")}"></button>
       </div>
       <div class="usage-calendar-weekdays">${weekdayMarkup}</div>
@@ -391,17 +398,17 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   `;
 }
 
-  function renderUsageRefreshButton(): void {
-  const button = elements.refreshButton;
+function renderUsageRefreshButton(context: UsageRenderContext): void {
+  const button = context.elements.refreshButton;
   if (!button) {
     return;
   }
-  const busy = view.refreshInFlight;
-  button.textContent = view.refreshQueued
-    ? t(view.locale, "usageRefreshQueued")
+  const busy = context.view.refreshInFlight;
+  button.textContent = context.view.refreshQueued
+    ? t(context.view.locale, "usageRefreshQueued")
     : busy
-      ? t(view.locale, "usageRefreshing")
-      : t(view.locale, "usageRefresh");
+      ? t(context.view.locale, "usageRefreshing")
+      : t(context.view.locale, "usageRefresh");
   button.classList.toggle("usage-refresh-button--busy", busy);
   button.setAttribute("aria-busy", busy ? "true" : "false");
   if (busy) {
@@ -411,14 +418,14 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   }
 }
 
-  function displayUsageStartDate(nowMs: number): number | null {
+function displayUsageStartDate(view: UsageWorkspaceView, nowMs: number): number | null {
   if (view.rangePreset === "custom") {
     return view.customStartMs ?? nowMs - 24 * 60 * 60 * 1000;
   }
-  return presetUsageStartDate(nowMs);
+  return presetUsageStartDate(view, nowMs);
 }
 
-  function displayUsageEndDate(nowMs: number): number | null {
+function displayUsageEndDate(view: UsageWorkspaceView, nowMs: number): number | null {
   if (view.rangePreset === "custom") {
     if (view.liveEnd) {
       return view.lastResolvedEndMs ?? nowMs;
@@ -428,7 +435,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   return view.lastResolvedEndMs ?? nowMs;
 }
 
-  function presetUsageStartDate(nowMs: number): number {
+function presetUsageStartDate(view: UsageWorkspaceView, nowMs: number): number {
   switch (view.rangePreset) {
     case "today":
       return startOfLocalDayMs(nowMs);
@@ -444,21 +451,21 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   }
 }
 
-  function presetLookbackStartMs(dayCount: number, nowMs: number): number {
+function presetLookbackStartMs(dayCount: number, nowMs: number): number {
   return startOfLocalDayMs(nowMs - (dayCount - 1) * 24 * 60 * 60 * 1000);
 }
 
-  function startOfLocalDayMs(valueMs: number): number {
+function startOfLocalDayMs(valueMs: number): number {
   const date = new Date(valueMs);
   return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 }
 
-  function startOfLocalMonthMs(valueMs: number): number {
+function startOfLocalMonthMs(valueMs: number): number {
   const date = new Date(valueMs);
   return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
 }
 
-  function getUsageCalendarDays(monthMs: number): number[] {
+function getUsageCalendarDays(monthMs: number): number[] {
   const first = new Date(monthMs);
   const gridStart = new Date(first);
   gridStart.setDate(first.getDate() - first.getDay());
@@ -469,46 +476,46 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   });
 }
 
-  function formatUsageCalendarMonth(valueMs: number): string {
+function formatUsageCalendarMonth(view: UsageWorkspaceView, valueMs: number): string {
   return new Intl.DateTimeFormat(view.locale, {
     year: "numeric",
     month: "long",
   }).format(new Date(valueMs));
 }
 
-  function formatDateInput(valueMs: number): string {
+function formatDateInput(valueMs: number): string {
   const date = new Date(valueMs);
   const pad = (part: number) => String(part).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-  function formatTimeInput(valueMs: number): string {
+function formatTimeInput(valueMs: number): string {
   const date = new Date(valueMs);
   const pad = (part: number) => String(part).padStart(2, "0");
   return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-  function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value: string): void {
+function setSelectOptions(select: HTMLSelectElement, optionsHtml: string, value: string): void {
   if (select.innerHTML !== optionsHtml) {
     select.innerHTML = optionsHtml;
   }
   select.value = value;
 }
 
-  function buildUsageLayerSummaryCards(summary: OpenAiUsageSummary): string {
+function buildUsageLayerSummaryCards(view: UsageWorkspaceView, summary: OpenAiUsageSummary): string {
   const strict = findUsageLayer(summary, "strict_proven");
   const legacy = findUsageLayer(summary, "legacy_profile_attributed");
   const candidate = findUsageLayer(summary, "candidate_unattributed");
   return `
     <div class="usage-hero-grid">
-      ${buildUsageLayerCard("usageStrictProven", strict)}
-      ${buildUsageLayerCard("usageLegacyProfileAttributed", legacy)}
-      ${buildUsageLayerCard("usageCandidateUnattributed", candidate)}
+      ${buildUsageLayerCard(view, "usageStrictProven", strict)}
+      ${buildUsageLayerCard(view, "usageLegacyProfileAttributed", legacy)}
+      ${buildUsageLayerCard(view, "usageCandidateUnattributed", candidate)}
     </div>
   `;
 }
 
-  function findUsageLayer(summary: OpenAiUsageSummary, ledgerLayer: string) {
+function findUsageLayer(summary: OpenAiUsageSummary, ledgerLayer: string) {
   return summary.layer_summaries.find((layer) => layer.ledger_layer === ledgerLayer) ?? {
     ledger_layer: ledgerLayer,
     request_count: 0,
@@ -529,7 +536,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   };
 }
 
-  function buildUsageLayerCard(labelKey: MessageKey, layer: ReturnType<typeof findUsageLayer>): string {
+function buildUsageLayerCard(view: UsageWorkspaceView, labelKey: MessageKey, layer: ReturnType<typeof findUsageLayer>): string {
   return `
     <article class="usage-hero-card">
       <span>${t(view.locale, labelKey)}</span>
@@ -539,7 +546,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   `;
 }
 
-  function formatUsageLayerLabel(layer: string): string {
+function formatUsageLayerLabel(view: UsageWorkspaceView, layer: string): string {
   switch (layer) {
     case "strict_proven":
       return t(view.locale, "usageStrictProven");
@@ -558,7 +565,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   }
 }
 
-  function formatUsageAttributionKind(kind: string): string {
+function formatUsageAttributionKind(view: UsageWorkspaceView, kind: string): string {
   switch (kind) {
     case "strict_account":
       return t(view.locale, "usageStrictAccount");
@@ -573,7 +580,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   }
 }
 
-  function buildUsageTokenMetric(labelKey: MessageKey, value: number): string {
+function buildUsageTokenMetric(view: UsageWorkspaceView, labelKey: MessageKey, value: number): string {
   return `
     <article class="usage-token-card">
       <span>${t(view.locale, labelKey)}</span>
@@ -582,7 +589,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   `;
 }
 
-  function buildUsageAccountTable(accounts: readonly OpenAiUsageAccountSummary[]): string {
+function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly OpenAiUsageAccountSummary[]): string {
   if (accounts.length === 0) {
     return "";
   }
@@ -595,8 +602,8 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
     <tr${selectedClass}>
       <td>${escapeHtml(profiles.join(", "))}</td>
       <td>${escapeHtml(account.account_label ?? "--")}</td>
-      <td>${escapeHtml(formatUsageLayerLabel(account.ledger_layer))}</td>
-      <td>${escapeHtml(formatUsageAttributionKind(account.attribution_kind))}</td>
+      <td>${escapeHtml(formatUsageLayerLabel(view, account.ledger_layer))}</td>
+      <td>${escapeHtml(formatUsageAttributionKind(view, account.attribution_kind))}</td>
       <td>${escapeHtml(account.official_source)}</td>
       <td>${formatInteger(view.locale, account.request_count)}</td>
       <td>${formatInteger(view.locale, account.tokens.real_total_tokens)}</td>
@@ -628,26 +635,26 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   `;
 }
 
-  function usageAccountProfiles(account: OpenAiUsageAccountSummary): string[] {
+function usageAccountProfiles(account: OpenAiUsageAccountSummary): string[] {
   const profiles = account.profiles?.filter((profile) => profile.trim().length > 0) ?? [];
   return profiles.length > 0 ? profiles : [account.profile];
 }
 
-  function usageAccountFilterKey(account: OpenAiUsageAccountSummary): string {
+function usageAccountFilterKey(account: OpenAiUsageAccountSummary): string {
   return account.account_group_key ?? account.profile;
 }
 
-  function buildUsageModelTable(summary: OpenAiUsageSummary): string {
+function buildUsageModelTable(view: UsageWorkspaceView, summary: OpenAiUsageSummary): string {
   const rows = summary.models.map((model) => `
     <tr>
-      <td class="usage-table-cell--model">${buildUsageModelSummaryCell(model)}</td>
-      <td class="usage-table-cell--evidence">${buildUsageModelSummaryEvidenceCell(model)}</td>
+      <td class="usage-table-cell--model">${buildUsageModelSummaryCell(view, model)}</td>
+      <td class="usage-table-cell--evidence">${buildUsageModelSummaryEvidenceCell(view, model)}</td>
       <td>${formatInteger(view.locale, model.request_count)}</td>
       <td>${formatInteger(view.locale, model.tokens.input_tokens)}</td>
       <td>${formatInteger(view.locale, model.tokens.cached_input_tokens)}</td>
       <td>${formatInteger(view.locale, model.tokens.output_tokens)}</td>
       <td>${formatUsageCost(model.cost, view.locale)}</td>
-      <td>${escapeHtml(formatUsagePricingCell(model.priced, model.pricing_tier, model.pricing_source_url))}</td>
+      <td>${escapeHtml(formatUsagePricingCell(view, model.priced, model.pricing_tier, model.pricing_source_url))}</td>
     </tr>
   `).join("");
   return `
@@ -674,26 +681,26 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   `;
 }
 
-  function buildUsageModelSummaryCell(model: OpenAiUsageModelSummary): string {
+function buildUsageModelSummaryCell(view: UsageWorkspaceView, model: OpenAiUsageModelSummary): string {
   return `
     <div class="usage-table-stack usage-table-stack--model">
       <strong title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</strong>
-      <small title="${escapeHtml(formatUsageOptional(model.requested_model))}">${t(view.locale, "usageRequestedModel")}: ${escapeHtml(formatUsageOptional(model.requested_model))}</small>
-      <small title="${escapeHtml(formatUsageOptional(model.pricing_model))}">${t(view.locale, "usagePricingModel")}: ${escapeHtml(formatUsageOptional(model.pricing_model))}</small>
+      <small title="${escapeHtml(formatUsageOptional(view, model.requested_model))}">${t(view.locale, "usageRequestedModel")}: ${escapeHtml(formatUsageOptional(view, model.requested_model))}</small>
+      <small title="${escapeHtml(formatUsageOptional(view, model.pricing_model))}">${t(view.locale, "usagePricingModel")}: ${escapeHtml(formatUsageOptional(view, model.pricing_model))}</small>
     </div>
   `;
 }
 
-  function buildUsageModelSummaryEvidenceCell(model: OpenAiUsageModelSummary): string {
+function buildUsageModelSummaryEvidenceCell(view: UsageWorkspaceView, model: OpenAiUsageModelSummary): string {
   return `
     <div class="usage-table-stack usage-table-stack--evidence">
-      <strong>${t(view.locale, "usageReasoningEffort")}: ${escapeHtml(formatUsageOptional(model.model_reasoning_effort))}</strong>
-      <small>${t(view.locale, "usageVerbosity")}: ${escapeHtml(formatUsageOptional(model.model_verbosity))}</small>
+      <strong>${t(view.locale, "usageReasoningEffort")}: ${escapeHtml(formatUsageOptional(view, model.model_reasoning_effort))}</strong>
+      <small>${t(view.locale, "usageVerbosity")}: ${escapeHtml(formatUsageOptional(view, model.model_verbosity))}</small>
     </div>
   `;
 }
 
-  function formatUsageOptional(value: string | null | undefined): string {
+function formatUsageOptional(view: UsageWorkspaceView, value: string | null | undefined): string {
   if (value == null || value.trim() === "") {
     return t(view.locale, "usageUnknown");
   }
@@ -703,20 +710,20 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   return value;
 }
 
-  function formatUsagePricingCell(
+function formatUsagePricingCell(view: UsageWorkspaceView,
   priced: boolean,
   tier: string | null | undefined,
   sourceUrl: string | null | undefined,
 ): string {
   const status = priced ? t(view.locale, "usagePriced") : t(view.locale, "usageNotPriced");
-  const tierLabel = formatUsageOptional(tier);
+  const tierLabel = formatUsageOptional(view, tier);
   const sourceLabel = sourceUrl && sourceUrl !== "mixed"
     ? pricingSourceHost(sourceUrl)
-    : formatUsageOptional(sourceUrl);
+    : formatUsageOptional(view, sourceUrl);
   return `${status} · ${tierLabel} · ${sourceLabel}`;
 }
 
-  function pricingSourceHost(sourceUrl: string): string {
+function pricingSourceHost(sourceUrl: string): string {
   try {
     return new URL(sourceUrl).hostname;
   } catch {
@@ -724,25 +731,25 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
   }
 }
 
-  function buildUsageTrendMarkup(): string {
+function buildUsageTrendMarkup(view: UsageWorkspaceView): string {
   const points = view.trends;
   const trendBody = !view.loaded
     ? `<p class="usage-muted">${t(view.locale, "usageLoading")}</p>`
     : points.length === 0
       ? `<p class="usage-muted">${t(view.locale, "usageNoAttribution")}</p>`
-      : buildUsageLineChart(points);
+      : buildUsageLineChart(view, points);
   return `
     <article class="usage-table-card usage-trend-card">
       <div class="usage-card-title-row">
         <h3>${t(view.locale, "usageTrends")}</h3>
-        <span>${t(view.locale, "usageRefreshInterval")}: ${formatRefreshInterval(view.refreshIntervalMs)}</span>
+        <span>${t(view.locale, "usageRefreshInterval")}: ${formatRefreshInterval(view, view.refreshIntervalMs)}</span>
       </div>
       ${trendBody}
     </article>
   `;
 }
 
-type UsageTrendPoint = typeof view.trends[number];
+type UsageTrendPoint = UsageWorkspaceView["trends"][number];
 
 type UsageTrendSeries = {
   key: MessageKey;
@@ -754,7 +761,7 @@ type UsageTrendSeries = {
   value: (point: UsageTrendPoint) => number;
 };
 
-  function buildUsageLineChart(points: readonly UsageTrendPoint[]): string {
+function buildUsageLineChart(view: UsageWorkspaceView, points: readonly UsageTrendPoint[]): string {
   const width = 920;
   const height = 350;
   const pad = { top: 30, right: 78, bottom: 42, left: 58 };
@@ -811,7 +818,7 @@ type UsageTrendSeries = {
   const xFor = (index: number) => pad.left + (points.length === 1 ? innerWidth / 2 : (innerWidth * index) / (points.length - 1));
   const yForTokens = (value: number) => plotBottom - (value / tokenMax) * plotHeight;
   const yForCost = (value: number) => plotBottom - (value / costMax) * plotHeight;
-  const isHourly = usageTrendRangeDurationMs() <= 24 * 60 * 60 * 1000;
+  const isHourly = usageTrendRangeDurationMs(view) <= 24 * 60 * 60 * 1000;
   const gradients = tokenSeries.map((series) => `
     <linearGradient id="${series.fillId}" x1="0" y1="0" x2="0" y2="1">
       <stop offset="5%" stop-color="${series.color}" stop-opacity="0.20"></stop>
@@ -843,11 +850,11 @@ type UsageTrendSeries = {
     const yFor = series.scale === "tokens" ? yForTokens : yForCost;
     return points.map((point, index) => `
       <circle class="usage-chart-point usage-chart-point--${series.className}" cx="${xFor(index).toFixed(2)}" cy="${yFor(series.value(point)).toFixed(2)}" r="3.5" style="--series-color:${series.color}">
-        <title>${escapeHtml(buildUsageTrendTooltipRows(point, isHourly).join("\n"))}</title>
+        <title>${escapeHtml(buildUsageTrendTooltipRows(view, point, isHourly).join("\n"))}</title>
       </circle>
     `).join("");
   }).join("");
-  const hoverLayers = points.map((point, index) => buildUsageTrendHoverLayer({
+  const hoverLayers = points.map((point, index) => buildUsageTrendHoverLayer(view, {
     point,
     index,
     x: xFor(index),
@@ -858,7 +865,7 @@ type UsageTrendSeries = {
     hitRight: index === points.length - 1 ? width - pad.right : (xFor(index) + xFor(index + 1)) / 2,
     isHourly,
   })).join("");
-  const axisLabels = buildUsageTrendAxisLabels(points, isHourly);
+  const axisLabels = buildUsageTrendAxisLabels(view, points, isHourly);
   const legend = allSeries.map((series) => `
     <span class="usage-chart-legend-item">
       <i style="--series-color:${series.color}"></i>
@@ -870,7 +877,7 @@ type UsageTrendSeries = {
       <svg class="usage-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${escapeHtml(t(view.locale, "usageTrends"))}" preserveAspectRatio="none">
         <defs>${gradients}</defs>
         ${grid}
-        <text class="usage-chart-axis-label" x="${pad.left}" y="18">${escapeHtml(formatCompactAxisValue(tokenMax))} ${escapeHtml(t(view.locale, "usageTokens"))}</text>
+        <text class="usage-chart-axis-label" x="${pad.left}" y="18">${escapeHtml(formatCompactAxisValue(view, tokenMax))} ${escapeHtml(t(view.locale, "usageTokens"))}</text>
         <text class="usage-chart-axis-label usage-chart-axis-label--right" x="${width - pad.right}" y="18">${escapeHtml(formatCostMicros(view.locale, costMax))}</text>
         ${areaPaths}
         ${paths}
@@ -883,7 +890,7 @@ type UsageTrendSeries = {
   `;
 }
 
-  function buildSmoothUsagePath(
+function buildSmoothUsagePath(
   points: Array<{ x: number; y: number }>,
   bounds?: { minY: number; maxY: number },
 ): string {
@@ -908,25 +915,25 @@ type UsageTrendSeries = {
   return path.join(" ");
 }
 
-  function clampUsageChartValue(value: number, bounds?: { minY: number; maxY: number }): number {
+function clampUsageChartValue(value: number, bounds?: { minY: number; maxY: number }): number {
   if (!bounds) {
     return value;
   }
   return Math.min(bounds.maxY, Math.max(bounds.minY, value));
 }
 
-  function buildUsageTrendAxisLabels(points: readonly UsageTrendPoint[], isHourly: boolean): string {
+function buildUsageTrendAxisLabels(view: UsageWorkspaceView, points: readonly UsageTrendPoint[], isHourly: boolean): string {
   const indexes = Array.from(new Set([
     0,
     Math.floor((points.length - 1) / 2),
     points.length - 1,
   ])).filter((index) => index >= 0 && index < points.length);
   return indexes.map((index) => `
-    <span>${escapeHtml(formatTrendLabel(points[index].bucket_start_ms, isHourly))}</span>
+    <span>${escapeHtml(formatTrendLabel(view, points[index].bucket_start_ms, isHourly))}</span>
   `).join("");
 }
 
-  function buildUsageTrendHoverLayer(input: {
+function buildUsageTrendHoverLayer(view: UsageWorkspaceView, input: {
   point: UsageTrendPoint;
   index: number;
   x: number;
@@ -939,7 +946,7 @@ type UsageTrendSeries = {
 }): string {
   const tooltipWidth = 214;
   const rowHeight = 17;
-  const rows = buildUsageTrendTooltipRows(input.point, input.isHourly);
+  const rows = buildUsageTrendTooltipRows(view, input.point, input.isHourly);
   const tooltipHeight = 24 + rows.length * rowHeight;
   const tooltipX = input.x > input.width - input.pad.right - tooltipWidth
     ? input.x - tooltipWidth - 12
@@ -962,9 +969,9 @@ type UsageTrendSeries = {
   `;
 }
 
-  function buildUsageTrendTooltipRows(point: UsageTrendPoint, isHourly: boolean): string[] {
+function buildUsageTrendTooltipRows(view: UsageWorkspaceView, point: UsageTrendPoint, isHourly: boolean): string[] {
   return [
-    formatTrendLabel(point.bucket_start_ms, isHourly),
+    formatTrendLabel(view, point.bucket_start_ms, isHourly),
     `${t(view.locale, "usageRequests")}: ${formatInteger(view.locale, point.request_count)}`,
     `${t(view.locale, "usageInput")}: ${formatInteger(view.locale, point.tokens.input_tokens)}`,
     `${t(view.locale, "usageCachedInput")}: ${formatInteger(view.locale, point.tokens.cached_input_tokens)}`,
@@ -974,21 +981,21 @@ type UsageTrendSeries = {
   ];
 }
 
-  function usageTrendRangeDurationMs(): number {
+function usageTrendRangeDurationMs(view: UsageWorkspaceView): number {
   const nowMs = Date.now();
-  const startMs = displayUsageStartDate(nowMs) ?? nowMs - 24 * 60 * 60 * 1000;
-  const endMs = displayUsageEndDate(nowMs) ?? nowMs;
+  const startMs = displayUsageStartDate(view, nowMs) ?? nowMs - 24 * 60 * 60 * 1000;
+  const endMs = displayUsageEndDate(view, nowMs) ?? nowMs;
   return Math.max(0, endMs - startMs);
 }
 
-  function formatCompactAxisValue(value: number): string {
+function formatCompactAxisValue(view: UsageWorkspaceView, value: number): string {
   if (value >= 1000) {
     return `${Math.round(value / 1000)}k`;
   }
   return formatInteger(view.locale, value);
 }
 
-  function formatTrendLabel(value: number, isHourly = true): string {
+function formatTrendLabel(view: UsageWorkspaceView, value: number, isHourly = true): string {
   return new Intl.DateTimeFormat(view.locale, {
     month: "2-digit",
     day: "2-digit",
@@ -996,42 +1003,42 @@ type UsageTrendSeries = {
   }).format(new Date(value));
 }
 
-  function formatRefreshInterval(value: number): string {
+function formatRefreshInterval(view: UsageWorkspaceView, value: number): string {
   return value > 0 ? `${value / 1000}s` : t(view.locale, "usageRefreshOff");
 }
 
-  function buildUsageLogsTable(): string {
+function buildUsageLogsTable(view: UsageWorkspaceView): string {
   const page = view.logs;
-  const currentPage = view.loading
+  const currentPage = view.logsLoading
     ? view.logsPage
     : page?.page ?? view.logsPage;
   const pageSize = page?.page_size ?? view.logsPageSize;
   const total = page?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const rows = view.loading
+  const rows = view.logsLoading
     ? `<tr><td colspan="10" class="usage-table-loading">${t(view.locale, "usageLoading")}</td></tr>`
     : (page?.data ?? []).map((log: OpenAiUsageRequestLog) => `
     <tr>
       <td><code>${escapeHtml(log.request_id)}</code></td>
       <td>${formatDateTimeMs(log.created_at_ms, view.locale)}</td>
       <td class="usage-table-cell--account" title="${escapeHtml(log.account_label ?? log.profile)}">${escapeHtml(log.account_label ?? log.profile)}</td>
-      <td>${escapeHtml(formatUsageLayerLabel(log.ledger_layer))}</td>
-      <td class="usage-table-cell--model">${buildUsageModelEvidenceCell(log)}</td>
-      <td class="usage-table-cell--evidence">${buildUsageRequestEvidenceCell(log)}</td>
+      <td>${escapeHtml(formatUsageLayerLabel(view, log.ledger_layer))}</td>
+      <td class="usage-table-cell--model">${buildUsageModelEvidenceCell(view, log)}</td>
+      <td class="usage-table-cell--evidence">${buildUsageRequestEvidenceCell(view, log)}</td>
       <td>${formatInteger(view.locale, log.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(log.cost, view.locale)}</td>
-      <td>${escapeHtml(formatUsagePricingCell(log.priced, log.pricing_tier, log.pricing_source_url))}</td>
+      <td>${escapeHtml(formatUsagePricingCell(view, log.priced, log.pricing_tier, log.pricing_source_url))}</td>
       <td>${escapeHtml(log.data_source)}</td>
     </tr>
   `).join("");
-  const pagerDisabled = view.loading;
+  const pagerDisabled = view.logsLoading;
   return `
     <article class="usage-table-card">
       <div class="usage-card-title-row">
         <h3>${t(view.locale, "usageRequestLogs")}</h3>
         <div class="usage-log-pager">
           <button class="pager-pill" type="button" data-usage-log-page="${Math.max(1, currentPage - 1)}" ${currentPage <= 1 || pagerDisabled ? "disabled" : ""}>${t(view.locale, "previous")}</button>
-          <span>${currentPage} / ${totalPages}${view.loading ? ` · ${t(view.locale, "usageLoading")}` : ""}</span>
+          <span>${currentPage} / ${totalPages}${view.logsLoading ? ` · ${t(view.locale, "usageLoading")}` : ""}</span>
           <button class="pager-pill" type="button" data-usage-log-page="${Math.min(totalPages, currentPage + 1)}" ${currentPage >= totalPages || pagerDisabled ? "disabled" : ""}>${t(view.locale, "next")}</button>
         </div>
       </div>
@@ -1058,27 +1065,27 @@ type UsageTrendSeries = {
   `;
 }
 
-  function buildUsageModelEvidenceCell(log: OpenAiUsageRequestLog): string {
+function buildUsageModelEvidenceCell(view: UsageWorkspaceView, log: OpenAiUsageRequestLog): string {
   return `
     <div class="usage-table-stack usage-table-stack--model">
       <strong title="${escapeHtml(log.model)}">${escapeHtml(log.model)}</strong>
-      <small title="${escapeHtml(formatUsageOptional(log.requested_model))}">${t(view.locale, "usageRequestedModel")}: ${escapeHtml(formatUsageOptional(log.requested_model))}</small>
-      <small title="${escapeHtml(formatUsageOptional(log.pricing_model))}">${t(view.locale, "usagePricingModel")}: ${escapeHtml(formatUsageOptional(log.pricing_model))}</small>
+      <small title="${escapeHtml(formatUsageOptional(view, log.requested_model))}">${t(view.locale, "usageRequestedModel")}: ${escapeHtml(formatUsageOptional(view, log.requested_model))}</small>
+      <small title="${escapeHtml(formatUsageOptional(view, log.pricing_model))}">${t(view.locale, "usagePricingModel")}: ${escapeHtml(formatUsageOptional(view, log.pricing_model))}</small>
     </div>
   `;
 }
 
-  function buildUsageRequestEvidenceCell(log: OpenAiUsageRequestLog): string {
+function buildUsageRequestEvidenceCell(view: UsageWorkspaceView, log: OpenAiUsageRequestLog): string {
   return `
     <div class="usage-table-stack usage-table-stack--evidence">
-      <strong>${t(view.locale, "usageReasoningEffort")}: ${escapeHtml(formatUsageOptional(log.model_reasoning_effort))}</strong>
-      <small>${t(view.locale, "usageVerbosity")}: ${escapeHtml(formatUsageOptional(log.model_verbosity))}</small>
-      <small>${escapeHtml(formatUsageDataQuality(log.usage_confidence))}</small>
+      <strong>${t(view.locale, "usageReasoningEffort")}: ${escapeHtml(formatUsageOptional(view, log.model_reasoning_effort))}</strong>
+      <small>${t(view.locale, "usageVerbosity")}: ${escapeHtml(formatUsageOptional(view, log.model_verbosity))}</small>
+      <small>${escapeHtml(formatUsageDataQuality(view, log.usage_confidence))}</small>
     </div>
   `;
 }
 
-  function formatUsageDataQuality(value: string): string {
+function formatUsageDataQuality(view: UsageWorkspaceView, value: string): string {
   switch (value) {
     case "proven":
       return t(view.locale, "usageQualityProven");
@@ -1093,7 +1100,7 @@ type UsageTrendSeries = {
   }
 }
 
-  function buildUsageDataSourceMarkup(): string {
+function buildUsageDataSourceMarkup(view: UsageWorkspaceView): string {
   const rows = view.dataSources.map((source) => `
     <span>
       <em>${escapeHtml(source.data_source)}</em>
@@ -1109,7 +1116,7 @@ type UsageTrendSeries = {
   `;
 }
 
-  function buildUsageEvidenceMarkup(summary: OpenAiUsageSummary | null): string {
+function buildUsageEvidenceMarkup(view: UsageWorkspaceView, summary: OpenAiUsageSummary | null): string {
   const exclusions = summary?.exclusions ?? {
     duplicate_events: 0,
     non_official_base_url: 0,
@@ -1157,5 +1164,4 @@ type UsageTrendSeries = {
       </div>
     </article>
   `;
-}
 }

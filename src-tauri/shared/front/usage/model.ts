@@ -39,6 +39,7 @@ export interface UsageWorkspaceView {
   readonly locale: Locale;
   readonly loaded: boolean;
   readonly loading: boolean;
+  readonly logsLoading: boolean;
   readonly refreshInFlight: boolean;
   readonly loadError: string | null;
   readonly refreshQueued: boolean;

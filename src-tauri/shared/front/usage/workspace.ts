@@ -50,6 +50,7 @@ interface WorkspaceState {
   locale: UsageWorkspaceView["locale"];
   loaded: boolean;
   loading: boolean;
+  logsLoading: boolean;
   refreshInFlight: boolean;
   loadError: string | null;
   refreshQueued: boolean;
@@ -146,6 +147,7 @@ export function createUsageWorkspace(
     locale: "en",
     loaded: false,
     loading: false,
+    logsLoading: false,
     refreshInFlight: false,
     loadError: null,
     refreshQueued: false,
@@ -192,6 +194,10 @@ export function createUsageWorkspace(
 
   function isStaleLoad(serial: number, intentKey: string): boolean {
     return disposed || serial !== activeRequestSerial || intentKey !== currentIntentKey();
+  }
+
+  function markLogsLoadingIfIntentChanged(previousIntentKey: string): void {
+    if (previousIntentKey !== currentIntentKey()) state.logsLoading = true;
   }
 
   function resolveQuery(): OpenAiUsageQuery {
@@ -267,6 +273,7 @@ export function createUsageWorkspace(
     }
     state.loaded = true;
     state.loadError = null;
+    state.logsLoading = false;
   }
 
   function syncRefreshTimer(): void {
@@ -333,6 +340,7 @@ export function createUsageWorkspace(
       state.loadError = error instanceof Error
         ? error.message
         : t(state.locale, "usageLoadFailed");
+      state.logsLoading = false;
       if (mode === "manual") {
         dependencies.onError(
           error instanceof Error ? error : new Error(t(state.locale, "usageLoadFailed")),
@@ -486,6 +494,7 @@ export function createUsageWorkspace(
         notifyChange();
         return;
       case "apply-range-draft": {
+        const previousIntentKey = currentIntentKey();
         const startMs = state.rangeDraftStartMs;
         const endMs = state.rangeDraftLiveEnd ? dependencies.now() : state.rangeDraftEndMs;
         if (startMs == null || endMs == null) {
@@ -504,11 +513,13 @@ export function createUsageWorkspace(
         state.liveEnd = state.rangeDraftLiveEnd;
         closeRangePicker();
         state.logsPage = 1;
+        markLogsLoadingIfIntentChanged(previousIntentKey);
         notifyChange();
         await refresh("manual");
         return;
       }
-      case "set-range":
+      case "set-range": {
+        const previousIntentKey = currentIntentKey();
         state.rangePreset = event.preset;
         if (event.preset === "custom") {
           state.customStartMs = event.startMs ?? state.customStartMs;
@@ -518,9 +529,12 @@ export function createUsageWorkspace(
           closeRangePicker();
         }
         state.logsPage = 1;
+        markLogsLoadingIfIntentChanged(previousIntentKey);
         notifyChange();
         return;
-      case "set-filters":
+      }
+      case "set-filters": {
+        const previousIntentKey = currentIntentKey();
         if (event.profile !== undefined) profile = event.profile;
         if (event.accountGroupKey !== undefined) accountGroupKey = event.accountGroupKey;
         if (event.accountLabel !== undefined) accountLabel = event.accountLabel;
@@ -531,15 +545,20 @@ export function createUsageWorkspace(
         state.statusCodeFilter = statusCode;
         state.scope = event.scope ?? state.scope;
         state.logsPage = 1;
+        markLogsLoadingIfIntentChanged(previousIntentKey);
         notifyChange();
         return;
-      case "set-page":
+      }
+      case "set-page": {
+        const previousIntentKey = currentIntentKey();
         state.logsPage = Math.max(1, Math.floor(event.page));
         if (event.pageSize !== undefined) {
           state.logsPageSize = Math.max(1, Math.floor(event.pageSize));
         }
+        markLogsLoadingIfIntentChanged(previousIntentKey);
         notifyChange();
         return;
+      }
       case "set-refresh-interval":
         state.refreshIntervalMs = Math.max(0, event.intervalMs);
         syncRefreshTimer();

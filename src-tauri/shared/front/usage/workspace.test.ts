@@ -255,6 +255,52 @@ describe("UsageWorkspace", () => {
     expect(loadDashboard).toHaveBeenCalledTimes(2);
   });
 
+  it("普通 manual/auto refresh 保留已有日志且不进入 logsLoading", async () => {
+    const manual = deferred<OpenAiUsageDashboard>();
+    const auto = deferred<OpenAiUsageDashboard>();
+    const loadDashboard = vi.fn()
+      .mockResolvedValueOnce(dashboardWithPage({ page: 1, pageSize: 20, total: 1 }))
+      .mockReturnValueOnce(manual.promise)
+      .mockReturnValueOnce(auto.promise);
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    await workspace.dispatch({ type: "refresh", mode: "initial" });
+    const existingLogs = workspace.snapshot().logs;
+
+    const manualRefresh = workspace.dispatch({ type: "refresh", mode: "manual" });
+    expect(workspace.snapshot().logs).toEqual(existingLogs);
+    expect(workspace.snapshot().logsLoading).toBe(false);
+    manual.resolve(dashboardWithPage({ page: 1, pageSize: 20, total: 2 }));
+    await manualRefresh;
+
+    const autoRefresh = workspace.dispatch({ type: "refresh", mode: "auto" });
+    expect(workspace.snapshot().logs).not.toBeNull();
+    expect(workspace.snapshot().logsLoading).toBe(false);
+    auto.resolve(dashboardWithPage({ page: 1, pageSize: 20, total: 3 }));
+    await autoRefresh;
+  });
+
+  it("page/filter intent 进入 logsLoading 并在有效 load 完成或失败后恢复", async () => {
+    const workspace = createUsageWorkspace(fakeDependencies());
+
+    await workspace.dispatch({ type: "set-page", page: 2 });
+    expect(workspace.snapshot().logsLoading).toBe(true);
+    await workspace.dispatch({ type: "refresh", mode: "manual" });
+    expect(workspace.snapshot().logsLoading).toBe(false);
+
+    await workspace.dispatch({ type: "set-filters", model: "gpt-5.3-codex" });
+    expect(workspace.snapshot().logsLoading).toBe(true);
+    await workspace.dispatch({ type: "refresh", mode: "manual" });
+    expect(workspace.snapshot().logsLoading).toBe(false);
+
+    const failingWorkspace = createUsageWorkspace(fakeDependencies({
+      loadDashboard: async () => { throw new Error("日志失败"); },
+    }));
+    await failingWorkspace.dispatch({ type: "set-filters", scope: "legacy" });
+    expect(failingWorkspace.snapshot().logsLoading).toBe(true);
+    await failingWorkspace.dispatch({ type: "refresh", mode: "manual" });
+    expect(failingWorkspace.snapshot().logsLoading).toBe(false);
+  });
+
   it("日志页越界时纠偏并只重载一次", async () => {
     const loadDashboard = vi.fn()
       .mockResolvedValueOnce(dashboardWithPage({ page: 9, pageSize: 20, total: 25 }))
