@@ -170,7 +170,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 ## OpenAI 使用统计账本
 
 - Usage 前端深化只改变内部责任边界：现有 Tauri Usage command 名称、参数和返回模型保持不变。`src-tauri/shared/front/usage/` 通过 workspace interface 独占查询 intent、过期响应抑制、刷新队列、分页纠偏、timer、DOM binding 与专属渲染；共享 `actions.ts` 只负责挂载、路由 context 和调用现有 dashboard adapter。
-- `src-tauri/shared/runtime/openai_usage/ingestion.rs` 通过 private adapter seam 按固定顺序采集 session JSONL、future OpenAI response 与 cc-switch evidence；ledger 仍负责分类、去重、priority resolution、定价、schema、sync state 和 projection。该重构不改变 `openai_usage.sqlite` schema/version、重建条件、`source_locator` / `source_hash` / `evidence_id`、decision reason、证据分层或 strict/candidate 判定语义。
+- `src-tauri/shared/runtime/openai_usage/ingestion.rs` 通过 private adapter seam 按固定顺序采集 session JSONL、future OpenAI response 与 cc-switch evidence，并独占 source discovery、source signature 与 source priority。父 ledger 在调用 ingestion 前打开 SQLite、完成 schema/migration，并注入只接收 source signature 的窄 cache probe；ingestion 必须在任何 adapter collect 前执行 probe，cache hit 立即返回。`Connection`、schema、migration、sync state、分类、去重、priority resolution、定价和 projection 始终由 ledger 独占。该重构不改变 `openai_usage.sqlite` schema/version、重建条件、`source_locator` / `source_hash` / `evidence_id`、decision reason、证据分层或 strict/candidate 判定语义。
 - 这两个 deep modules 不删减或替换公开上游核心功能：账号快照、plan/quota、登录、刷新、增删改、Base URL、CLI 路径和账号切换的 Tauri command interface 与既有行为保持不变；provider sync 也未接入账号切换或 Usage 默认流程。
 - `openai_usage.sqlite` 是可重建的本机 usage ledger，不是不可变审计账单；source signature 或 schema / classifier / dedupe / layer / pricing 版本变化时会重建。
 - `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据；`openai_usage_facts` 只投影可计量层；`openai_usage_events` 保持 strict accepted-only 兼容表。

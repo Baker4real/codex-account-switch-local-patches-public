@@ -1210,10 +1210,14 @@ fn collect_from_adapters(
     Ok(())
 }
 
-pub(super) fn ingest_usage(
+pub(super) fn ingest_usage<F>(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
-) -> AppResult<UsageLoadResult> {
+    cache_probe: F,
+) -> AppResult<UsageLoadResult>
+where
+    F: FnOnce(&str, &mut OpenAiUsageSummary) -> AppResult<bool>,
+{
     ingest_usage_with_adapters(
         &[
             &SessionJsonlAdapter,
@@ -1222,20 +1226,22 @@ pub(super) fn ingest_usage(
         ],
         codex_home,
         summary,
+        cache_probe,
     )
 }
 
-fn ingest_usage_with_adapters(
+fn ingest_usage_with_adapters<F>(
     adapters: &[&dyn UsageEvidenceAdapter],
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
-) -> AppResult<UsageLoadResult> {
-    let conn = open_usage_ledger(codex_home)?;
-    ensure_usage_ledger_schema(&conn)?;
+    cache_probe: F,
+) -> AppResult<UsageLoadResult>
+where
+    F: FnOnce(&str, &mut OpenAiUsageSummary) -> AppResult<bool>,
+{
     let source_signature = usage_source_signature(codex_home);
-    if apply_cached_usage_sync_state(&conn, &source_signature, summary)? {
+    if cache_probe(&source_signature, summary)? {
         return Ok(UsageLoadResult {
-            connection: Some(conn),
             source_signature,
             cache_hit: true,
             events: Vec::new(),
@@ -1276,7 +1282,6 @@ fn ingest_usage_with_adapters(
         context.decisions,
         context.summary,
     );
-    usage.connection = Some(conn);
     usage.source_signature = source_signature;
     Ok(usage)
 }
@@ -1647,15 +1652,16 @@ mod tests {
     #[test]
     fn cache_hit_returns_before_adapters_collect() {
         let codex_home = temp_codex_home("ingestion-cache-hit");
-        fs::create_dir_all(&codex_home).unwrap();
-        load_openai_usage_summary(Some(&codex_home), None).unwrap();
-
         let mut summary = new_usage_summary(&OpenAiUsageQuery::default());
-        let result =
-            ingest_usage_with_adapters(&[&PanicAdapter], &codex_home, &mut summary).unwrap();
+        let result = ingest_usage_with_adapters(
+            &[&PanicAdapter],
+            &codex_home,
+            &mut summary,
+            |_source_signature, _summary| Ok(true),
+        )
+        .unwrap();
 
         assert!(result.cache_hit);
-        assert!(result.connection.is_some());
         let _ = fs::remove_dir_all(&codex_home);
     }
 }

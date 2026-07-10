@@ -465,7 +465,6 @@ impl Default for UsageDedupeEngine {
 }
 
 struct UsageLoadResult {
-    connection: Option<Connection>,
     source_signature: String,
     cache_hit: bool,
     events: Vec<UsageEvent>,
@@ -861,7 +860,6 @@ fn finalize_usage_load(
     summary.exclusions.candidate_unattributed_events = decisions.candidate_unattributed;
     summary.exclusions.rejected_invalid_events = decisions.rejected_invalid;
     UsageLoadResult {
-        connection: None,
         source_signature: String::new(),
         cache_hit: false,
         events,
@@ -959,11 +957,11 @@ fn sync_openai_usage_ledger(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
 ) -> AppResult<Connection> {
-    let mut usage = ingestion::ingest_usage(codex_home, summary)?;
-    let mut conn = usage
-        .connection
-        .take()
-        .expect("ingestion always returns its usage ledger connection");
+    let mut conn = open_usage_ledger(codex_home)?;
+    ensure_usage_ledger_schema(&conn)?;
+    let usage = ingestion::ingest_usage(codex_home, summary, |source_signature, summary| {
+        apply_cached_usage_sync_state(&conn, source_signature, summary)
+    })?;
     if usage.cache_hit {
         return Ok(conn);
     }

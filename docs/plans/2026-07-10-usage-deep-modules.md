@@ -502,6 +502,10 @@ git commit -m "refactor: deepen usage frontend module"
 pub(super) fn ingest_usage(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
+    cache_probe: impl FnOnce(
+        &str,
+        &mut OpenAiUsageSummary,
+    ) -> AppResult<bool>,
 ) -> AppResult<UsageLoadResult>;
 ```
 
@@ -583,10 +587,14 @@ let usage = load_usage_events(codex_home, summary)?;
 替换为：
 
 ```rust
-let usage = ingestion::ingest_usage(codex_home, summary)?;
+let mut conn = open_usage_ledger(codex_home)?;
+ensure_usage_ledger_schema(&conn)?;
+let usage = ingestion::ingest_usage(codex_home, summary, |source_signature, summary| {
+    apply_cached_usage_sync_state(&conn, source_signature, summary)
+})?;
 ```
 
-删除 parent 中旧 trait、future adapter 和所有来源直接 collector。Parent 保留 `finalize_usage_load`，除非移动它能进一步缩小 interface 且不复制 classification。
+删除 parent 中旧 trait、future adapter 和所有来源直接 collector。Parent 独占 SQLite open、schema/migration、sync state 和 projection；ingestion 独占 source discovery/signature/priority，并在 adapter collect 前调用注入的窄 cache probe。Parent 保留 `finalize_usage_load`，除非移动它能进一步缩小 interface 且不复制 classification。
 
 - [x] **Step 5: 增加 adapter fixture 回归**
 

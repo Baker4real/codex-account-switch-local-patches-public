@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { UsageWorkspace } from "./workspace";
-import { replaceUsageWorkspace } from "./replace";
+import { replaceUsageWorkspace } from "./index";
 
 function fakeWorkspace(onDispose: () => void): UsageWorkspace {
   return {

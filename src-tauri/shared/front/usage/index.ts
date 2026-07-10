@@ -13,3 +13,4 @@ export {
   type MountUsageWorkspaceDependencies,
   type UsageElements,
 } from "./dom";
+export { replaceUsageWorkspace } from "./replace";

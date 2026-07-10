@@ -142,8 +142,14 @@ Ledger 只调用一个父 module 可见的入口：
 pub(super) fn ingest_usage(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
+    cache_probe: impl FnOnce(
+        &str,
+        &mut OpenAiUsageSummary,
+    ) -> AppResult<bool>,
 ) -> AppResult<UsageLoadResult>;
 ```
+
+父 ledger 先打开 SQLite 并完成 schema/migration，再向 ingestion 注入只接收 `source_signature` 的窄 cache probe。Ingestion 仍独占 source discovery/signature，并在任何 adapter collect 前调用 probe；cache hit 时立即返回。该注入不暴露 `Connection`，也不允许 ingestion 直接操作 schema、migration、sync state 或 projection。
 
 具体 `UsageEvidenceAdapter` trait、adapter 列表和 ingestion context 均留在 ingestion implementation 内，不进入 `openai_usage` 的外部 interface。
 

@@ -47,8 +47,11 @@ import type {
   CodexCliStatus,
   CurrentQuotaResponse,
 } from "@front-shared/types";
-import { mountUsageWorkspace, type UsageWorkspace } from "@front-shared/usage";
-import { replaceUsageWorkspace } from "@front-shared/usage/replace";
+import {
+  mountUsageWorkspace,
+  replaceUsageWorkspace,
+  type UsageWorkspace,
+} from "@front-shared/usage";
 import {
   applyLocale,
   elements,
