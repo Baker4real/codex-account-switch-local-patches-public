@@ -23,7 +23,7 @@
 
 ---
 
-## 任务 1：用 Vitest 建立 Usage workspace interface
+### Task 1：用 Vitest 建立 Usage workspace interface
 
 **风险：** 中。新增测试工具和本地纯状态 module，尚不接管现有 DOM。
 
@@ -352,7 +352,7 @@ git commit -m "test: define usage workspace interface"
 
 ---
 
-## 任务 2：把 Usage DOM、状态和渲染迁入纵向 module
+### Task 2：把 Usage DOM、状态和渲染迁入纵向 module
 
 **风险：high-risk。** 修改上游已有共享前端文件；常规 task review 后必须增加独立 adversarial review，攻击其他页面回退、timer 泄漏、stale DOM 写入与错误提示差异。
 
@@ -482,7 +482,7 @@ git commit -m "refactor: deepen usage frontend module"
 
 ---
 
-## 任务 3：把 Usage evidence 来源迁入真实 ingestion adapters
+### Task 3：把 Usage evidence 来源迁入真实 ingestion adapters
 
 **风险：high-risk。** 触及 token/费用证据分类链；常规 task review 后必须增加独立 adversarial review，攻击 source priority、identity proof、dedupe、冻结失败与 schema/cache 行为漂移。
 
@@ -632,7 +632,7 @@ git commit -m "refactor: deepen usage evidence ingestion"
 
 ---
 
-## 任务 4：同步项目知识、全量验证与收尾准备
+### Task 4：同步项目知识、全量验证与收尾准备
 
 **风险：** 中。文档与集成验证；不构建或部署安装版。
 
