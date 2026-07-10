@@ -52,7 +52,7 @@ codex_switch_<版本>_amd64.deb              Linux x86_64 Debian/Ubuntu 包（su
 codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmod +x 后直接运行）
 ```
 
-> macOS / Windows 都暂未做代码签名，首次启动可能提示「未知开发者 / 未知发布者」；macOS 可在「系统设置 → 隐私与安全」放行，Windows 可在 SmartScreen 弹窗点「更多信息 → 仍要运行」。
+> GitHub Actions 生成的 macOS Release 会对 `.app` 做 Developer ID 或 ad-hoc codesign 并校验签名，但当前没有 notarization；Windows Release 仍未做 Authenticode 签名。首次启动时，macOS 可能需要在「系统设置 → 隐私与安全」放行，Windows 可在 SmartScreen 弹窗点「更多信息 → 仍要运行」。
 >
 > Linux 为实验性发布（Ubuntu 22.04 / glibc 2.35 基线构建）：UI、账号切换、plan/quota 查看可用；与 Codex CLI 的部分交互（路径自检、`codex login` spawn 等）当前走 Windows 路径分支，Linux-native 体验尚未单独适配，欢迎反馈 issue。
 
@@ -64,7 +64,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，只有 profile metadata 显式设置 `login_browser: "edge"` 的账号会打开 Edge；其他账号走普通登录浏览器行为。
 5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。
 6. 需要清空 quota cache 或重新拉计划 / 额度时，点对应账号的「刷新」。刷新会先用现有 `access_token` 查询官方 usage；只有 access token 过期或后端返回 401 时才走 OAuth refresh。
-7. 需要查看真实 token 消耗时，进入「使用统计」页。统计只读取本机 Codex session 记录和 profile 元数据；自定义第三方 Base URL、无法证明历史归属或未知官方来源的记录会进入排除计数，不会混入官方 OpenAI 消耗。
+7. 需要查看真实 token 消耗时，进入「使用统计」页。当前采集来源是本机 Codex session JSONL 与冻结后的 cc-switch 只读证据；future OpenAI response adapter 已预留但暂不产出记录。profile 元数据只用于来源门禁和账号归属。自定义第三方 Base URL、无法证明历史归属或未知官方来源的记录会进入排除计数，不会混入官方 OpenAI 消耗。
 
 ## 仓库结构
 
@@ -88,6 +88,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 npm install
 npm run tauri:dev                  # 起 Tauri 桌面 dev 窗口 + Vite HMR
 npm run build                      # 仅前端 production build（vite + tsc）
+npm run test:front                 # Vitest 前端单测
 npm run test                       # cargo test --manifest-path src-tauri/Cargo.toml
 npm run check:rust:windows         # cross check Windows target（macOS 本地交叉验证）
 npm run test:rust:windows          # 在 Windows runner 上跑（CI 主用）
@@ -110,7 +111,7 @@ npm run tauri:build:macos-app
 npm run tauri:build:macos-release
 ```
 
-发布构建的 `.app` 会作为打包输入参与签名 / notarization 链路（CI 跑），随后从 `dist/` 移除，只保留 `.dmg` / `.pkg`。旧版本产物会移动到 `dist/history/v<旧版本>/` 下归档；重复构建当前版本只替换根目录的当前文件，不会再额外备份。
+发布构建的 `.app` 会作为打包输入参与 CI codesign 链路，并对 DMG 内的应用执行签名校验；当前没有 notarization。随后独立 `.app` 从 `dist/` 移除，只保留 `.dmg` / `.pkg`。旧版本产物会移动到 `dist/history/v<旧版本>/` 下归档；重复构建当前版本只替换根目录的当前文件，不会再额外备份。
 
 期望产物结构：
 
@@ -128,16 +129,16 @@ dist/
     ...
 ```
 
-Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`。本机替换已安装的本地补丁版时，优先使用 `LOCAL_PATCHES.md` 里的“已验证 Windows 编译路径”：先跑 `npm run build -- --mode windows` 做前端 Windows mode 预检，再跑 `npm run tauri:build:windows:portable` 生成 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该 wrapper 默认使用当前环境或系统 `rustup`，也可通过 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 或 `CARGO` 指定工具链，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`。
+Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`。本机替换已安装的本地补丁版时，优先使用 `LOCAL_PATCHES.md` 里的“已验证 Windows 编译路径”：先跑 `npm run build -- --mode windows` 做前端 Windows mode 预检，再跑 `npm run tauri:build:windows:portable` 生成 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该 wrapper 默认使用当前环境或系统 `rustup`，也可通过 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 或 `CARGO` 指定工具链，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`。这里检查的是当前 Rust 编译器 host；只安装同名 target 并不能把 GNU host 变成 MSVC host。
 
 替换本机安装目录时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
 
-本地补丁版构建完成后，如需同步到已配置的远端 Windows 桌面入口，先用 `npm run deploy:windows:remote-desktop -- -InspectOnly` 只读确认远端快捷方式目标，再用 `npm run deploy:windows:remote-desktop` 上传并覆盖同一目标目录里的 `codex_switch.exe` 与 `WebView2Loader.dll`。该流程会写入 `$env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT\remote-desktop-deploy-*` 作为部署证据；未设置该环境变量时，脚本使用 D 盘 Codex evidence 默认根目录。详细规则见 `LOCAL_PATCHES.md`。
+本地补丁版构建完成后，如需同步到已配置的远端 Windows 桌面入口，先用 `npm run deploy:windows:remote-desktop -- -InspectOnly` 只读确认远端快捷方式目标，再用 `npm run deploy:windows:remote-desktop` 上传并覆盖同一目标目录里的 `codex_switch.exe` 与 `WebView2Loader.dll`。部署证据写入 `-EvidenceRoot`（默认读取 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`）下的 `remote-desktop-deploy-*`。详细规则见 `LOCAL_PATCHES.md`，设备专属默认值见 `docs/environments/windows-dual-host.md`。
 
 ## 版本与发布
 
 - 版本号源头是 `package.json`，`npm run version:sync` / `npm run version:set -- <semver>` 把同一版本写到 `package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`，并在 `src-tauri/mac/front/index.html` / `win/front/index.html` 通过 Vite-injected `__CODEX_APP_VERSION__` 渲染到设置页。
-- GitHub Release tag 用完整 semver（如 `v1.5.12`）。push tag → `.github/workflows/build.yml` 自动跑 macOS arm64 + macOS x64 + Windows x64 构建并把产物上传到一个 **draft release**，不会自动转 Latest。
+- GitHub Release tag 用完整 semver（如 `v1.5.12`）。push tag → `.github/workflows/build.yml` 按 macOS arm64、macOS x64、Windows x64、Linux x86_64 四项矩阵构建，并把 `.dmg` / `.pkg` / `.exe` / `.deb` / `.AppImage` 上传到一个 **draft release**，不会自动转 Latest。
 - 不要把补丁版本的 asset 上传到旧的两段式 tag（如 `1.5`）。
 - macOS 安装包仅作 Release asset 发布，不提交到 Git。
 
@@ -165,7 +166,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### 「使用统计」里的 token 和费用怎么算
 
-使用统计只读取本机 Codex `sessions` / `archived_sessions` 里的 `token_count` 累计值，并按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate / excluded scope 从 evidence ledger 展示候选、拒绝和 superseded 证据行。摘要区会把“严格证明”“历史槽位归因估算”“未归属候选”分层展示，方便和 cc-switch 对账；candidate、rejected、superseded 不进入严格或历史费用总额。账号表按账号实体聚合，`account_identity_key` 优先；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才合并。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
+使用统计当前从本机 Codex `sessions` / `archived_sessions` JSONL 与冻结后的 cc-switch 只读副本采集证据；future OpenAI response adapter 是空实现，不会产出记录。session JSONL 的 `token_count` 按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate / excluded scope 从 evidence ledger 展示候选、拒绝和 superseded 证据行。摘要区会把“严格证明”“历史槽位归因估算”“未归属候选”分层展示，方便和 cc-switch 对账；candidate、rejected、superseded 不进入严格或历史费用总额。账号表按账号实体聚合，`account_identity_key` 优先；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才合并。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
 
 ### per-card「登录」按钮为什么有时变成「取消」
 
@@ -179,7 +180,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### macOS 提示「无法打开，因为无法验证开发者」
 
-App 暂未做 Apple Developer 代码签名 / notarization。第一次启动按住 Control 点应用图标 → 选「打开」一次即可放行；后续直接双击就行。或在「系统设置 → 隐私与安全」放行。
+GitHub Actions 生成的 Release 会对应用做 Developer ID 或 ad-hoc codesign 并校验签名，但当前没有 notarization。第一次启动仍可能需要按住 Control 点应用图标 → 选「打开」，或在「系统设置 → 隐私与安全」放行。本地 `npm run tauri:build:macos-app` 产物则明确使用 `--no-sign`，只用于手测。
 
 ### Windows SmartScreen 提示「Windows 已保护你的电脑」
 

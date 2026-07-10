@@ -1,6 +1,8 @@
 # 清理 Windows 发布与用户可见说明中的私有和过期内容
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#7](https://github.com/Baker4real/codex-account-switch-local-patches/issues/7)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 

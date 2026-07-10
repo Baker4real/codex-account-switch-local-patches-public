@@ -1,5 +1,7 @@
 # src-tauri Layout Reorganization Implementation Plan
 
+> 状态：已完成并归档。当前源码已经按 `src-tauri/win/`、`src-tauri/mac/` 与 `src-tauri/shared/` 分组；本文仅保留为历史实施记录。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Reorganize `src-tauri` so Windows-specific, macOS-specific, and shared Rust runtime files are grouped under clear top-level folders without changing application behavior.

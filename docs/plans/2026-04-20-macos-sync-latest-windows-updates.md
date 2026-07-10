@@ -1,5 +1,7 @@
 # macOS Sync of Latest Windows Updates Implementation Plan
 
+> 状态：已完成并归档。本文列出的 macOS parity 工作已经实现；“当前差距”等措辞只描述 2026-04-20 实施前状态，不代表现存开放项。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Bring the macOS desktop shell to parity with the April 20, 2026 Windows-side updates that added per-profile Base Url editing, card deletion and account clearing, while preserving separate Windows and macOS ownership wherever practical.

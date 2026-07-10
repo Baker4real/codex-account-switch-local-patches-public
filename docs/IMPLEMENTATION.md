@@ -43,7 +43,6 @@
 - `src-tauri/mac/runtime/windowing.rs` now applies native macOS window decorations instead of reusing the Windows custom chrome assumptions
 - `src-tauri/shared/runtime/cli.rs` now resolves to `windows::*` or `macos::*` through compile-time aliases instead of directly binding the CLI to Windows modules
 - The desktop app does not use a separate local backend or HTTP server at runtime
-- `windows/` remains only as a historical note directory while the Rust path is the primary runtime and regression target
 
 ## Installation behavior
 
@@ -196,7 +195,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - 本地 MSVC 便携构建命令需要 Rust target `x86_64-pc-windows-msvc`、Visual Studio Build Tools C++ 工具链和 Windows SDK，产物写入 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`；`npm run tauri:build:portable` 只作为 GNU/MinGW 诊断路径，不是替换安装版的主构建路径
 - `scripts/tauri-windows-msvc-build.mjs` 只修改构建子进程内的 `PATH`：默认解析环境或系统 `rustup`，也支持 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 和 `CARGO` 注入；它会检查 `rustc -vV`，并在当前 compiler host 不是 `x86_64-pc-windows-msvc` 时中止。
 - 本地便携替换必须把 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 一起复制到安装目录；target-specific MSVC 构建里，loader 可能位于 `webview2-com-sys` build output，而不是 release 可执行文件旁边
-- 远端 Windows 桌面同步由 `npm run deploy:windows:remote-desktop -- -InspectOnly` 和 `npm run deploy:windows:remote-desktop` 执行。脚本解析远端桌面 `.lnk` 的真实目标，上传同一份 `codex_switch.exe` 与匹配的 x64 `WebView2Loader.dll`，备份旧目标文件，停止远端 `codex_switch`，覆盖后校验 SHA-256，并把 evidence 写到 `$env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT\remote-desktop-deploy-*`；未设置该环境变量时，脚本会使用 D 盘 Codex evidence 默认根目录。
+- 远端 Windows 桌面同步由 `npm run deploy:windows:remote-desktop -- -InspectOnly` 和 `npm run deploy:windows:remote-desktop` 执行。脚本解析远端桌面 `.lnk` 的真实目标，上传同一份 `codex_switch.exe` 与匹配的 x64 `WebView2Loader.dll`，备份旧目标文件，停止远端 `codex_switch`，覆盖后校验 SHA-256。部署证据写入 `-EvidenceRoot`（默认读取 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`）下的 `remote-desktop-deploy-*`；设备专属默认值见 `docs/environments/windows-dual-host.md`，执行时仍以 `-InspectOnly` 的实时结果为准。
 
 ## Windows Codex CLI discovery
 

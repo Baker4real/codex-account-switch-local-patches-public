@@ -1,5 +1,7 @@
 # OpenAI 官方 Token 使用统计设计
 
+> 状态：已实现并归档。基础统计于 2026-07-07 落地，后续 evidence ledger 与 CC Switch parity 设计在保持官方来源门禁的前提下扩展了本文方案。
+
 ## 目标
 
 在 Codex Switch 中新增“使用统计”模块，导航位置放在“账号”和“设置”之间。该模块只统计 OpenAI 官方路径产生的 Codex token 消耗，默认按账号/profile 归属展示，并提供按模型拆分的 token 与费用估算。

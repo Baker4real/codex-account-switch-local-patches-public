@@ -1,5 +1,7 @@
 # Frontend Move Into src-tauri Implementation Plan
 
+> 状态：已完成并归档。当前源码布局已经采用本文目标结构；本文仅保留为历史实施记录，不再作为待执行计划。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Move the desktop frontend shells under `src-tauri` so frontend source layout matches the Rust runtime split by platform.

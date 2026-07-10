@@ -1,5 +1,7 @@
 # macOS Desktop App Implementation Plan
 
+> 状态：已完成并归档。原生 macOS runtime、独立 frontend shell 与 compatibility entrypoints 均已落地；文中的 `src-tauri/src/shared/`、`src-tauri/src/platform/` 等路径是实施期间的历史布局，当前路径以 `docs/IMPLEMENTATION.md` 为准。
+
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Reuse the existing Windows Tauri desktop app architecture to build a native macOS desktop app without forking the business logic into a second platform-specific codepath.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** Tauri 2, Rust, TypeScript, Vite, macOS shell integration, AppleScript / `open -a`, existing Codex CLI
 
-## Current Status
+## 历史完成状态
 
 - Completed: Phase 1 shared runtime extraction from `src-tauri/src/windows/` into `src-tauri/src/shared/`
 - Completed: Phase 2 platform hook extraction through `src-tauri/src/platform/` and `src-tauri/src/shared/switch_core.rs`
@@ -16,7 +18,7 @@
 - Current macOS runtime coverage includes app open/activate, process stop/reopen, CLI shim install state, runtime CLI forwarding, bootstrap, and switch entry wiring
 - Phase 4 completed: macOS window chrome uses a dedicated `src-tauri/mac/front/` shell while shared frontend bridge code lives under `src-tauri/shared/front/`
 - Phase 5 completed: `macOS-backup/install.sh` and `macOS-backup/uninstall.sh` now remain as compatibility entrypoints that dispatch to native desktop or legacy shell implementations
-- Remaining work is post-stabilization cleanup, including deciding when the legacy shell flow can be downgraded or retired
+- 本计划范围已经完成；是否退役 legacy shell flow 属于后续独立决策，不是本历史计划中的开放实施项
 
 ---
 

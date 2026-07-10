@@ -1,6 +1,8 @@
 # Windows refresh 与 switch prework 纳入 shared lock
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#2](https://github.com/Baker4real/codex-account-switch-local-patches/issues/2)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 

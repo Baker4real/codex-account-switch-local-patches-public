@@ -1,6 +1,8 @@
 # Windows PATH 与 CLI 检测有界且非破坏性
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#3](https://github.com/Baker4real/codex-account-switch-local-patches/issues/3)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 

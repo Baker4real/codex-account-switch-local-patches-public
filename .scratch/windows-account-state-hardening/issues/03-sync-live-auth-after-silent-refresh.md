@@ -1,6 +1,8 @@
 # silent refresh 后同步 active profile 的 live auth
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#6](https://github.com/Baker4real/codex-account-switch-local-patches/issues/6)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 

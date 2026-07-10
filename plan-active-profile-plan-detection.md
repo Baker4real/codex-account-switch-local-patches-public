@@ -1,22 +1,22 @@
 # Active-profile plan detection — improvement plan
 
+> 状态：已完成并归档。Phase A–D 已分别通过 PR #19–#22 落地，后续 PR #25 补齐了 plan 降级语义；本文只保留历史审计和决策上下文。
+
 > Tracking doc for the chain of work uncovered while auditing how the
 > dashboard derives `plan_name` and `subscription_expires_at` for each
 > account card. See the audit findings at the bottom for context.
 
-## Status legend
+## 历史状态标记
 
-- `[ ]` not started
-- `[~]` in-flight (PR open, not merged)
-- `[x]` merged
+- `[x]` 表示已合并或已作出明确关闭决策；本文没有进行中开放项。
 
 ## Phase A — zero-risk fixes (one PR)
 
 - [x] **A1.** Persist `wham/usage.plan_type` into `ProfileMetadata`
-      Pipe the API-derived plan into `sync_profile_metadata_from_auth_and_quota`,
-      preferring it over the id_token claim. Drop the `#[allow(dead_code)]` on
-      `ChatGptApiSnapshot.plan_type`. Remove `apply_paid_fallback_for_free_plan`
-      once the API path supersedes it.
+      API 返回非空 `plan_type` 时，通过 `sync_profile_metadata_from_auth`
+      覆盖可能过期的 id_token plan claim；这包括 paid → free 的降级。API
+      没有提供 plan 时才回退到 id_token 与 `unknown_paid` heuristic。PR #25
+      进一步固定了降级优先级，并清理 API 空 quota 时的陈旧 quota。
 - [x] **A2.** Top-level `chatgpt_plan_type` fallback in id_token decode
       Mirror CodexBar's defensive fallback: if `auth.chatgpt_plan_type` is
       missing in the nested `https://api.openai.com/auth` claim, look at the
@@ -26,7 +26,7 @@
       `subscription_expires_at` is absent or already past. Optionally surface a
       subtle "needs refresh" hint instead.
 
-PR: #19 (merged 2026-05-08)
+PR: [#19](https://github.com/Cmochance/Codex_Account_Switch/pull/19)（已合并，2026-05-08）；降级语义补充见 [#25](https://github.com/Cmochance/Codex_Account_Switch/pull/25)。
 
 ## Phase B — proactive freshness (one or two PRs)
 
@@ -47,7 +47,7 @@ PR: #19 (merged 2026-05-08)
       quota freshness. Stamped by `sync_profile_metadata_from_auth*` whenever a
       plan is confirmed (id_token claim or API plan_type).
 
-PR: _(to be created)_
+PR: [#20](https://github.com/Cmochance/Codex_Account_Switch/pull/20)（已合并）。
 
 ## Phase C — UX polish (independent of A/B)
 
@@ -64,7 +64,7 @@ PR: _(to be created)_
       surfaced in the same hover tooltip; the warning hue dot via
       `.plan-unknown-paid` separates it from a plain stale cache.
 
-PR: _(to be created)_
+PR: [#21](https://github.com/Cmochance/Codex_Account_Switch/pull/21)（已合并）。
 
 ## Phase D — architecture
 
@@ -75,16 +75,18 @@ PR: _(to be created)_
       both arguments now make two writes; the operations touch disjoint
       `ProfileMetadata` fields so order is irrelevant. Disk cost is one
       extra ~1KB write per refresh, which is invisible in practice.
-- [~] **D2.** ~~Investigate `/accounts/check/v4-2023-04-27` as a more
+- [x] **D2.** ~~Investigate `/accounts/check/v4-2023-04-27` as a more
       authoritative plan/subscription endpoint than `/wham/usage`.~~
-      **Dropped.** The path's hard-coded `2023-04-27` date suffix telegraphs
+      **已明确放弃并关闭。** The path's hard-coded `2023-04-27` date suffix telegraphs
       that it's a versioned snapshot endpoint OpenAI may rotate / retire
       without notice; reverse-engineering it carries ongoing maintenance
       risk that A1's `/wham/usage.plan_type` already neutralizes.
 
+PR: [#22](https://github.com/Cmochance/Codex_Account_Switch/pull/22)（已合并 D1，并关闭 D2）。
+
 ## Audit findings (context)
 
-### Data flow (current, 1.5.4)
+### Data flow（1.5.4 历史审计快照）
 
 ```
 auth.json

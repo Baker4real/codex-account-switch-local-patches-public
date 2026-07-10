@@ -1,12 +1,11 @@
 # OpenAI Usage Evidence Ledger v2 设计
 
-日期：2026-07-07  
-状态：设计草案  
+日期：2026-07-07
+状态：已实现并归档；本文是现行 evidence ledger 语义的历史设计依据
 前置材料：
 
 - `docs/specs/2026-07-07-openai-usage-statistics-design.md`
-- `docs/research/2026-07-07-high-star-account-usage-projects.md`
-- `docs/research/2026-07-07-historical-usage-attribution.md`
+- 两份实施期研究底稿未纳入版本库；其中需要长期保留的来源比较与历史归属结论已收敛到本文“高分项目核心设计”和证据分层章节，不再引用临时 research 路径。
 
 ## 设计目标
 

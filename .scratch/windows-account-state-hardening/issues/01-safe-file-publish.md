@@ -1,6 +1,8 @@
 # 统一 Windows 关键文件的安全发布与替换语义
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#1](https://github.com/Baker4real/codex-account-switch-local-patches/issues/1)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 

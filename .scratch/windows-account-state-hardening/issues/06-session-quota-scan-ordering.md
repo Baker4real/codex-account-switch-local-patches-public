@@ -1,6 +1,8 @@
 # Windows quota session 扫描跳过 reparse 并按 mtime 选最新
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#5](https://github.com/Baker4real/codex-account-switch-local-patches/issues/5)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 

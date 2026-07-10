@@ -1,6 +1,8 @@
 # 统一 Windows Base URL 对 API key 与 OAuth profile 的语义
 
-Status: ready-for-agent
+Status: archived/closed
+
+对应私有 GitHub issue：[#4](https://github.com/Baker4real/codex-account-switch-local-patches/issues/4)（已关闭）。本文件仅保留为历史验收记录。
 
 ## What to build
 
