@@ -83,22 +83,23 @@ git commit -m "test: define canonical usage attribution behavior"
 
 - Create: `src-tauri/shared/runtime/openai_usage/identity.rs`
 - Modify: `src-tauri/shared/runtime/openai_usage.rs`
+- Modify: `src-tauri/shared/runtime/openai_usage/ingestion.rs`
 
 - [ ] 2.1 在 `identity.rs` 定义规范化与不可逆 key。禁止持久化原始 account_id；邮箱继续只作为现有 UI label 使用，resolver 比较的是 hash alias。
 
 ```rust
 pub(super) fn account_id_alias(account_id: Option<&str>) -> Option<String> {
     normalized_non_empty(account_id, false)
-        .map(|value| format!("acct:{}", sha256_hex(value.as_bytes())))
+        .map(|value| format!("acct:{:x}", Sha256::digest(value.as_bytes())))
 }
 
 pub(super) fn email_alias(email: Option<&str>) -> Option<String> {
     normalized_non_empty(email, true)
-        .map(|value| format!("email:{}", sha256_hex(value.as_bytes())))
+        .map(|value| format!("email:{:x}", Sha256::digest(value.as_bytes())))
 }
 ```
 
-`normalized_non_empty` 必须 trim；邮箱转 ASCII lowercase；account_id 保持大小写，避免改变服务端标识符语义。`sha256_hex` 复用 `openai_usage.rs` 现有 SHA-256 helper，不新增依赖。
+`normalized_non_empty` 必须 trim；邮箱转 ASCII lowercase；account_id 保持大小写，避免改变服务端标识符语义。仓库当前没有 SHA-256 helper，因此允许增加最小直接依赖 `sha2`，禁止手写密码学实现。
 
 - [ ] 2.2 给 `AttributionContext`、`AttributionRecord`、`UsageEvidence`、`UsageFact` 增加：
 
