@@ -783,8 +783,10 @@ fn build_summary_from_facts_with_resolver(
     let mut accounts: BTreeMap<String, AccountAggregate> = BTreeMap::new();
     let mut global_models: BTreeMap<String, ModelAggregate> = BTreeMap::new();
     #[cfg(any(test, debug_assertions))]
-    let expected_total =
-        checked_raw_fact_total(facts.iter().filter(|fact| fact_matches_query(fact, query)));
+    let expected_total = checked_raw_fact_total(
+        normalized_usage_scope(query),
+        facts.iter().filter(|fact| fact_matches_query(fact, query)),
+    );
     let label_identities = strict_label_identities(facts);
 
     for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
@@ -2632,7 +2634,7 @@ fn load_evidence_usage_facts(
                         .map(u64_from_i64)
                         .unwrap_or(0),
                 };
-                let cost = if model == "unknown" || delta == UsageCounts::default() {
+                let cost = if delta == UsageCounts::default() {
                     CalculatedCost {
                         breakdown: OpenAiUsageCostBreakdown::default(),
                         priced: false,
@@ -3796,22 +3798,30 @@ fn add_to_account_aggregates(
 }
 
 #[cfg(any(test, debug_assertions))]
-fn checked_raw_fact_total<'a>(facts: impl IntoIterator<Item = &'a UsageFact>) -> Aggregate {
+fn checked_raw_fact_total<'a>(
+    scope: &str,
+    facts: impl IntoIterator<Item = &'a UsageFact>,
+) -> Aggregate {
     let facts = facts.into_iter().collect::<Vec<_>>();
-    let mut evidence_ids = HashSet::new();
-    let mut fingerprints = HashSet::new();
-    for fact in &facts {
-        if !evidence_ids.insert(fact.evidence_id.as_str()) {
-            panic!(
-                "duplicate usage fact invariant failed: key=evidence_id:{}",
-                fact.evidence_id
-            );
-        }
-        if !fingerprints.insert(fact.fingerprint.as_str()) {
-            panic!(
-                "duplicate usage fact invariant failed: key=fingerprint:{}",
-                fact.fingerprint
-            );
+    if matches!(
+        scope,
+        SCOPE_STRICT | SCOPE_LEGACY | SCOPE_COMBINED_ATTRIBUTED
+    ) {
+        let mut evidence_ids = HashSet::new();
+        let mut fingerprints = HashSet::new();
+        for fact in &facts {
+            if !evidence_ids.insert(fact.evidence_id.as_str()) {
+                panic!(
+                    "duplicate usage fact invariant failed: key=evidence_id:{}",
+                    fact.evidence_id
+                );
+            }
+            if !fingerprints.insert(fact.fingerprint.as_str()) {
+                panic!(
+                    "duplicate usage fact invariant failed: key=fingerprint:{}",
+                    fact.fingerprint
+                );
+            }
         }
     }
     let mut total = Aggregate::default();
@@ -7204,7 +7214,7 @@ mod tests {
         let duplicate = &facts[0];
 
         let panic = std::panic::catch_unwind(|| {
-            checked_raw_fact_total([duplicate, duplicate]);
+            checked_raw_fact_total(SCOPE_COMBINED_ATTRIBUTED, [duplicate, duplicate]);
         })
         .expect_err("duplicate facts must violate the conservation invariant");
         let message = panic
@@ -7217,6 +7227,59 @@ mod tests {
             "unexpected panic: {message}"
         );
         let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn conservation_guard_rejects_duplicate_fingerprint_with_distinct_evidence_ids() {
+        let codex_home = temp_codex_home("duplicate-fingerprint-conservation-guard");
+        seed_usage_fact_fixture(&codex_home, "duplicate-fingerprint-guard", &[(10, 1)]);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let facts = load_usage_facts(
+            &conn,
+            &OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            },
+        )
+        .unwrap();
+        let original = &facts[0];
+        let mut duplicate_fingerprint = original.clone();
+        duplicate_fingerprint.evidence_id = "distinct-evidence-id".to_string();
+
+        let panic = std::panic::catch_unwind(|| {
+            checked_raw_fact_total(
+                SCOPE_COMBINED_ATTRIBUTED,
+                [original, &duplicate_fingerprint],
+            );
+        })
+        .expect_err("accepted facts must reject duplicate fingerprints");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(
+            message.contains("duplicate usage fact invariant failed: key=fingerprint:"),
+            "unexpected panic: {message}"
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn conservation_guard_panics_on_checked_sum_overflow() {
+        let panic = std::panic::catch_unwind(|| {
+            checked_sum("overflow-test", "input_tokens", u64::MAX, 1);
+        })
+        .expect_err("checked oracle must not saturate overflow");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert_eq!(
+            message,
+            "usage conservation overflow: key=overflow-test, metric=input_tokens, left=18446744073709551615, right=1"
+        );
     }
 
     #[test]
@@ -7241,7 +7304,10 @@ mod tests {
         let duplicate = &facts[1];
 
         let panic = std::panic::catch_unwind(|| {
-            checked_raw_fact_total([&invalid_first, duplicate, duplicate]);
+            checked_raw_fact_total(
+                SCOPE_COMBINED_ATTRIBUTED,
+                [&invalid_first, duplicate, duplicate],
+            );
         })
         .expect_err("duplicate facts must be rejected before fact semantics run");
         let message = panic
@@ -9147,7 +9213,7 @@ mod tests {
         assert_eq!(candidate.1, LEDGER_LAYER_CANDIDATE_UNATTRIBUTED);
         assert_eq!(candidate.2, "no attribution record covered this event");
         conn.execute(
-            "UPDATE openai_usage_evidence SET ledger_layer = 'future_layer' WHERE decision = 'candidate'",
+            "UPDATE openai_usage_evidence SET ledger_layer = 'future_layer', model = NULL, request_model = NULL, pricing_model = NULL WHERE decision = 'candidate'",
             [],
         )
         .unwrap();
@@ -9175,11 +9241,11 @@ mod tests {
             0
         );
         assert_eq!(candidate_dashboard.summary.tokens.real_total_tokens, 110);
-        assert_eq!(candidate_dashboard.summary.cost.input_cost_micros, 140);
-        assert_eq!(candidate_dashboard.summary.cost.cached_input_cost_micros, 4);
-        assert_eq!(candidate_dashboard.summary.cost.output_cost_micros, 140);
-        assert_eq!(candidate_dashboard.summary.cost.total_cost_micros, 284);
-        assert_eq!(candidate_dashboard.summary.cost.unpriced_tokens, 0);
+        assert_eq!(candidate_dashboard.summary.cost.input_cost_micros, 0);
+        assert_eq!(candidate_dashboard.summary.cost.cached_input_cost_micros, 0);
+        assert_eq!(candidate_dashboard.summary.cost.output_cost_micros, 0);
+        assert_eq!(candidate_dashboard.summary.cost.total_cost_micros, 0);
+        assert_eq!(candidate_dashboard.summary.cost.unpriced_tokens, 110);
         assert_eq!(candidate_dashboard.summary.accounts.len(), 1);
         let candidate_account = &candidate_dashboard.summary.accounts[0];
         assert_eq!(candidate_account.request_count, 1);
@@ -9188,11 +9254,11 @@ mod tests {
         assert_eq!(candidate_account.tokens.output_tokens, 10);
         assert_eq!(candidate_account.tokens.reasoning_output_tokens, 0);
         assert_eq!(candidate_account.tokens.real_total_tokens, 110);
-        assert_eq!(candidate_account.cost.input_cost_micros, 140);
-        assert_eq!(candidate_account.cost.cached_input_cost_micros, 4);
-        assert_eq!(candidate_account.cost.output_cost_micros, 140);
-        assert_eq!(candidate_account.cost.total_cost_micros, 284);
-        assert_eq!(candidate_account.cost.unpriced_tokens, 0);
+        assert_eq!(candidate_account.cost.input_cost_micros, 0);
+        assert_eq!(candidate_account.cost.cached_input_cost_micros, 0);
+        assert_eq!(candidate_account.cost.output_cost_micros, 0);
+        assert_eq!(candidate_account.cost.total_cost_micros, 0);
+        assert_eq!(candidate_account.cost.unpriced_tokens, 110);
         assert_eq!(
             candidate_account
                 .attribution_breakdown
@@ -9208,13 +9274,13 @@ mod tests {
         assert_eq!(future_layer.tokens.output_tokens, 10);
         assert_eq!(future_layer.tokens.reasoning_output_tokens, 0);
         assert_eq!(future_layer.tokens.real_total_tokens, 110);
-        assert_eq!(future_layer.cost.input_cost_micros, 140);
-        assert_eq!(future_layer.cost.cached_input_cost_micros, 4);
-        assert_eq!(future_layer.cost.output_cost_micros, 140);
-        assert_eq!(future_layer.cost.total_cost_micros, 284);
-        assert_eq!(future_layer.cost.unpriced_tokens, 0);
+        assert_eq!(future_layer.cost.input_cost_micros, 0);
+        assert_eq!(future_layer.cost.cached_input_cost_micros, 0);
+        assert_eq!(future_layer.cost.output_cost_micros, 0);
+        assert_eq!(future_layer.cost.total_cost_micros, 0);
+        assert_eq!(future_layer.cost.unpriced_tokens, 110);
         conn.execute(
-            "UPDATE openai_usage_evidence SET model = NULL WHERE decision = 'candidate'",
+            "UPDATE openai_usage_evidence SET model = NULL, request_model = 'gpt-5.3-codex' WHERE decision = 'candidate'",
             [],
         )
         .unwrap();
@@ -9246,6 +9312,83 @@ mod tests {
                 .map(|layer| layer.request_count),
             Some(1)
         );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn candidate_and_excluded_dashboards_allow_repeated_fallback_fingerprints() {
+        let codex_home = temp_codex_home("evidence-repeated-fallback-fingerprint");
+        fs::create_dir_all(&codex_home).unwrap();
+        load_openai_usage_summary(Some(&codex_home), None).unwrap();
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (index, (decision, ledger_layer)) in [
+            (DECISION_CANDIDATE, "future_layer"),
+            (DECISION_CANDIDATE, "future_layer"),
+            (DECISION_SUPERSEDED, "future_excluded_layer"),
+            (DECISION_SUPERSEDED, "future_excluded_layer"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            conn.execute(
+                r#"
+                INSERT INTO openai_usage_evidence (
+                    evidence_id, request_id, fingerprint, source_type, source_priority,
+                    source_locator, source_hash, parser_version, usage_shape, usage_confidence,
+                    input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
+                    account_confidence, official_confidence, decision, ledger_layer,
+                    attribution_kind, created_at_ms
+                ) VALUES (?1, NULL, NULL, 'test_evidence', 0, 'same-locator', 'same-source-hash',
+                          'test-parser', 'test-shape', 'unproven', 10, 2, 1, 0,
+                          'unproven', 'unproven', ?2, ?3, 'unattributed', ?4)
+                "#,
+                params![
+                    format!("evidence-{index}"),
+                    decision,
+                    ledger_layer,
+                    100 + index as i64,
+                ],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        for (scope, ledger_layer) in [
+            (SCOPE_CANDIDATE, "future_layer"),
+            (SCOPE_EXCLUDED, "future_excluded_layer"),
+        ] {
+            let dashboard = load_openai_usage_dashboard(
+                Some(&codex_home),
+                Some(OpenAiUsageQuery {
+                    scope: Some(scope.to_string()),
+                    ..OpenAiUsageQuery::default()
+                }),
+                1,
+                20,
+            )
+            .unwrap();
+            assert_eq!(dashboard.summary.total_requests, 2, "{scope}");
+            assert_eq!(dashboard.summary.tokens.input_tokens, 20, "{scope}");
+            assert_eq!(dashboard.summary.tokens.cached_input_tokens, 4, "{scope}");
+            assert_eq!(dashboard.summary.tokens.output_tokens, 2, "{scope}");
+            assert_eq!(
+                dashboard.summary.tokens.reasoning_output_tokens, 0,
+                "{scope}"
+            );
+            assert_eq!(dashboard.summary.tokens.real_total_tokens, 22, "{scope}");
+            assert_eq!(dashboard.summary.cost.total_cost_micros, 0, "{scope}");
+            assert_eq!(dashboard.summary.cost.unpriced_tokens, 22, "{scope}");
+            assert_eq!(dashboard.summary.accounts.len(), 1, "{scope}");
+            assert_eq!(
+                dashboard.summary.accounts[0].attribution_breakdown[0].ledger_layer, ledger_layer,
+                "{scope}"
+            );
+            assert_eq!(
+                dashboard.summary.accounts[0].attribution_breakdown[0].request_count, 2,
+                "{scope}"
+            );
+            assert_eq!(dashboard.logs.total, 2, "{scope}");
+        }
         let _ = fs::remove_dir_all(&codex_home);
     }
 

@@ -278,6 +278,12 @@ function previewOpenAiUsageSummary(): OpenAiUsageSummary {
       request_count: 18,
       tokens: primaryTokens,
       cost: primaryCost,
+      attribution_breakdown: [{
+        ledger_layer: "strict_proven",
+        request_count: 18,
+        tokens: primaryTokens,
+        cost: primaryCost,
+      }],
       models: [{
         model: "gpt-5.3-codex",
         requested_model: "gpt-5.3-codex",

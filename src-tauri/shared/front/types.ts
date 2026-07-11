@@ -143,7 +143,7 @@ export interface OpenAiUsageAccountSummary {
   tokens: OpenAiUsageTokenTotals;
   cost: OpenAiUsageCostBreakdown;
   models: OpenAiUsageModelSummary[];
-  attribution_breakdown?: OpenAiUsageLayerSummary[];
+  attribution_breakdown: OpenAiUsageLayerSummary[];
 }
 
 export interface OpenAiUsageExclusions {
