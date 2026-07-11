@@ -174,7 +174,7 @@ The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HO
 - `openai_usage.sqlite` 是可重建的本机 usage ledger，不是不可变审计账单；source signature 或 schema / classifier / dedupe / layer / pricing 版本变化时会重建。
 - `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据；`openai_usage_facts` 只投影可计量层；`openai_usage_events` 保持 strict accepted-only 兼容表。
 - 默认摘要、趋势和日志只读 strict proven。历史槽位归因进入 `legacy_profile_attributed` 估算层，同屏展示但不合并成官方账号账单；`candidate_unattributed` 作为独立对账层展示，用于解释 cc-switch session-only 差额。candidate / excluded scope 从 `openai_usage_evidence` 投影证据行用于审计查看，但 candidate、rejected 和 superseded 不进入严格或历史费用总额。
-- 账号聚合按账号实体而不是 profile 槽位：`account_identity_key` 是最高优先级；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才桥接。两个不同 strict identity 即使 label 相同也不能合并。
+- 账号聚合按账号实体而不是 profile 槽位：相同的非空 `account_id` 或去除首尾空白并转为小写后相同的 email 形成传递闭包；不存在上述身份别名路径的两个已确认组件不能仅因 label 相同而合并。没有 identity 的 legacy 事件只能使用同一 profile 中严格早于事件时间的最近已确认身份；不得使用 current snapshot 或未来身份，同毫秒、候选歧义或缺少此前证据时回落到 unknown。旧 ledger 身份只有在旧版 v1 key 或 alias 能被验证时才桥接；strict proven 与 `legacy_profile_attributed` 分别统计。
 - cc-switch 只作为只读 source adapter。导入前把 DB 冻结到 `%CODEX_HOME%\usage_evidence\ccswitch\` 并记录 hash / mtime / SQL；该目录不属于 `account_backup`，必须从 profile 扫描中排除。私有 ccswitch fork 在 `proxy_request_logs` 写入 `account_identity_key`、`account_identity_source`、`profile_id`、`profile_name` 和 `effective_base_url`；Codex Switch 只有在这些字段能证明官方 OpenAI 路径和账号身份时才把 cc-switch proxy 行提升为 strict proven。`data_source='codex_session'` / `provider_id='_codex_session'` 仍只能证明 token/model/session/time，不能提升为账号证明。
 
 ## 授权缓存状态

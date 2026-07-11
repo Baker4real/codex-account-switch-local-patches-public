@@ -19,7 +19,7 @@
 
 跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，并在 UI 标明额度来源与观测时间；只有没有实时来源时才退回本地 sessions/jsonl 观测。
 
-当前本地补丁版还提供 **OpenAI 官方 token 使用统计**：从 Codex 本地 session JSONL 的 `token_count` 事件重建 `account_backup/openai_usage.sqlite` 分层账本，只把有效 `base_url` 可证明为官方 OpenAI 路径且账号身份可证明的记录计入严格统计；历史上只能证明槽位归属的记录会作为“历史槽位归因估算”同屏展示，不冒充官方账单。cc-switch 等只能证明 token/model/session/time、不能证明账号身份的记录会进入“未归属候选”对账层，方便核对差额，但不会混入严格或历史费用总额。账号分类按账号实体聚合：稳定 `account_identity_key` 优先，历史 label 只有能唯一桥接到同一账号时才合并，profile 仍只是来源槽位。未知价格模型只显示未定价，不会当作 `$0`。
+当前本地补丁版还提供 **OpenAI 官方 token 使用统计**：从 Codex 本地 session JSONL 的 `token_count` 事件重建 `account_backup/openai_usage.sqlite` 分层账本，只把有效 `base_url` 可证明为官方 OpenAI 路径且账号身份可证明的记录计入严格统计；历史上只能证明槽位归属的记录会作为“历史槽位归因估算”同屏展示，不冒充官方账单。cc-switch 等只能证明 token/model/session/time、不能证明账号身份的记录会进入“未归属候选”对账层，方便核对差额，但不会混入严格或历史费用总额。账号分类按账号实体聚合：相同的非空 `account_id` 或去除首尾空白并转为小写后相同的 email 会按传递闭包归并；缺少身份的历史事件只能推定为同一 profile 中事件时间之前最近的已确认账号，绝不借用当前或未来身份。同毫秒、候选歧义或证据不足时保持未归属，严格归属与推定归属始终分账。未知价格模型只显示未定价，不会当作 `$0`。
 
 当前版本 **v1.5.12**（详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases)）。
 
@@ -166,7 +166,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### 「使用统计」里的 token 和费用怎么算
 
-使用统计当前从本机 Codex `sessions` / `archived_sessions` JSONL 与冻结后的 cc-switch 只读副本采集证据；future OpenAI response adapter 是空实现，不会产出记录。session JSONL 的 `token_count` 按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate / excluded scope 从 evidence ledger 展示候选、拒绝和 superseded 证据行。摘要区会把“严格证明”“历史槽位归因估算”“未归属候选”分层展示，方便和 cc-switch 对账；candidate、rejected、superseded 不进入严格或历史费用总额。账号表按账号实体聚合，`account_identity_key` 优先；没有 identity 的 legacy 记录只有在 label 能唯一映射到同一 strict identity 时才合并。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
+使用统计当前从本机 Codex `sessions` / `archived_sessions` JSONL 与冻结后的 cc-switch 只读副本采集证据；future OpenAI response adapter 是空实现，不会产出记录。session JSONL 的 `token_count` 按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate / excluded scope 从 evidence ledger 展示候选、拒绝和 superseded 证据行。摘要区会把“严格证明”“历史槽位归因估算”“未归属候选”分层展示，方便和 cc-switch 对账；candidate、rejected、superseded 不进入严格或历史费用总额。账号表按账号实体聚合：相同非空 `account_id` 或规范化后相同的 email 形成同一传递归并组；缺少身份的 legacy 事件只能使用同一 profile 中严格早于事件时间的最近已确认身份，同毫秒、存在歧义或没有此前证据时回落到 unknown，绝不使用当前快照或未来身份。旧 ledger 中的历史身份只有在其旧版 v1 key 或 alias 能被验证时才桥接；严格与推定归属分别统计。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
 
 ### per-card「登录」按钮为什么有时变成「取消」
 

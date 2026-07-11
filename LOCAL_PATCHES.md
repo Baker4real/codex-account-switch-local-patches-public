@@ -138,8 +138,12 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   但保留时间、模型和状态筛选；模型候选清除模型自身筛选但保留时间、账号和
   状态筛选。账号分类表应位于时间选择下方、摘要卡片前，选择一个账号后不能
   让其他同范围账号从下拉中消失。账号筛选使用 `account_group_key`，不是单个
-  profile；账号聚合必须以 `account_identity_key` 为最高优先级，legacy label
-  只能在唯一映射到同一 strict identity 时桥接，不能合并两个不同 strict identity。
+  profile；账号实体按相同的非空 `account_id` 或规范化后相同的 email 建立传递
+  闭包；不存在上述身份别名路径的两个已确认组件不能仅凭 label 合并。缺少身份的
+  历史事件只能归到同一 profile 中事件时间之前最近的已确认账号，绝不使用当前
+  快照或未来身份；同毫秒、候选
+  歧义或缺少此前证据时必须回落到 unknown。旧 ledger 身份只有在旧版 v1 key 或
+  alias 可验证时才允许桥接；strict proven 与 `legacy_profile_attributed` 必须分账。
 - 使用统计自定义时间范围必须使用应用内日历和分钟级文本输入；不要恢复原生
   `date` / `time` 输入控件，避免系统日期浮层压住应用内弹层和统计卡片。
 - cc-switch 等外部只读证据冻结副本必须写到 `%CODEX_HOME%\usage_evidence\`，
