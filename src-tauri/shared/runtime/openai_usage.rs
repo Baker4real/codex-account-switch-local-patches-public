@@ -783,12 +783,11 @@ fn build_summary_from_facts_with_resolver(
     let mut accounts: BTreeMap<String, AccountAggregate> = BTreeMap::new();
     let mut global_models: BTreeMap<String, ModelAggregate> = BTreeMap::new();
     #[cfg(any(test, debug_assertions))]
-    let mut expected_total = Aggregate::default();
+    let expected_total =
+        checked_raw_fact_total(facts.iter().filter(|fact| fact_matches_query(fact, query)));
     let label_identities = strict_label_identities(facts);
 
     for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
-        #[cfg(any(test, debug_assertions))]
-        add_to_aggregate(&mut expected_total, fact.delta, &fact.cost.breakdown);
         add_fact_usage(
             &mut accounts,
             &mut global_models,
@@ -3601,12 +3600,9 @@ fn add_event_usage(
             attribution_window_id: None,
             ..AccountAggregate::default()
         });
-    add_to_aggregate(&mut account.aggregate, event.delta, &event.cost.breakdown);
-    add_to_aggregate(
-        account
-            .attribution_breakdown
-            .entry(LEDGER_LAYER_STRICT_PROVEN.to_string())
-            .or_default(),
+    add_to_account_aggregates(
+        account,
+        LEDGER_LAYER_STRICT_PROVEN,
         event.delta,
         &event.cost.breakdown,
     );
@@ -3670,12 +3666,9 @@ fn add_fact_usage(
     if account.attribution_window_id != fact.attribution_window_id {
         account.attribution_window_id = None;
     }
-    add_to_aggregate(&mut account.aggregate, fact.delta, &fact.cost.breakdown);
-    add_to_aggregate(
-        account
-            .attribution_breakdown
-            .entry(fact.ledger_layer.clone())
-            .or_default(),
+    add_to_account_aggregates(
+        account,
+        &fact.ledger_layer,
         fact.delta,
         &fact.cost.breakdown,
     );
@@ -3785,6 +3778,72 @@ fn total_account_aggregate(accounts: &BTreeMap<String, AccountAggregate>) -> Agg
     total
 }
 
+fn add_to_account_aggregates(
+    account: &mut AccountAggregate,
+    ledger_layer: &str,
+    delta: UsageCounts,
+    cost: &OpenAiUsageCostBreakdown,
+) {
+    add_to_aggregate(&mut account.aggregate, delta, cost);
+    add_to_aggregate(
+        account
+            .attribution_breakdown
+            .entry(ledger_layer.to_string())
+            .or_default(),
+        delta,
+        cost,
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn checked_raw_fact_total<'a>(facts: impl IntoIterator<Item = &'a UsageFact>) -> Aggregate {
+    let facts = facts.into_iter().collect::<Vec<_>>();
+    let mut evidence_ids = HashSet::new();
+    let mut fingerprints = HashSet::new();
+    for fact in &facts {
+        if !evidence_ids.insert(fact.evidence_id.as_str()) {
+            panic!(
+                "duplicate usage fact invariant failed: key=evidence_id:{}",
+                fact.evidence_id
+            );
+        }
+        if !fingerprints.insert(fact.fingerprint.as_str()) {
+            panic!(
+                "duplicate usage fact invariant failed: key=fingerprint:{}",
+                fact.fingerprint
+            );
+        }
+    }
+    let mut total = Aggregate::default();
+    for fact in facts {
+        checked_accumulate_raw_fact(&mut total, fact);
+    }
+    assert_aggregate_semantics("raw_expected", &total);
+    total
+}
+
+#[cfg(any(test, debug_assertions))]
+fn checked_accumulate_raw_fact(total: &mut Aggregate, fact: &UsageFact) {
+    let key = format!("fact:{}", fact.evidence_id);
+    let real_total_tokens = checked_sum(
+        &key,
+        "real_total_tokens",
+        fact.delta.input_tokens,
+        fact.delta.output_tokens,
+    );
+    let tokens = OpenAiUsageTokenTotals {
+        input_tokens: fact.delta.input_tokens,
+        cached_input_tokens: fact.delta.cached_input_tokens,
+        output_tokens: fact.delta.output_tokens,
+        reasoning_output_tokens: fact.delta.reasoning_output_tokens,
+        real_total_tokens,
+    };
+    assert_usage_semantics(&key, &tokens, &fact.cost.breakdown);
+    total.requests = checked_sum(&key, "requests", total.requests, 1);
+    checked_accumulate_tokens(&key, &mut total.tokens, &tokens);
+    checked_accumulate_cost(&key, &mut total.cost, &fact.cost.breakdown);
+}
+
 #[cfg(any(test, debug_assertions))]
 fn assert_usage_conservation(
     accounts: &BTreeMap<String, AccountAggregate>,
@@ -3794,17 +3853,15 @@ fn assert_usage_conservation(
     for (account_group_key, account) in accounts {
         let mut breakdown_total = Aggregate::default();
         for (ledger_layer, layer) in &account.attribution_breakdown {
-            assert_real_total_conservation(
-                &format!("{account_group_key}/{ledger_layer}"),
-                &layer.tokens,
-            );
-            add_aggregate(&mut breakdown_total, layer);
+            let key = format!("{account_group_key}/{ledger_layer}");
+            assert_aggregate_semantics(&key, layer);
+            checked_accumulate_aggregate(&key, &mut breakdown_total, layer);
         }
         assert_aggregate_conservation(account_group_key, &account.aggregate, &breakdown_total);
-        assert_real_total_conservation(account_group_key, &account.aggregate.tokens);
+        assert_aggregate_semantics(account_group_key, &account.aggregate);
     }
     assert_aggregate_conservation("global", expected_total, actual_total);
-    assert_real_total_conservation("global", &actual_total.tokens);
+    assert_aggregate_semantics("global", actual_total);
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -3882,21 +3939,164 @@ fn assert_aggregate_conservation(
 }
 
 #[cfg(any(test, debug_assertions))]
-fn assert_real_total_conservation(account_group_key: &str, tokens: &OpenAiUsageTokenTotals) {
-    assert_conserved_value(
-        account_group_key,
-        "real_total_tokens",
-        tokens.input_tokens.saturating_add(tokens.output_tokens),
-        tokens.real_total_tokens,
-    );
-}
-
-#[cfg(any(test, debug_assertions))]
 fn assert_conserved_value(account_group_key: &str, metric: &str, expected: u64, actual: u64) {
     assert_eq!(
         actual, expected,
         "usage conservation failed: account_group_key={account_group_key}, metric={metric}, expected={expected}, actual={actual}"
     );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn assert_aggregate_semantics(key: &str, aggregate: &Aggregate) {
+    assert_usage_semantics(key, &aggregate.tokens, &aggregate.cost);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn assert_usage_semantics(
+    key: &str,
+    tokens: &OpenAiUsageTokenTotals,
+    cost: &OpenAiUsageCostBreakdown,
+) {
+    let expected_real_total = checked_sum(
+        key,
+        "real_total_tokens",
+        tokens.input_tokens,
+        tokens.output_tokens,
+    );
+    assert_conserved_value(
+        key,
+        "real_total_tokens",
+        expected_real_total,
+        tokens.real_total_tokens,
+    );
+    assert!(
+        tokens.cached_input_tokens <= tokens.input_tokens,
+        "usage semantic invariant failed: key={key}, cached_input_tokens={}, input_tokens={}",
+        tokens.cached_input_tokens,
+        tokens.input_tokens
+    );
+    assert!(
+        tokens.reasoning_output_tokens <= tokens.output_tokens,
+        "usage semantic invariant failed: key={key}, reasoning_output_tokens={}, output_tokens={}",
+        tokens.reasoning_output_tokens,
+        tokens.output_tokens
+    );
+    assert!(
+        cost.unpriced_tokens <= tokens.real_total_tokens,
+        "usage semantic invariant failed: key={key}, unpriced_tokens={}, real_total_tokens={}",
+        cost.unpriced_tokens,
+        tokens.real_total_tokens
+    );
+    let expected_total_cost = checked_sum(
+        key,
+        "input_plus_cached_cost_micros",
+        cost.input_cost_micros,
+        cost.cached_input_cost_micros,
+    );
+    let expected_total_cost = checked_sum(
+        key,
+        "total_cost_micros",
+        expected_total_cost,
+        cost.output_cost_micros,
+    );
+    assert_conserved_value(
+        key,
+        "total_cost_micros",
+        expected_total_cost,
+        cost.total_cost_micros,
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn checked_accumulate_aggregate(key: &str, target: &mut Aggregate, source: &Aggregate) {
+    target.requests = checked_sum(key, "requests", target.requests, source.requests);
+    checked_accumulate_tokens(key, &mut target.tokens, &source.tokens);
+    checked_accumulate_cost(key, &mut target.cost, &source.cost);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn checked_accumulate_tokens(
+    key: &str,
+    target: &mut OpenAiUsageTokenTotals,
+    source: &OpenAiUsageTokenTotals,
+) {
+    target.input_tokens = checked_sum(
+        key,
+        "input_tokens",
+        target.input_tokens,
+        source.input_tokens,
+    );
+    target.cached_input_tokens = checked_sum(
+        key,
+        "cached_input_tokens",
+        target.cached_input_tokens,
+        source.cached_input_tokens,
+    );
+    target.output_tokens = checked_sum(
+        key,
+        "output_tokens",
+        target.output_tokens,
+        source.output_tokens,
+    );
+    target.reasoning_output_tokens = checked_sum(
+        key,
+        "reasoning_output_tokens",
+        target.reasoning_output_tokens,
+        source.reasoning_output_tokens,
+    );
+    target.real_total_tokens = checked_sum(
+        key,
+        "real_total_tokens",
+        target.real_total_tokens,
+        source.real_total_tokens,
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn checked_accumulate_cost(
+    key: &str,
+    target: &mut OpenAiUsageCostBreakdown,
+    source: &OpenAiUsageCostBreakdown,
+) {
+    target.input_cost_micros = checked_sum(
+        key,
+        "input_cost_micros",
+        target.input_cost_micros,
+        source.input_cost_micros,
+    );
+    target.cached_input_cost_micros = checked_sum(
+        key,
+        "cached_input_cost_micros",
+        target.cached_input_cost_micros,
+        source.cached_input_cost_micros,
+    );
+    target.output_cost_micros = checked_sum(
+        key,
+        "output_cost_micros",
+        target.output_cost_micros,
+        source.output_cost_micros,
+    );
+    target.total_cost_micros = checked_sum(
+        key,
+        "total_cost_micros",
+        target.total_cost_micros,
+        source.total_cost_micros,
+    );
+    target.unpriced_tokens = checked_sum(
+        key,
+        "unpriced_tokens",
+        target.unpriced_tokens,
+        source.unpriced_tokens,
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn checked_sum(key: &str, metric: &str, left: u64, right: u64) -> u64 {
+    left.checked_add(right).unwrap_or_else(|| {
+        panic!(
+            "usage conservation overflow: key={key}, metric={metric}, left={left}, right={right}"
+        )
+    })
 }
 
 fn add_aggregate(target: &mut Aggregate, source: &Aggregate) {
@@ -6989,6 +7189,74 @@ mod tests {
     }
 
     #[test]
+    fn conservation_guard_rejects_duplicate_usage_fact() {
+        let codex_home = temp_codex_home("duplicate-fact-conservation-guard");
+        seed_usage_fact_fixture(&codex_home, "duplicate-fact-guard", &[(10, 1)]);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let facts = load_usage_facts(
+            &conn,
+            &OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            },
+        )
+        .unwrap();
+        let duplicate = &facts[0];
+
+        let panic = std::panic::catch_unwind(|| {
+            checked_raw_fact_total([duplicate, duplicate]);
+        })
+        .expect_err("duplicate facts must violate the conservation invariant");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(
+            message.contains("duplicate usage fact invariant failed: key=evidence_id:"),
+            "unexpected panic: {message}"
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn conservation_guard_checks_all_unique_keys_before_fact_semantics() {
+        let codex_home = temp_codex_home("duplicate-before-semantics-guard");
+        seed_usage_fact_fixture(
+            &codex_home,
+            "duplicate-before-semantics",
+            &[(10, 1), (30, 3)],
+        );
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let facts = load_usage_facts(
+            &conn,
+            &OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..OpenAiUsageQuery::default()
+            },
+        )
+        .unwrap();
+        let mut invalid_first = facts[0].clone();
+        invalid_first.delta.cached_input_tokens = invalid_first.delta.input_tokens + 1;
+        let duplicate = &facts[1];
+
+        let panic = std::panic::catch_unwind(|| {
+            checked_raw_fact_total([&invalid_first, duplicate, duplicate]);
+        })
+        .expect_err("duplicate facts must be rejected before fact semantics run");
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        assert!(
+            message.contains("duplicate usage fact invariant failed: key=evidence_id:"),
+            "uniqueness must fail first, got: {message}"
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn calculates_cost_without_double_counting_reasoning_tokens() {
         let codex_home = temp_codex_home("cost-token-subset-conservation");
         fs::create_dir_all(&codex_home).unwrap();
@@ -8878,6 +9146,11 @@ mod tests {
         assert_eq!(candidate.0, DECISION_CANDIDATE);
         assert_eq!(candidate.1, LEDGER_LAYER_CANDIDATE_UNATTRIBUTED);
         assert_eq!(candidate.2, "no attribution record covered this event");
+        conn.execute(
+            "UPDATE openai_usage_evidence SET ledger_layer = 'future_layer' WHERE decision = 'candidate'",
+            [],
+        )
+        .unwrap();
         let candidate_dashboard = load_openai_usage_dashboard(
             Some(&codex_home),
             Some(OpenAiUsageQuery {
@@ -8891,18 +9164,55 @@ mod tests {
         assert_eq!(candidate_dashboard.logs.total, 1);
         assert_eq!(
             candidate_dashboard.logs.data[0].ledger_layer,
-            LEDGER_LAYER_CANDIDATE_UNATTRIBUTED
+            "future_layer"
         );
         assert_eq!(candidate_dashboard.summary.total_requests, 1);
-        assert_eq!(candidate_dashboard.summary.accounts.len(), 1);
+        assert_eq!(candidate_dashboard.summary.tokens.input_tokens, 100);
+        assert_eq!(candidate_dashboard.summary.tokens.cached_input_tokens, 20);
+        assert_eq!(candidate_dashboard.summary.tokens.output_tokens, 10);
         assert_eq!(
-            candidate_dashboard.summary.accounts[0]
+            candidate_dashboard.summary.tokens.reasoning_output_tokens,
+            0
+        );
+        assert_eq!(candidate_dashboard.summary.tokens.real_total_tokens, 110);
+        assert_eq!(candidate_dashboard.summary.cost.input_cost_micros, 140);
+        assert_eq!(candidate_dashboard.summary.cost.cached_input_cost_micros, 4);
+        assert_eq!(candidate_dashboard.summary.cost.output_cost_micros, 140);
+        assert_eq!(candidate_dashboard.summary.cost.total_cost_micros, 284);
+        assert_eq!(candidate_dashboard.summary.cost.unpriced_tokens, 0);
+        assert_eq!(candidate_dashboard.summary.accounts.len(), 1);
+        let candidate_account = &candidate_dashboard.summary.accounts[0];
+        assert_eq!(candidate_account.request_count, 1);
+        assert_eq!(candidate_account.tokens.input_tokens, 100);
+        assert_eq!(candidate_account.tokens.cached_input_tokens, 20);
+        assert_eq!(candidate_account.tokens.output_tokens, 10);
+        assert_eq!(candidate_account.tokens.reasoning_output_tokens, 0);
+        assert_eq!(candidate_account.tokens.real_total_tokens, 110);
+        assert_eq!(candidate_account.cost.input_cost_micros, 140);
+        assert_eq!(candidate_account.cost.cached_input_cost_micros, 4);
+        assert_eq!(candidate_account.cost.output_cost_micros, 140);
+        assert_eq!(candidate_account.cost.total_cost_micros, 284);
+        assert_eq!(candidate_account.cost.unpriced_tokens, 0);
+        assert_eq!(
+            candidate_account
                 .attribution_breakdown
                 .iter()
                 .map(|layer| layer.ledger_layer.as_str())
                 .collect::<Vec<_>>(),
-            vec![LEDGER_LAYER_CANDIDATE_UNATTRIBUTED]
+            vec!["future_layer"]
         );
+        let future_layer = &candidate_account.attribution_breakdown[0];
+        assert_eq!(future_layer.request_count, 1);
+        assert_eq!(future_layer.tokens.input_tokens, 100);
+        assert_eq!(future_layer.tokens.cached_input_tokens, 20);
+        assert_eq!(future_layer.tokens.output_tokens, 10);
+        assert_eq!(future_layer.tokens.reasoning_output_tokens, 0);
+        assert_eq!(future_layer.tokens.real_total_tokens, 110);
+        assert_eq!(future_layer.cost.input_cost_micros, 140);
+        assert_eq!(future_layer.cost.cached_input_cost_micros, 4);
+        assert_eq!(future_layer.cost.output_cost_micros, 140);
+        assert_eq!(future_layer.cost.total_cost_micros, 284);
+        assert_eq!(future_layer.cost.unpriced_tokens, 0);
         conn.execute(
             "UPDATE openai_usage_evidence SET model = NULL WHERE decision = 'candidate'",
             [],
@@ -8932,7 +9242,7 @@ mod tests {
                 .summary
                 .layer_summaries
                 .iter()
-                .find(|layer| layer.ledger_layer == LEDGER_LAYER_CANDIDATE_UNATTRIBUTED)
+                .find(|layer| layer.ledger_layer == "future_layer")
                 .map(|layer| layer.request_count),
             Some(1)
         );
