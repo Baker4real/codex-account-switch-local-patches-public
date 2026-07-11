@@ -577,9 +577,14 @@ pub fn load_openai_usage_summary(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_filtered_usage_facts(&conn, &query)?;
-    let summary = build_summary_from_facts(summary, &facts, &query);
-    attach_layer_summaries(&conn, &query, summary)
+    let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
+    let summary = build_summary_from_facts_with_resolver(
+        summary,
+        &resolved.facts,
+        &query,
+        Some(&resolved.resolver),
+    );
+    attach_layer_summaries(&conn, &query, summary, &resolved.resolver)
 }
 
 pub fn load_openai_usage_dashboard(
@@ -592,30 +597,35 @@ pub fn load_openai_usage_dashboard(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_filtered_usage_facts(&conn, &query)?;
+    let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
+    let facts = &resolved.facts;
     let account_query = account_visibility_query(&query);
-    let account_facts = load_usage_facts(&conn, &account_query)?;
-    let verified_profile_aliases = load_verified_profile_aliases(&codex_home)?;
-    let account_summary = build_account_summary_from_facts(
+    let account_facts = load_usage_facts_with_resolver(&conn, &account_query, &resolved.resolver)?;
+    let account_summary = build_summary_from_facts_with_resolver(
         new_usage_summary(&account_query),
         &account_facts,
         &account_query,
-        &verified_profile_aliases,
+        Some(&resolved.resolver),
     )
     .accounts;
     let model_query = without_model_filter(&query);
-    let model_facts = load_filtered_usage_facts(&conn, &model_query)?;
-    let model_options =
-        build_summary_from_facts(new_usage_summary(&model_query), &model_facts, &model_query)
-            .models;
+    let model_facts = load_usage_facts_with_resolver(&conn, &model_query, &resolved.resolver)?;
+    let model_options = build_summary_from_facts_with_resolver(
+        new_usage_summary(&model_query),
+        &model_facts,
+        &model_query,
+        Some(&resolved.resolver),
+    )
+    .models;
     let summary = attach_layer_summaries(
         &conn,
         &query,
-        build_summary_from_facts(summary, &facts, &query),
+        build_summary_from_facts_with_resolver(summary, facts, &query, Some(&resolved.resolver)),
+        &resolved.resolver,
     )?;
-    let trends = build_trends(&facts, &query);
-    let logs = build_request_log_page(&facts, page, page_size);
-    let data_sources = build_data_source_summaries(&facts);
+    let trends = build_trends(facts, &query);
+    let logs = build_request_log_page(facts, page, page_size);
+    let data_sources = build_data_source_summaries(facts);
     Ok(OpenAiUsageDashboard {
         summary,
         account_summary,
@@ -682,31 +692,46 @@ fn without_model_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
     next
 }
 
-fn build_summary_from_facts(
-    summary: OpenAiUsageSummary,
-    facts: &[UsageFact],
-    query: &OpenAiUsageQuery,
-) -> OpenAiUsageSummary {
-    build_summary_from_facts_with_resolver(summary, facts, query, None)
+struct ResolvedUsageFacts {
+    facts: Vec<UsageFact>,
+    resolver: identity::CanonicalAccountResolver,
 }
 
-fn build_account_summary_from_facts(
-    summary: OpenAiUsageSummary,
-    facts: &[UsageFact],
+fn load_resolved_usage_facts(
+    conn: &Connection,
+    codex_home: &Path,
     query: &OpenAiUsageQuery,
-    verified_profile_aliases: &identity::VerifiedProfileAliases,
-) -> OpenAiUsageSummary {
-    let label_identities = strict_label_identities(facts);
-    let fallback_keys = facts
+) -> AppResult<ResolvedUsageFacts> {
+    let resolver_query = without_model_filter(&account_visibility_query(query));
+    let universe = load_usage_facts(conn, &resolver_query)?;
+    let label_identities = strict_label_identities(&universe);
+    let fallback_keys = universe
         .iter()
         .map(|fact| account_group_key(fact, &label_identities))
         .collect::<Vec<_>>();
+    let verified_profile_aliases = load_verified_profile_aliases(codex_home)?;
     let resolver = identity::CanonicalAccountResolver::from_facts(
-        facts,
+        &universe,
         &fallback_keys,
-        verified_profile_aliases,
+        &verified_profile_aliases,
     );
-    build_summary_from_facts_with_resolver(summary, facts, query, Some(&resolver))
+    let facts = load_usage_facts_with_resolver(conn, query, &resolver)?;
+    Ok(ResolvedUsageFacts { facts, resolver })
+}
+
+fn load_usage_facts_with_resolver(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    resolver: &identity::CanonicalAccountResolver,
+) -> AppResult<Vec<UsageFact>> {
+    let mut sql_query = query.clone();
+    sql_query.account_group_key = None;
+    sql_query.account_label = None;
+    let facts = load_usage_facts(conn, &sql_query)?
+        .into_iter()
+        .filter(|fact| fact_matches_query(fact, query))
+        .collect();
+    Ok(filter_facts_by_account_group(facts, query, resolver))
 }
 
 fn load_verified_profile_aliases(codex_home: &Path) -> AppResult<identity::VerifiedProfileAliases> {
@@ -765,8 +790,8 @@ pub fn load_openai_usage_trends(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_filtered_usage_facts(&conn, &query)?;
-    Ok(build_trends(&facts, &query))
+    let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
+    Ok(build_trends(&resolved.facts, &query))
 }
 
 pub fn load_openai_usage_request_logs(
@@ -779,8 +804,8 @@ pub fn load_openai_usage_request_logs(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_filtered_usage_facts(&conn, &query)?;
-    Ok(build_request_log_page(&facts, page, page_size))
+    let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
+    Ok(build_request_log_page(&resolved.facts, page, page_size))
 }
 
 pub fn load_openai_usage_request_detail(
@@ -807,8 +832,8 @@ pub fn load_openai_usage_data_sources(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    let facts = load_filtered_usage_facts(&conn, &query)?;
-    Ok(build_data_source_summaries(&facts))
+    let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
+    Ok(build_data_source_summaries(&resolved.facts))
 }
 
 fn build_request_log_page(
@@ -2663,17 +2688,10 @@ fn load_evidence_usage_facts(
     Ok(facts)
 }
 
-fn load_filtered_usage_facts(
-    conn: &Connection,
-    query: &OpenAiUsageQuery,
-) -> AppResult<Vec<UsageFact>> {
-    let facts = load_usage_facts(conn, query)?;
-    Ok(filter_facts_by_account_group(facts, query))
-}
-
 fn filter_facts_by_account_group(
     facts: Vec<UsageFact>,
     query: &OpenAiUsageQuery,
+    resolver: &identity::CanonicalAccountResolver,
 ) -> Vec<UsageFact> {
     let Some(selected_account_group_key) = query
         .account_group_key
@@ -2686,7 +2704,10 @@ fn filter_facts_by_account_group(
     let label_identities = strict_label_identities(&facts);
     facts
         .into_iter()
-        .filter(|fact| account_group_key(fact, &label_identities) == selected_account_group_key)
+        .filter(|fact| {
+            let fallback = account_group_key(fact, &label_identities);
+            resolver.matches_group_filter(fact, fallback, selected_account_group_key)
+        })
         .collect()
 }
 
@@ -2694,11 +2715,16 @@ fn attach_layer_summaries(
     conn: &Connection,
     query: &OpenAiUsageQuery,
     mut summary: OpenAiUsageSummary,
+    resolver: &identity::CanonicalAccountResolver,
 ) -> AppResult<OpenAiUsageSummary> {
     let layer_query = query_with_scope(query, SCOPE_COMBINED_ATTRIBUTED);
-    let mut facts = load_filtered_usage_facts(conn, &layer_query)?;
+    let mut facts = load_usage_facts_with_resolver(conn, &layer_query, resolver)?;
     let candidate_query = query_with_scope(query, SCOPE_CANDIDATE);
-    facts.extend(load_filtered_usage_facts(conn, &candidate_query)?);
+    facts.extend(load_usage_facts_with_resolver(
+        conn,
+        &candidate_query,
+        resolver,
+    )?);
     summary.layer_summaries = build_layer_summaries(&facts, query);
     Ok(summary)
 }
@@ -4826,6 +4852,421 @@ mod tests {
         assert_eq!(accounts.values().map(|value| value.1).sum::<u64>(), 100);
         assert_eq!(accounts.values().map(|value| value.2).sum::<u64>(), 10);
         assert_eq!(accounts.values().map(|value| value.3).sum::<u64>(), 110);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_canonical_account_filter_includes_latest_prior_usage() {
+        let codex_home = temp_codex_home("canonical-filter-latest-prior");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "canonical-filter-latest-prior",
+            &[(100, 10), (160, 16)],
+        );
+        let account_alias = identity::account_id_alias(Some("acct_canonical_filter")).unwrap();
+        let strict_created_at = i64::try_from(ts("2999-01-01T00:00:01.000Z")).unwrap();
+        let legacy_created_at = i64::try_from(ts("2999-01-01T00:00:02.000Z")).unwrap();
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[0],
+            &confirmed_identity_fact(
+                "e-canonical-strict",
+                "r-canonical-strict",
+                "p",
+                "identity-canonical-old",
+                &account_alias,
+                "0100",
+                strict_created_at,
+            ),
+        );
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[1],
+            &legacy_identity_fact(
+                "e-canonical-legacy",
+                "r-canonical-legacy",
+                "p",
+                "legacy-canonical-old",
+                "0200",
+                legacy_created_at,
+            ),
+        );
+        drop(conn);
+
+        let range_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:03.000Z") / 1000) as i64),
+            scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+            ..OpenAiUsageQuery::default()
+        };
+        let unfiltered =
+            load_openai_usage_dashboard(Some(&codex_home), Some(range_query.clone()), 1, 20)
+                .unwrap();
+        assert_eq!(unfiltered.account_summary.len(), 1);
+        let canonical_key = unfiltered.account_summary[0]
+            .account_group_key
+            .clone()
+            .unwrap();
+        let filtered_query = OpenAiUsageQuery {
+            account_group_key: Some(canonical_key),
+            ..range_query
+        };
+
+        let dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(filtered_query.clone()), 1, 1)
+                .unwrap();
+        let summary =
+            load_openai_usage_summary(Some(&codex_home), Some(filtered_query.clone())).unwrap();
+        let trends =
+            load_openai_usage_trends(Some(&codex_home), Some(filtered_query.clone())).unwrap();
+        let logs =
+            load_openai_usage_request_logs(Some(&codex_home), Some(filtered_query), 1, 20).unwrap();
+
+        let expected_request_ids = BTreeSet::from([
+            "r-canonical-legacy".to_string(),
+            "r-canonical-strict".to_string(),
+        ]);
+        assert_eq!(dashboard.summary.total_requests, 2);
+        assert_eq!(dashboard.summary.tokens.real_total_tokens, 176);
+        assert_eq!(dashboard.logs.total, 2);
+        assert_eq!(dashboard.logs.data.len(), 1);
+        assert_eq!(summary.total_requests, 2);
+        assert_eq!(summary.tokens.real_total_tokens, 176);
+        assert_eq!(
+            trends.iter().map(|point| point.request_count).sum::<u64>(),
+            2
+        );
+        assert_eq!(logs.total, 2);
+        assert_eq!(
+            logs.data
+                .iter()
+                .map(|entry| entry.request_id.clone())
+                .collect::<BTreeSet<_>>(),
+            expected_request_ids
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn canonical_account_filter_accepts_previous_aliases_across_views() {
+        let codex_home = temp_codex_home("canonical-filter-aliases");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "canonical-filter-aliases",
+            &[(100, 10), (160, 16)],
+        );
+        let account_alias = identity::account_id_alias(Some("acct_alias_filter")).unwrap();
+        let email_alias = identity::email_alias(Some("alias-filter@example.com")).unwrap();
+        let raw_old_identity_key = "identity-alias-filter-old";
+        let old_identity_key = format!("identity:{raw_old_identity_key}");
+        let raw_legacy_key = "legacy-alias-filter-old";
+        let legacy_key = format!("legacy:{raw_legacy_key}");
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[0],
+            &confirmed_identity_fact(
+                "e-alias-strict",
+                "r-alias-strict",
+                "p",
+                "identity-alias-filter-old",
+                &account_alias,
+                "0100",
+                i64::try_from(ts("2999-01-01T00:00:01.000Z")).unwrap(),
+            ),
+        );
+        conn.execute(
+            "UPDATE openai_usage_facts SET email_alias = ?1 WHERE evidence_id = 'e-alias-strict'",
+            [&email_alias],
+        )
+        .unwrap();
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[1],
+            &legacy_identity_fact(
+                "e-alias-legacy",
+                "r-alias-legacy",
+                "p",
+                "legacy-alias-filter-old",
+                "0200",
+                i64::try_from(ts("2999-01-01T00:00:02.000Z")).unwrap(),
+            ),
+        );
+        drop(conn);
+
+        let base_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:03.000Z") / 1000) as i64),
+            scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+            ..OpenAiUsageQuery::default()
+        };
+        let dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(base_query.clone()), 1, 20)
+                .unwrap();
+        let canonical_key = dashboard.account_summary[0]
+            .account_group_key
+            .clone()
+            .unwrap();
+        let expected_request_ids =
+            BTreeSet::from(["r-alias-legacy".to_string(), "r-alias-strict".to_string()]);
+
+        for query_key in [
+            canonical_key,
+            old_identity_key,
+            raw_old_identity_key.to_string(),
+            account_alias,
+            email_alias,
+            legacy_key,
+            raw_legacy_key.to_string(),
+        ] {
+            let query = OpenAiUsageQuery {
+                account_group_key: Some(query_key.clone()),
+                ..base_query.clone()
+            };
+            let dashboard =
+                load_openai_usage_dashboard(Some(&codex_home), Some(query.clone()), 1, 20).unwrap();
+            let trends = load_openai_usage_trends(Some(&codex_home), Some(query.clone())).unwrap();
+            let logs =
+                load_openai_usage_request_logs(Some(&codex_home), Some(query), 1, 20).unwrap();
+            assert_eq!(dashboard.summary.total_requests, 2, "{query_key}");
+            assert_eq!(
+                dashboard.summary.tokens.real_total_tokens, 176,
+                "{query_key}"
+            );
+            assert_eq!(
+                trends.iter().map(|point| point.request_count).sum::<u64>(),
+                2,
+                "{query_key}"
+            );
+            assert_eq!(logs.total, 2, "{query_key}");
+            assert_eq!(
+                logs.data
+                    .iter()
+                    .map(|entry| entry.request_id.clone())
+                    .collect::<BTreeSet<_>>(),
+                expected_request_ids,
+                "{query_key}"
+            );
+        }
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn canonical_account_key_is_stable_across_model_filters() {
+        let codex_home = temp_codex_home("canonical-key-model-stability");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let account_alias = identity::account_id_alias(Some("acct_model_stability")).unwrap();
+        let email_alias = identity::email_alias(Some("model-stability@example.com")).unwrap();
+        for record in [
+            AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("email-profile".to_string()),
+                account_label: Some("model-stability@example.com".to_string()),
+                account_identity_key: Some("identity-model-email".to_string()),
+                account_id_alias: None,
+                email_alias: Some(email_alias.clone()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+            AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
+                profile: Some("dual-profile".to_string()),
+                account_label: Some("dual".to_string()),
+                account_identity_key: Some("identity-model-dual".to_string()),
+                account_id_alias: Some(account_alias.clone()),
+                email_alias: Some(email_alias),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+            AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:05.000Z"),
+                profile: Some("account-profile".to_string()),
+                account_label: Some("account".to_string()),
+                account_identity_key: Some("identity-model-account".to_string()),
+                account_id_alias: Some(account_alias),
+                email_alias: None,
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+        ] {
+            append_attribution_record(&codex_home, &record).unwrap();
+        }
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-canonical-model-stability"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"model-email"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:03.500Z","type":"turn_context","payload":{"model":"model-dual"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":0,"output_tokens":16,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:05.500Z","type":"turn_context","payload":{"model":"model-account"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:06.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":220,"cached_input_tokens":0,"output_tokens":22,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let base_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:07.000Z") / 1000) as i64),
+            ..OpenAiUsageQuery::default()
+        };
+        let unfiltered =
+            load_openai_usage_dashboard(Some(&codex_home), Some(base_query.clone()), 1, 20)
+                .unwrap();
+        assert_eq!(unfiltered.account_summary.len(), 1);
+        let canonical_key = unfiltered.account_summary[0]
+            .account_group_key
+            .clone()
+            .unwrap();
+
+        let filtered = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                account_group_key: Some(canonical_key.clone()),
+                model: Some("model-email".to_string()),
+                ..base_query
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+
+        assert_eq!(filtered.summary.total_requests, 1);
+        assert_eq!(filtered.logs.total, 1);
+        assert_eq!(filtered.logs.data[0].model, "model-email");
+        assert_eq!(filtered.account_summary.len(), 1);
+        assert_eq!(
+            filtered.account_summary[0].account_group_key.as_deref(),
+            Some(canonical_key.as_str())
+        );
+        assert_eq!(
+            filtered
+                .model_options
+                .iter()
+                .map(|model| model.model.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["model-account", "model-dual", "model-email"])
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn canonical_account_filter_fails_closed_and_respects_profile_scope() {
+        let codex_home = temp_codex_home("canonical-filter-profile-scope");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let account_alias = identity::account_id_alias(Some("acct_profile_scope")).unwrap();
+        let email_alias = identity::email_alias(Some("profile-scope@example.com")).unwrap();
+        for record in [
+            AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
+                profile: Some("email-profile".to_string()),
+                account_label: Some("profile-scope@example.com".to_string()),
+                account_identity_key: Some("identity-profile-email".to_string()),
+                account_id_alias: None,
+                email_alias: Some(email_alias.clone()),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+            AttributionRecord {
+                observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
+                profile: Some("dual-profile".to_string()),
+                account_label: Some("dual".to_string()),
+                account_identity_key: Some("identity-profile-dual".to_string()),
+                account_id_alias: Some(account_alias),
+                email_alias: Some(email_alias),
+                openai_base_url: None,
+                official_source: Some("OpenAI default".to_string()),
+                is_official_openai: true,
+                exclusion_reason: None,
+                model_reasoning_effort: None,
+                model_verbosity: None,
+            },
+        ] {
+            append_attribution_record(&codex_home, &record).unwrap();
+        }
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-canonical-profile-scope"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":160,"cached_input_tokens":0,"output_tokens":16,"reasoning_output_tokens":0}}}}"#,
+            ]
+            .join("\n"),
+        );
+        let base_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:05.000Z") / 1000) as i64),
+            ..OpenAiUsageQuery::default()
+        };
+        let unfiltered =
+            load_openai_usage_dashboard(Some(&codex_home), Some(base_query.clone()), 1, 20)
+                .unwrap();
+        let canonical_key = unfiltered.account_summary[0]
+            .account_group_key
+            .clone()
+            .unwrap();
+        let profile_query = OpenAiUsageQuery {
+            profile: Some("email-profile".to_string()),
+            account_group_key: Some(canonical_key),
+            ..base_query.clone()
+        };
+        let dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(profile_query.clone()), 1, 20)
+                .unwrap();
+        let trends =
+            load_openai_usage_trends(Some(&codex_home), Some(profile_query.clone())).unwrap();
+        let logs =
+            load_openai_usage_request_logs(Some(&codex_home), Some(profile_query), 1, 20).unwrap();
+        assert_eq!(dashboard.summary.total_requests, 1);
+        assert_eq!(dashboard.summary.accounts[0].profile, "email-profile");
+        assert_eq!(
+            trends.iter().map(|point| point.request_count).sum::<u64>(),
+            1
+        );
+        assert_eq!(logs.total, 1);
+        assert_eq!(logs.data[0].profile, "email-profile");
+
+        let unknown_query = OpenAiUsageQuery {
+            account_group_key: Some("identity:unknown-canonical-key".to_string()),
+            ..base_query
+        };
+        let unknown_dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(unknown_query.clone()), 1, 20)
+                .unwrap();
+        let unknown_trends =
+            load_openai_usage_trends(Some(&codex_home), Some(unknown_query.clone())).unwrap();
+        let unknown_logs =
+            load_openai_usage_request_logs(Some(&codex_home), Some(unknown_query), 1, 20).unwrap();
+        assert_eq!(unknown_dashboard.summary.total_requests, 0);
+        assert_eq!(unknown_dashboard.logs.total, 0);
+        assert_eq!(
+            unknown_trends
+                .iter()
+                .map(|point| point.request_count)
+                .sum::<u64>(),
+            0
+        );
+        assert_eq!(unknown_logs.total, 0);
         let _ = fs::remove_dir_all(&codex_home);
     }
 

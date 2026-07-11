@@ -321,6 +321,15 @@ impl CanonicalAccountResolver {
             };
             resolve_latest_priors(timeline, &events, &mut latest_prior_by_evidence);
         }
+        for (index, fact) in facts.iter().enumerate() {
+            let Some(canonical) = latest_prior_by_evidence.get(&fact.evidence_id) else {
+                continue;
+            };
+            canonical_by_node.insert(
+                IdentityNode::Fallback(fallback_keys[index].clone()),
+                canonical.clone(),
+            );
+        }
         Self {
             canonical_by_node,
             trusted_canonical_by_evidence,
@@ -355,6 +364,48 @@ impl CanonicalAccountResolver {
             .get(&IdentityNode::Fallback(fallback.clone()))
             .cloned()
             .unwrap_or(fallback)
+    }
+
+    pub(super) fn matches_group_filter(
+        &self,
+        fact: &UsageFact,
+        fallback: String,
+        selected_group_key: &str,
+    ) -> bool {
+        let Some(selected_canonical) = self.canonical_for_group_key(selected_group_key) else {
+            return false;
+        };
+        self.canonical_key(fact, fallback) == selected_canonical
+    }
+
+    fn canonical_for_group_key(&self, group_key: &str) -> Option<String> {
+        let mut candidates = self
+            .canonical_by_node
+            .values()
+            .filter(|canonical| canonical.as_str() == group_key)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        candidates.extend(
+            IdentityAlias::parse_account_id(Some(group_key))
+                .or_else(|| IdentityAlias::parse_email(Some(group_key)))
+                .and_then(|alias| self.canonical_by_node.get(&IdentityNode::Alias(alias)))
+                .cloned(),
+        );
+        candidates.extend(
+            self.canonical_by_node
+                .get(&IdentityNode::Fallback(group_key.to_string()))
+                .cloned(),
+        );
+        for prefix in ["identity:", "legacy:"] {
+            candidates.extend(
+                self.canonical_by_node
+                    .get(&IdentityNode::Fallback(format!("{prefix}{group_key}")))
+                    .cloned(),
+            );
+        }
+        (candidates.len() == 1)
+            .then(|| candidates.into_iter().next())
+            .flatten()
     }
 }
 
