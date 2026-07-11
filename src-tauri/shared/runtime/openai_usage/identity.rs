@@ -322,7 +322,10 @@ impl CanonicalAccountResolver {
             }
         }
         for (fallback, canonicals) in trusted_canonicals_by_fallback {
-            canonical_by_node.insert(fallback, canonicals);
+            canonical_by_node
+                .entry(fallback)
+                .or_default()
+                .extend(canonicals);
         }
 
         let mut timelines = BTreeMap::<String, Vec<ConfirmedIdentityPoint>>::new();
@@ -434,12 +437,17 @@ impl CanonicalAccountResolver {
         if let Some(canonical) = self.untrusted_canonical_by_evidence.get(&fact.evidence_id) {
             return canonical.clone();
         }
+        let mut alias_candidates = BTreeSet::new();
         for alias in aliases(fact) {
-            if let Some(canonical) =
-                unique_canonical(self.canonical_by_node.get(&IdentityNode::Alias(alias)))
-            {
-                return canonical.clone();
+            if let Some(canonicals) = self.canonical_by_node.get(&IdentityNode::Alias(alias)) {
+                alias_candidates.extend(canonicals.iter().cloned());
             }
+        }
+        if alias_candidates.len() == 1 {
+            return alias_candidates.into_iter().next().unwrap();
+        }
+        if alias_candidates.len() > 1 {
+            return fallback;
         }
         if let Some(canonical) = self.latest_prior_by_evidence.get(&fact.evidence_id) {
             return canonical.clone();
@@ -499,7 +507,7 @@ impl CanonicalAccountResolver {
                 .flatten()
                 .cloned(),
         );
-        for prefix in ["identity:", "legacy:"] {
+        for prefix in ["identity:", "legacy:", "profile:"] {
             let fallback = IdentityNode::Fallback(format!("{prefix}{group_key}"));
             candidates.extend(
                 self.canonical_by_node

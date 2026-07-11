@@ -5322,6 +5322,76 @@ mod tests {
     }
 
     #[test]
+    fn shared_profile_fallback_keeps_trusted_and_noneligible_accounts_ambiguous() {
+        let codex_home = temp_codex_home("shared-profile-fallback-ambiguity");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "shared-profile-fallback-ambiguity",
+            &[(100, 10), (160, 16)],
+        );
+        let alias_a = identity::account_id_alias(Some("acct_shared_profile_a")).unwrap();
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[0],
+            &confirmed_identity_fact(
+                "e-shared-profile-a",
+                "r-shared-profile-a",
+                "shared-profile",
+                "identity-shared-profile-a",
+                &alias_a,
+                "0100",
+                100,
+            ),
+        );
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[1],
+            &IdentityFactFixture {
+                evidence_id: "e-shared-profile-b",
+                request_id: "r-shared-profile-b",
+                fingerprint: "e-shared-profile-b",
+                profile: "shared-profile",
+                account_identity_key: Some("identity-shared-profile-b"),
+                account_id_alias: None,
+                legacy_account_key: None,
+                ledger_layer: LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
+                attribution_kind: ATTRIBUTION_KIND_LEGACY_PROFILE,
+                attribution_window_id: Some("0200"),
+                created_at_ms: 200,
+            },
+        );
+        drop(conn);
+        let query_for = |key: &str| OpenAiUsageQuery {
+            scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+            account_group_key: Some(key.to_string()),
+            ..OpenAiUsageQuery::default()
+        };
+        for (key, expected_request) in [
+            (alias_a.as_str(), "r-shared-profile-a"),
+            ("identity:identity-shared-profile-b", "r-shared-profile-b"),
+        ] {
+            let logs =
+                load_openai_usage_request_logs(Some(&codex_home), Some(query_for(key)), 1, 20)
+                    .unwrap();
+            assert_eq!(logs.total, 1, "{key}");
+            assert_eq!(logs.data[0].request_id, expected_request, "{key}");
+        }
+        for ambiguous_key in ["shared-profile", "profile:shared-profile"] {
+            let dashboard = load_openai_usage_dashboard(
+                Some(&codex_home),
+                Some(query_for(ambiguous_key)),
+                1,
+                20,
+            )
+            .unwrap();
+            assert_eq!(dashboard.summary.total_requests, 0, "{ambiguous_key}");
+            assert_eq!(dashboard.logs.total, 0, "{ambiguous_key}");
+        }
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn candidate_multi_alias_conflict_cannot_bridge_trusted_accounts() {
         let codex_home = temp_codex_home("candidate-multi-alias-conflict");
         fs::create_dir_all(&codex_home).unwrap();
@@ -5436,6 +5506,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(alias_b_logs.total, 0);
+        let strict_a = load_openai_usage_summary(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                account_group_key: Some(alias_a),
+                ..OpenAiUsageQuery::default()
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            strict_a
+                .layer_summaries
+                .iter()
+                .find(|layer| layer.ledger_layer == LEDGER_LAYER_CANDIDATE_UNATTRIBUTED)
+                .map(|layer| layer.request_count),
+            Some(1)
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 
