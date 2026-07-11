@@ -40,12 +40,40 @@ function formatCostMicros(locale: UsageWorkspaceView["locale"], value: number): 
 function formatUsageCost(
   cost: OpenAiUsageCostBreakdown,
   locale: UsageWorkspaceView["locale"],
+  models: readonly OpenAiUsageModelSummary[] = [],
 ): string {
+  const unpricedModels = [...new Set(
+    models
+      .filter((model) => !model.priced || model.cost.unpriced_tokens > 0)
+      .map((model) => model.model.trim())
+      .filter(Boolean),
+  )].sort();
+  const reason = cost.unpriced_tokens > 0
+    ? t(locale, "usageCostUnpriceableReason", {
+        tokens: formatInteger(locale, cost.unpriced_tokens),
+        models: unpricedModels.length > 0
+          ? unpricedModels.join(", ")
+          : t(locale, "usageUnknown"),
+      })
+    : "";
   if (cost.unpriced_tokens > 0 && cost.total_cost_micros === 0) {
-    return "N/A";
+    return `<span class="usage-cost usage-cost--unpriced" title="${escapeHtml(reason)}">${t(locale, "usageCostUnpriceable")}</span>`;
   }
   if (cost.unpriced_tokens > 0) {
-    return `${formatCostMicros(locale, cost.total_cost_micros)} ${t(locale, "usageCostPartial")}`;
+    return `<span class="usage-cost usage-cost--partial"><span>${formatCostMicros(locale, cost.total_cost_micros)}</span><span class="usage-cost-status" title="${escapeHtml(reason)}">${t(locale, "usageCostPartiallyPriced")}</span></span>`;
+  }
+  return formatCostMicros(locale, cost.total_cost_micros);
+}
+
+function formatUsageCostText(
+  cost: OpenAiUsageCostBreakdown,
+  locale: UsageWorkspaceView["locale"],
+): string {
+  if (cost.unpriced_tokens > 0 && cost.total_cost_micros === 0) {
+    return t(locale, "usageCostUnpriceable");
+  }
+  if (cost.unpriced_tokens > 0) {
+    return `${formatCostMicros(locale, cost.total_cost_micros)} ${t(locale, "usageCostPartiallyPriced")}`;
   }
   return formatCostMicros(locale, cost.total_cost_micros);
 }
@@ -157,7 +185,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
       </article>
       <article class="usage-hero-card">
         <span>${t(context.view.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageNonOfficialEstimate")}</span>
-        <strong>${formatUsageCost(summary.cost, context.view.locale)}</strong>
+        <strong>${formatUsageCost(summary.cost, context.view.locale, summary.models)}</strong>
         <small>${summary.pricing_source} · ${pricingSourceHost(summary.pricing_source_url)} · ${summary.pricing_checked_at}</small>
       </article>
       <article class="usage-hero-card">
@@ -403,14 +431,24 @@ function renderUsageRefreshButton(context: UsageRenderContext): void {
   if (!button) {
     return;
   }
-  const busy = context.view.refreshInFlight;
-  button.textContent = context.view.refreshQueued
+  const busy = context.view.refreshInFlight || context.view.refreshQueued;
+  const label = context.view.refreshQueued
     ? t(context.view.locale, "usageRefreshQueued")
     : busy
       ? t(context.view.locale, "usageRefreshing")
       : t(context.view.locale, "usageRefresh");
+  button.innerHTML = `
+    <span class="usage-refresh-label">${label}</span>
+    <span class="usage-refresh-dots" aria-hidden="true">
+      <span class="usage-refresh-dot"></span>
+      <span class="usage-refresh-dot"></span>
+      <span class="usage-refresh-dot"></span>
+    </span>
+  `;
   button.classList.toggle("usage-refresh-button--busy", busy);
   button.setAttribute("aria-busy", busy ? "true" : "false");
+  button.setAttribute("aria-label", label);
+  button.disabled = busy;
   if (busy) {
     button.setAttribute("aria-disabled", "true");
   } else {
@@ -594,20 +632,36 @@ function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly Ope
     return "";
   }
   const rows = accounts.map((account) => {
-    const profiles = usageAccountProfiles(account);
     const selectedClass = view.profileFilter === usageAccountFilterKey(account)
       ? ` class="usage-table-row--selected"`
       : "";
+    const attributionBreakdown = account.attribution_breakdown
+      .filter((layer) => layer.request_count > 0 || layer.tokens.real_total_tokens > 0)
+      .map((layer) => {
+        const strict = layer.ledger_layer === "strict_proven";
+        const legacy = layer.ledger_layer === "legacy_profile_attributed";
+        const label = strict
+          ? t(view.locale, "usageAttributionStrict")
+          : legacy
+            ? t(view.locale, "usageAttributionLegacy")
+            : formatUsageLayerLabel(view, layer.ledger_layer);
+        const modifier = strict ? "strict" : legacy ? "legacy" : "other";
+        return `
+          <span class="usage-attribution-badge usage-attribution-badge--${modifier}">
+            <span>${escapeHtml(label)}</span>
+            <small>${formatInteger(view.locale, layer.request_count)} ${t(view.locale, "usageRequests")} · ${formatInteger(view.locale, layer.tokens.real_total_tokens)} ${t(view.locale, "usageTokens")}</small>
+          </span>
+        `;
+      })
+      .join("");
     return `
     <tr${selectedClass}>
-      <td>${escapeHtml(profiles.join(", "))}</td>
-      <td>${escapeHtml(account.account_label ?? "--")}</td>
-      <td>${escapeHtml(formatUsageLayerLabel(view, account.ledger_layer))}</td>
-      <td>${escapeHtml(formatUsageAttributionKind(view, account.attribution_kind))}</td>
+      <td class="usage-table-cell--account">${escapeHtml(account.account_label ?? "--")}</td>
+      <td><div class="usage-attribution-breakdown">${attributionBreakdown || "--"}</div></td>
       <td>${escapeHtml(account.official_source)}</td>
       <td>${formatInteger(view.locale, account.request_count)}</td>
       <td>${formatInteger(view.locale, account.tokens.real_total_tokens)}</td>
-      <td>${formatUsageCost(account.cost, view.locale)}</td>
+      <td>${formatUsageCost(account.cost, view.locale, account.models)}</td>
     </tr>
   `;
   }).join("");
@@ -618,10 +672,8 @@ function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly Ope
         <table class="usage-table">
           <thead>
             <tr>
-              <th>${t(view.locale, "usageProfile")}</th>
               <th>${t(view.locale, "usageAccount")}</th>
-              <th>${t(view.locale, "usageLedgerLayer")}</th>
-              <th>${t(view.locale, "usageAttributionKind")}</th>
+              <th>${t(view.locale, "usageAttributionBreakdown")}</th>
               <th>${t(view.locale, "usageOfficialSource")}</th>
               <th>${t(view.locale, "usageRequests")}</th>
               <th>${t(view.locale, "usageTokens")}</th>
@@ -653,7 +705,7 @@ function buildUsageModelTable(view: UsageWorkspaceView, summary: OpenAiUsageSumm
       <td>${formatInteger(view.locale, model.tokens.input_tokens)}</td>
       <td>${formatInteger(view.locale, model.tokens.cached_input_tokens)}</td>
       <td>${formatInteger(view.locale, model.tokens.output_tokens)}</td>
-      <td>${formatUsageCost(model.cost, view.locale)}</td>
+      <td>${formatUsageCost(model.cost, view.locale, [model])}</td>
       <td>${escapeHtml(formatUsagePricingCell(view, model.priced, model.pricing_tier, model.pricing_source_url))}</td>
     </tr>
   `).join("");
@@ -977,7 +1029,7 @@ function buildUsageTrendTooltipRows(view: UsageWorkspaceView, point: UsageTrendP
     `${t(view.locale, "usageCachedInput")}: ${formatInteger(view.locale, point.tokens.cached_input_tokens)}`,
     `${t(view.locale, "usageOutput")}: ${formatInteger(view.locale, point.tokens.output_tokens)}`,
     `${t(view.locale, "usageReasoning")}: ${formatInteger(view.locale, point.tokens.reasoning_output_tokens)}`,
-    `${t(view.locale, "usageCost")}: ${formatUsageCost(point.cost, view.locale)}`,
+    `${t(view.locale, "usageCost")}: ${formatUsageCostText(point.cost, view.locale)}`,
   ];
 }
 
