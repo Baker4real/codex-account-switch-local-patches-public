@@ -40,19 +40,14 @@ function formatCostMicros(locale: UsageWorkspaceView["locale"], value: number): 
 function formatUsageCost(
   cost: OpenAiUsageCostBreakdown,
   locale: UsageWorkspaceView["locale"],
-  models: readonly OpenAiUsageModelSummary[] = [],
+  unpricedModels: readonly string[] = [],
 ): string {
-  const unpricedModels = [...new Set(
-    models
-      .filter((model) => !model.priced || model.cost.unpriced_tokens > 0)
-      .map((model) => model.model.trim())
-      .filter(Boolean),
-  )].sort();
+  const modelNames = [...new Set(unpricedModels.map((model) => model.trim()).filter(Boolean))].sort();
   const reason = cost.unpriced_tokens > 0
     ? t(locale, "usageCostUnpriceableReason", {
         tokens: formatInteger(locale, cost.unpriced_tokens),
-        models: unpricedModels.length > 0
-          ? unpricedModels.join(", ")
+        models: modelNames.length > 0
+          ? modelNames.join(", ")
           : t(locale, "usageUnknown"),
       })
     : "";
@@ -63,6 +58,12 @@ function formatUsageCost(
     return `<span class="usage-cost usage-cost--partial"><span>${formatCostMicros(locale, cost.total_cost_micros)}</span><span class="usage-cost-status" title="${escapeHtml(reason)}">${t(locale, "usageCostPartiallyPriced")}</span></span>`;
   }
   return formatCostMicros(locale, cost.total_cost_micros);
+}
+
+function usageUnpricedModelNames(models: readonly OpenAiUsageModelSummary[]): string[] {
+  return models
+    .filter((model) => !model.priced || model.cost.unpriced_tokens > 0)
+    .map((model) => model.model);
 }
 
 function formatUsageCostText(
@@ -185,7 +186,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
       </article>
       <article class="usage-hero-card">
         <span>${t(context.view.locale, summary.cost.unpriced_tokens > 0 ? "usagePricedCost" : "usageNonOfficialEstimate")}</span>
-        <strong>${formatUsageCost(summary.cost, context.view.locale, summary.models)}</strong>
+        <strong>${formatUsageCost(summary.cost, context.view.locale, usageUnpricedModelNames(summary.models))}</strong>
         <small>${summary.pricing_source} · ${pricingSourceHost(summary.pricing_source_url)} · ${summary.pricing_checked_at}</small>
       </article>
       <article class="usage-hero-card">
@@ -661,7 +662,7 @@ function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly Ope
       <td>${escapeHtml(account.official_source)}</td>
       <td>${formatInteger(view.locale, account.request_count)}</td>
       <td>${formatInteger(view.locale, account.tokens.real_total_tokens)}</td>
-      <td>${formatUsageCost(account.cost, view.locale, account.models)}</td>
+      <td>${formatUsageCost(account.cost, view.locale, usageUnpricedModelNames(account.models))}</td>
     </tr>
   `;
   }).join("");
@@ -705,7 +706,7 @@ function buildUsageModelTable(view: UsageWorkspaceView, summary: OpenAiUsageSumm
       <td>${formatInteger(view.locale, model.tokens.input_tokens)}</td>
       <td>${formatInteger(view.locale, model.tokens.cached_input_tokens)}</td>
       <td>${formatInteger(view.locale, model.tokens.output_tokens)}</td>
-      <td>${formatUsageCost(model.cost, view.locale, [model])}</td>
+      <td>${formatUsageCost(model.cost, view.locale, usageUnpricedModelNames([model]))}</td>
       <td>${escapeHtml(formatUsagePricingCell(view, model.priced, model.pricing_tier, model.pricing_source_url))}</td>
     </tr>
   `).join("");
@@ -1078,7 +1079,7 @@ function buildUsageLogsTable(view: UsageWorkspaceView): string {
       <td class="usage-table-cell--model">${buildUsageModelEvidenceCell(view, log)}</td>
       <td class="usage-table-cell--evidence">${buildUsageRequestEvidenceCell(view, log)}</td>
       <td>${formatInteger(view.locale, log.tokens.real_total_tokens)}</td>
-      <td>${formatUsageCost(log.cost, view.locale)}</td>
+      <td>${formatUsageCost(log.cost, view.locale, !log.priced || log.cost.unpriced_tokens > 0 ? [log.model] : [])}</td>
       <td>${escapeHtml(formatUsagePricingCell(view, log.priced, log.pricing_tier, log.pricing_source_url))}</td>
       <td>${escapeHtml(log.data_source)}</td>
     </tr>

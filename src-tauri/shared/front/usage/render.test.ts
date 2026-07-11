@@ -63,13 +63,20 @@ class FakeElement {
   }
 }
 
-function fakeElements(): { elements: UsageElements; refresh: FakeElement; account: FakeElement } {
+function fakeElements(): {
+  elements: UsageElements;
+  refresh: FakeElement;
+  account: FakeElement;
+  detail: FakeElement;
+} {
   const refresh = new FakeElement();
   const account = new FakeElement();
+  const detail = new FakeElement();
   const element = () => new FakeElement();
   return {
     refresh,
     account,
+    detail,
     elements: {
       refreshButton: refresh as unknown as HTMLButtonElement,
       rangeButton: element() as unknown as HTMLButtonElement,
@@ -82,7 +89,7 @@ function fakeElements(): { elements: UsageElements; refresh: FakeElement; accoun
       accountPanel: account as unknown as HTMLDivElement,
       summaryPanel: new FakeElement() as unknown as HTMLDivElement,
       trendPanel: new FakeElement() as unknown as HTMLDivElement,
-      detailPanel: new FakeElement() as unknown as HTMLDivElement,
+      detailPanel: detail as unknown as HTMLDivElement,
     },
   };
 }
@@ -205,8 +212,9 @@ function viewFor(accountSummary: OpenAiUsageAccountSummary): UsageWorkspaceView 
 
 describe("renderUsage account presentation", () => {
   it("按 canonical 账号渲染一行及严格/推定拆分，并移除来源槽位", () => {
+    const value = account();
     const { elements, account: accountPanel } = fakeElements();
-    renderUsage(elements, viewFor(account()));
+    renderUsage(elements, viewFor(value));
 
     expect(accountPanel.innerHTML.match(/<tbody>[\s\S]*?<tr/g)).toHaveLength(1);
     expect(accountPanel.innerHTML).not.toContain("来源槽位");
@@ -214,7 +222,38 @@ describe("renderUsage account presentation", () => {
     expect(accountPanel.innerHTML).toContain("严格");
     expect(accountPanel.innerHTML).toContain("推定");
     expect(accountPanel.innerHTML).toContain("120");
+    expect(accountPanel.innerHTML).toMatch(/严格<\/span>\s*<small>1 请求数 · 60 TOKENS<\/small>/);
+    expect(accountPanel.innerHTML).toMatch(/推定<\/span>\s*<small>1 请求数 · 60 TOKENS<\/small>/);
     expect(accountPanel.innerHTML.match(/class="usage-attribution-badge /g)).toHaveLength(2);
+    expect(value.attribution_breakdown
+      .reduce((total, layer) => total + layer.tokens.real_total_tokens, 0))
+      .toBe(value.tokens.real_total_tokens);
+  });
+
+  it("单独保留未知归属层且不误标为严格或推定", () => {
+    const value = account();
+    value.request_count = 3;
+    value.tokens = {
+      ...value.tokens,
+      input_tokens: 100,
+      real_total_tokens: 130,
+    };
+    value.attribution_breakdown = [
+      ...value.attribution_breakdown.slice(0, 2),
+      {
+        ledger_layer: "future_layer<unsafe>",
+        request_count: 1,
+        tokens: { ...zeroTokens, input_tokens: 10, real_total_tokens: 10 },
+        cost: { ...zeroCost },
+      },
+    ];
+    const { elements, account: accountPanel } = fakeElements();
+    renderUsage(elements, viewFor(value));
+
+    expect(accountPanel.innerHTML).toContain("future_layer&lt;unsafe&gt;");
+    expect(accountPanel.innerHTML.match(/usage-attribution-badge--strict/g)).toHaveLength(1);
+    expect(accountPanel.innerHTML.match(/usage-attribution-badge--legacy/g)).toHaveLength(1);
+    expect(accountPanel.innerHTML.match(/usage-attribution-badge--other/g)).toHaveLength(1);
   });
 
   it("全未定价展示 token、转义后的模型和不近似说明", () => {
@@ -254,6 +293,42 @@ describe("renderUsage account presentation", () => {
     expect(accountPanel.innerHTML).not.toContain("N/A");
     expect(accountPanel.innerHTML).not.toContain("$0.0000");
   });
+
+  it("请求日志的未定价原因使用并转义该行模型名", () => {
+    const value = account();
+    const view = viewFor(value);
+    view.logs!.data = [{
+      request_id: "req-1",
+      session_id: "session-1",
+      profile: "a",
+      account_label: "same@example.com",
+      official_source: "OpenAI default",
+      ledger_layer: "strict_proven",
+      attribution_kind: "strict_account",
+      model: "gpt-log<unsafe>",
+      requested_model: null,
+      pricing_model: null,
+      model_reasoning_effort: null,
+      model_verbosity: null,
+      pricing_tier: null,
+      pricing_source_url: null,
+      tokens: { ...zeroTokens, input_tokens: 10, real_total_tokens: 10 },
+      cost: { ...zeroCost, unpriced_tokens: 10 },
+      priced: false,
+      pricing_note: null,
+      status_code: 200,
+      created_at_ms: 0,
+      data_source: "response_item",
+      usage_confidence: "strict",
+    }];
+    view.logs!.total = 1;
+    const { elements, detail } = fakeElements();
+    renderUsage(elements, view);
+
+    expect(detail.innerHTML).toContain("模型 gpt-log&lt;unsafe&gt;；未按近似模型估算");
+    expect(detail.innerHTML).not.toContain("模型 未知；未按近似模型估算");
+    expect(detail.innerHTML).not.toContain("gpt-log<unsafe>");
+  });
 });
 
 describe("renderUsage refresh states", () => {
@@ -274,5 +349,29 @@ describe("renderUsage refresh states", () => {
     expect(refresh.innerHTML).toContain('usage-refresh-dots" aria-hidden="true"');
     expect(refresh.getAttribute("aria-busy")).toBe(ariaBusy);
     expect(refresh.disabled).toBe(disabled);
+  });
+
+  it("在同一按钮上从 busy、仅 queued 恢复 idle 并清除全部忙碌语义", () => {
+    const { elements, refresh } = fakeElements();
+    const base = viewFor(account());
+
+    renderUsage(elements, { ...base, refreshInFlight: true, refreshQueued: false });
+    expect(refresh.classList.contains("usage-refresh-button--busy")).toBe(true);
+    expect(refresh.getAttribute("aria-busy")).toBe("true");
+    expect(refresh.getAttribute("aria-disabled")).toBe("true");
+    expect(refresh.disabled).toBe(true);
+
+    renderUsage(elements, { ...base, refreshInFlight: false, refreshQueued: true });
+    expect(refresh.innerHTML).toContain("已排队");
+    expect(refresh.classList.contains("usage-refresh-button--busy")).toBe(true);
+    expect(refresh.getAttribute("aria-busy")).toBe("true");
+    expect(refresh.getAttribute("aria-disabled")).toBe("true");
+    expect(refresh.disabled).toBe(true);
+
+    renderUsage(elements, { ...base, refreshInFlight: false, refreshQueued: false });
+    expect(refresh.classList.contains("usage-refresh-button--busy")).toBe(false);
+    expect(refresh.getAttribute("aria-busy")).toBe("false");
+    expect(refresh.getAttribute("aria-disabled")).toBeNull();
+    expect(refresh.disabled).toBe(false);
   });
 });
