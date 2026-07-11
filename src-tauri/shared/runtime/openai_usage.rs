@@ -141,6 +141,7 @@ struct AccountAggregate {
     attribution_window_id: Option<String>,
     aggregate: Aggregate,
     models: BTreeMap<String, ModelAggregate>,
+    attribution_breakdown: BTreeMap<String, Aggregate>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -781,9 +782,13 @@ fn build_summary_from_facts_with_resolver(
 ) -> OpenAiUsageSummary {
     let mut accounts: BTreeMap<String, AccountAggregate> = BTreeMap::new();
     let mut global_models: BTreeMap<String, ModelAggregate> = BTreeMap::new();
+    #[cfg(any(test, debug_assertions))]
+    let mut expected_total = Aggregate::default();
     let label_identities = strict_label_identities(facts);
 
     for fact in facts.iter().filter(|fact| fact_matches_query(fact, query)) {
+        #[cfg(any(test, debug_assertions))]
+        add_to_aggregate(&mut expected_total, fact.delta, &fact.cost.breakdown);
         add_fact_usage(
             &mut accounts,
             &mut global_models,
@@ -794,6 +799,8 @@ fn build_summary_from_facts_with_resolver(
     }
 
     let total = total_account_aggregate(&accounts);
+    #[cfg(any(test, debug_assertions))]
+    assert_usage_conservation(&accounts, &expected_total, &total);
     summary.total_requests = total.requests;
     summary.tokens = total.tokens;
     summary.cost = total.cost;
@@ -3595,6 +3602,14 @@ fn add_event_usage(
             ..AccountAggregate::default()
         });
     add_to_aggregate(&mut account.aggregate, event.delta, &event.cost.breakdown);
+    add_to_aggregate(
+        account
+            .attribution_breakdown
+            .entry(LEDGER_LAYER_STRICT_PROVEN.to_string())
+            .or_default(),
+        event.delta,
+        &event.cost.breakdown,
+    );
     add_to_model(
         account.models.entry(event.model.clone()).or_default(),
         event.delta,
@@ -3656,6 +3671,14 @@ fn add_fact_usage(
         account.attribution_window_id = None;
     }
     add_to_aggregate(&mut account.aggregate, fact.delta, &fact.cost.breakdown);
+    add_to_aggregate(
+        account
+            .attribution_breakdown
+            .entry(attribution_breakdown_bucket(&fact.ledger_layer))
+            .or_default(),
+        fact.delta,
+        &fact.cost.breakdown,
+    );
     add_to_model(
         account.models.entry(fact.model.clone()).or_default(),
         fact.delta,
@@ -3678,6 +3701,16 @@ fn add_fact_usage(
         &fact.pricing_tier,
         &fact.pricing_source_url,
     );
+}
+
+fn attribution_breakdown_bucket(ledger_layer: &str) -> String {
+    match ledger_layer {
+        LEDGER_LAYER_STRICT_PROVEN => LEDGER_LAYER_STRICT_PROVEN.to_string(),
+        LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED => {
+            LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED.to_string()
+        }
+        unknown => unknown.to_string(),
+    }
 }
 
 fn new_account_aggregate(account_group_key: String, fact: &UsageFact) -> AccountAggregate {
@@ -3800,6 +3833,115 @@ fn total_account_aggregate(accounts: &BTreeMap<String, AccountAggregate>) -> Agg
             .saturating_add(account.aggregate.cost.unpriced_tokens);
     }
     total
+}
+
+#[cfg(any(test, debug_assertions))]
+fn assert_usage_conservation(
+    accounts: &BTreeMap<String, AccountAggregate>,
+    expected_total: &Aggregate,
+    actual_total: &Aggregate,
+) {
+    for (account_group_key, account) in accounts {
+        let mut breakdown_total = Aggregate::default();
+        for (ledger_layer, layer) in &account.attribution_breakdown {
+            assert_real_total_conservation(
+                &format!("{account_group_key}/{ledger_layer}"),
+                &layer.tokens,
+            );
+            add_aggregate(&mut breakdown_total, layer);
+        }
+        assert_aggregate_conservation(account_group_key, &account.aggregate, &breakdown_total);
+        assert_real_total_conservation(account_group_key, &account.aggregate.tokens);
+    }
+    assert_aggregate_conservation("global", expected_total, actual_total);
+    assert_real_total_conservation("global", &actual_total.tokens);
+}
+
+#[cfg(any(test, debug_assertions))]
+fn assert_aggregate_conservation(
+    account_group_key: &str,
+    expected: &Aggregate,
+    actual: &Aggregate,
+) {
+    assert_conserved_value(
+        account_group_key,
+        "requests",
+        expected.requests,
+        actual.requests,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "input_tokens",
+        expected.tokens.input_tokens,
+        actual.tokens.input_tokens,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "cached_input_tokens",
+        expected.tokens.cached_input_tokens,
+        actual.tokens.cached_input_tokens,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "output_tokens",
+        expected.tokens.output_tokens,
+        actual.tokens.output_tokens,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "reasoning_output_tokens",
+        expected.tokens.reasoning_output_tokens,
+        actual.tokens.reasoning_output_tokens,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "real_total_tokens",
+        expected.tokens.real_total_tokens,
+        actual.tokens.real_total_tokens,
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn assert_real_total_conservation(account_group_key: &str, tokens: &OpenAiUsageTokenTotals) {
+    assert_conserved_value(
+        account_group_key,
+        "real_total_tokens",
+        tokens.input_tokens.saturating_add(tokens.output_tokens),
+        tokens.real_total_tokens,
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn assert_conserved_value(account_group_key: &str, metric: &str, expected: u64, actual: u64) {
+    assert_eq!(
+        actual, expected,
+        "usage conservation failed: account_group_key={account_group_key}, metric={metric}, expected={expected}, actual={actual}"
+    );
+}
+
+#[cfg(any(test, debug_assertions))]
+fn add_aggregate(target: &mut Aggregate, source: &Aggregate) {
+    target.requests = target.requests.saturating_add(source.requests);
+    target.tokens.input_tokens = target
+        .tokens
+        .input_tokens
+        .saturating_add(source.tokens.input_tokens);
+    target.tokens.cached_input_tokens = target
+        .tokens
+        .cached_input_tokens
+        .saturating_add(source.tokens.cached_input_tokens);
+    target.tokens.output_tokens = target
+        .tokens
+        .output_tokens
+        .saturating_add(source.tokens.output_tokens);
+    target.tokens.reasoning_output_tokens = target
+        .tokens
+        .reasoning_output_tokens
+        .saturating_add(source.tokens.reasoning_output_tokens);
+    target.tokens.real_total_tokens = target
+        .tokens
+        .real_total_tokens
+        .saturating_add(source.tokens.real_total_tokens);
 }
 
 fn add_to_model(
@@ -3995,6 +4137,16 @@ fn account_to_summary(account: AccountAggregate) -> OpenAiUsageAccountSummary {
         tokens: account.aggregate.tokens,
         cost: account.aggregate.cost,
         models: models_to_summary(account.models),
+        attribution_breakdown: account
+            .attribution_breakdown
+            .into_iter()
+            .map(|(ledger_layer, aggregate)| OpenAiUsageLayerSummary {
+                ledger_layer,
+                request_count: aggregate.requests,
+                tokens: aggregate.tokens,
+                cost: aggregate.cost,
+            })
+            .collect(),
     }
 }
 
@@ -6624,6 +6776,143 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_preserves_token_conservation_across_attribution_layers() {
+        let codex_home = temp_codex_home("dashboard-attribution-layer-conservation");
+        let evidence_ids = seed_usage_fact_fixture(
+            &codex_home,
+            "attribution-layer-conservation",
+            &[(10, 1), (30, 3)],
+        );
+        let account_alias = identity::account_id_alias(Some("acct_conservation")).unwrap();
+        let fixtures = [
+            confirmed_identity_fact(
+                "e-strict-100",
+                "r-strict-100",
+                "p",
+                "identity-conservation",
+                &account_alias,
+                "100",
+                100,
+            ),
+            legacy_identity_fact(
+                "e-legacy-150",
+                "r-legacy-150",
+                "p",
+                "legacy-p-150",
+                "150",
+                150,
+            ),
+        ];
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (old_evidence_id, fixture) in evidence_ids.iter().zip(fixtures.iter()) {
+            rewrite_identity_fact(&conn, old_evidence_id, fixture);
+        }
+        conn.execute(
+            "UPDATE openai_usage_facts SET cached_input_tokens = 4, reasoning_output_tokens = 1 WHERE evidence_id = 'e-strict-100'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE openai_usage_facts SET cached_input_tokens = 6, reasoning_output_tokens = 2 WHERE evidence_id = 'e-legacy-150'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        let dashboard = load_combined_dashboard(&codex_home);
+
+        assert_eq!(dashboard.account_summary.len(), 1);
+        let account = &dashboard.account_summary[0];
+        assert_eq!(account.request_count, 2);
+        assert_eq!(account.tokens.input_tokens, 30);
+        assert_eq!(account.tokens.output_tokens, 3);
+        assert_eq!(account.tokens.real_total_tokens, 33);
+        assert_eq!(
+            account.tokens.real_total_tokens,
+            account.tokens.input_tokens + account.tokens.output_tokens
+        );
+
+        let breakdown = account
+            .attribution_breakdown
+            .iter()
+            .map(|layer| (layer.ledger_layer.as_str(), layer))
+            .collect::<BTreeMap<_, _>>();
+        let strict = breakdown.get(LEDGER_LAYER_STRICT_PROVEN).unwrap();
+        assert_eq!(strict.request_count, 1);
+        assert_eq!(strict.tokens.input_tokens, 10);
+        assert_eq!(strict.tokens.cached_input_tokens, 4);
+        assert_eq!(strict.tokens.output_tokens, 1);
+        assert_eq!(strict.tokens.reasoning_output_tokens, 1);
+        assert_eq!(strict.tokens.real_total_tokens, 11);
+        let legacy = breakdown
+            .get(LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED)
+            .unwrap();
+        assert_eq!(legacy.request_count, 1);
+        assert_eq!(legacy.tokens.input_tokens, 20);
+        assert_eq!(legacy.tokens.cached_input_tokens, 6);
+        assert_eq!(legacy.tokens.output_tokens, 2);
+        assert_eq!(legacy.tokens.reasoning_output_tokens, 2);
+        assert_eq!(legacy.tokens.real_total_tokens, 22);
+
+        assert_eq!(
+            account
+                .attribution_breakdown
+                .iter()
+                .map(|layer| layer.request_count)
+                .sum::<u64>(),
+            account.request_count
+        );
+        assert_eq!(
+            account
+                .attribution_breakdown
+                .iter()
+                .map(|layer| layer.tokens.real_total_tokens)
+                .sum::<u64>(),
+            account.tokens.real_total_tokens
+        );
+        assert_eq!(dashboard.summary.total_requests, 2);
+        assert_eq!(dashboard.summary.tokens.real_total_tokens, 33);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|summary| summary.tokens.real_total_tokens)
+                .sum::<u64>(),
+            dashboard.summary.tokens.real_total_tokens
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn calculates_cost_without_double_counting_reasoning_tokens() {
+        let codex_home = temp_codex_home("cost-token-subset-conservation");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-cost-conservation"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":2}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        assert_eq!(dashboard.summary.tokens.input_tokens, 100);
+        assert_eq!(dashboard.summary.tokens.cached_input_tokens, 20);
+        assert_eq!(dashboard.summary.tokens.output_tokens, 10);
+        assert_eq!(dashboard.summary.tokens.reasoning_output_tokens, 2);
+        assert_eq!(dashboard.summary.tokens.real_total_tokens, 110);
+        assert_eq!(dashboard.summary.cost.input_cost_micros, 140);
+        assert_eq!(dashboard.summary.cost.cached_input_cost_micros, 4);
+        assert_eq!(dashboard.summary.cost.output_cost_micros, 140);
+        assert_eq!(dashboard.summary.cost.total_cost_micros, 284);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn dashboard_ambiguous_confirmed_cohort_keeps_previous_prior_or_unknown() {
         let codex_home = temp_codex_home("dashboard-ambiguous-confirmed-cohort");
         let evidence_ids = seed_usage_fact_fixture(
@@ -8500,6 +8789,15 @@ mod tests {
             LEDGER_LAYER_CANDIDATE_UNATTRIBUTED
         );
         assert_eq!(candidate_dashboard.summary.total_requests, 1);
+        assert_eq!(candidate_dashboard.summary.accounts.len(), 1);
+        assert_eq!(
+            candidate_dashboard.summary.accounts[0]
+                .attribution_breakdown
+                .iter()
+                .map(|layer| layer.ledger_layer.as_str())
+                .collect::<Vec<_>>(),
+            vec![LEDGER_LAYER_CANDIDATE_UNATTRIBUTED]
+        );
         conn.execute(
             "UPDATE openai_usage_evidence SET model = NULL WHERE decision = 'candidate'",
             [],

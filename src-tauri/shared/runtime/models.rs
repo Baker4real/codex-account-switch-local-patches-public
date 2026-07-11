@@ -314,6 +314,8 @@ pub struct OpenAiUsageAccountSummary {
     pub tokens: OpenAiUsageTokenTotals,
     pub cost: OpenAiUsageCostBreakdown,
     pub models: Vec<OpenAiUsageModelSummary>,
+    #[serde(default)]
+    pub attribution_breakdown: Vec<OpenAiUsageLayerSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
