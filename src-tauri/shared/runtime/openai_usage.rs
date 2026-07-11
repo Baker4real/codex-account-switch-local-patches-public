@@ -5051,6 +5051,11 @@ mod tests {
                 i64::try_from(ts("2999-01-01T00:00:02.000Z")).unwrap(),
             ),
         );
+        conn.execute(
+            "UPDATE openai_usage_facts SET account_label = 'legacy-alias@example.com' WHERE evidence_id = 'e-alias-legacy'",
+            [],
+        )
+        .unwrap();
         drop(conn);
 
         let base_query = OpenAiUsageQuery {
@@ -5077,13 +5082,14 @@ mod tests {
             email_alias,
             legacy_key,
             raw_legacy_key.to_string(),
+            "label:legacy-alias@example.com".to_string(),
         ] {
             let query = OpenAiUsageQuery {
                 account_group_key: Some(query_key.clone()),
                 ..base_query.clone()
             };
             let dashboard =
-                load_openai_usage_dashboard(Some(&codex_home), Some(query.clone()), 1, 20).unwrap();
+                load_openai_usage_dashboard(Some(&codex_home), Some(query.clone()), 1, 1).unwrap();
             let trends = load_openai_usage_trends(Some(&codex_home), Some(query.clone())).unwrap();
             let logs =
                 load_openai_usage_request_logs(Some(&codex_home), Some(query), 1, 20).unwrap();
@@ -5092,9 +5098,19 @@ mod tests {
                 dashboard.summary.tokens.real_total_tokens, 176,
                 "{query_key}"
             );
+            assert_eq!(dashboard.logs.total, 2, "{query_key}");
+            assert_eq!(dashboard.logs.data.len(), 1, "{query_key}");
             assert_eq!(
                 trends.iter().map(|point| point.request_count).sum::<u64>(),
                 2,
+                "{query_key}"
+            );
+            assert_eq!(
+                trends
+                    .iter()
+                    .map(|point| point.tokens.real_total_tokens)
+                    .sum::<u64>(),
+                176,
                 "{query_key}"
             );
             assert_eq!(logs.total, 2, "{query_key}");
@@ -5121,6 +5137,80 @@ mod tests {
         assert_eq!(legacy_dashboard.summary.total_requests, 1);
         assert_eq!(legacy_dashboard.logs.total, 1);
         assert_eq!(legacy_dashboard.logs.data[0].request_id, "r-alias-legacy");
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn legacy_email_label_raw_keys_remain_filterable_without_prior_identity() {
+        let codex_home = temp_codex_home("legacy-email-label-raw-filter");
+        let evidence_ids =
+            seed_usage_fact_fixture(&codex_home, "legacy-email-label-raw-filter", &[(100, 10)]);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        rewrite_identity_fact(
+            &conn,
+            &evidence_ids[0],
+            &legacy_identity_fact(
+                "e-legacy-email-label",
+                "r-legacy-email-label",
+                "legacy-profile",
+                "legacy-production-email",
+                "0100",
+                i64::try_from(ts("2999-01-01T00:00:01.000Z")).unwrap(),
+            ),
+        );
+        conn.execute(
+            "UPDATE openai_usage_facts SET account_label = 'legacy-production@example.com' WHERE evidence_id = 'e-legacy-email-label'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let base_query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-01T00:00:02.000Z") / 1000) as i64),
+            scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+            ..OpenAiUsageQuery::default()
+        };
+        let dashboard =
+            load_openai_usage_dashboard(Some(&codex_home), Some(base_query.clone()), 1, 20)
+                .unwrap();
+        assert_eq!(
+            dashboard.account_summary[0].account_group_key.as_deref(),
+            Some("legacy:legacy-production-email")
+        );
+        for key in [
+            "legacy-production-email",
+            "legacy:legacy-production-email",
+            "label:legacy-production@example.com",
+        ] {
+            let query = OpenAiUsageQuery {
+                account_group_key: Some(key.to_string()),
+                ..base_query.clone()
+            };
+            let filtered =
+                load_openai_usage_dashboard(Some(&codex_home), Some(query.clone()), 1, 1).unwrap();
+            let trends = load_openai_usage_trends(Some(&codex_home), Some(query.clone())).unwrap();
+            let logs =
+                load_openai_usage_request_logs(Some(&codex_home), Some(query), 1, 20).unwrap();
+            assert_eq!(filtered.summary.total_requests, 1, "{key}");
+            assert_eq!(filtered.summary.tokens.real_total_tokens, 110, "{key}");
+            assert_eq!(filtered.logs.total, 1, "{key}");
+            assert_eq!(filtered.logs.data.len(), 1, "{key}");
+            assert_eq!(
+                trends.iter().map(|point| point.request_count).sum::<u64>(),
+                1,
+                "{key}"
+            );
+            assert_eq!(
+                trends
+                    .iter()
+                    .map(|point| point.tokens.real_total_tokens)
+                    .sum::<u64>(),
+                110,
+                "{key}"
+            );
+            assert_eq!(logs.total, 1, "{key}");
+            assert_eq!(logs.data[0].request_id, "r-legacy-email-label", "{key}");
+        }
         let _ = fs::remove_dir_all(&codex_home);
     }
 
@@ -7116,8 +7206,15 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(
-            accounts.get("acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829"),
-            Some(&2)
+            accounts,
+            BTreeMap::from([
+                (
+                    "acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829"
+                        .to_string(),
+                    2
+                ),
+                ("legacy:legacy_profile:legacy:32472144005000".to_string(), 1),
+            ])
         );
         assert_eq!(
             accounts.get("legacy:legacy_profile:legacy:32472144005000"),

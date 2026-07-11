@@ -259,6 +259,23 @@ impl CanonicalAccountResolver {
                     .insert(canonical.clone());
             }
         }
+        for (index, fact) in facts.iter().enumerate() {
+            if is_latest_prior_eligible(fact) {
+                continue;
+            }
+            let Some(canonical) = canonical_by_root.get(&roots[index]) else {
+                continue;
+            };
+            for fallback in [
+                fallback_keys[index].clone(),
+                raw_identity_independent_fallback(fact),
+            ] {
+                canonical_by_node
+                    .entry(IdentityNode::Fallback(fallback))
+                    .or_default()
+                    .insert(canonical.clone());
+            }
+        }
 
         let mut trusted_canonical_by_evidence = BTreeMap::new();
         for (index, fact) in facts.iter().enumerate() {
@@ -275,6 +292,37 @@ impl CanonicalAccountResolver {
                 global_trusted.canonical.clone()
             };
             trusted_canonical_by_evidence.insert(fact.evidence_id.clone(), trusted_canonical);
+        }
+        let mut trusted_canonicals_by_fallback = BTreeMap::<IdentityNode, BTreeSet<String>>::new();
+        for (index, fact) in facts.iter().enumerate() {
+            let Some(canonical) = trusted_canonical_by_evidence.get(&fact.evidence_id) else {
+                continue;
+            };
+            for fallback in [
+                fallback_keys[index].clone(),
+                raw_identity_independent_fallback(fact),
+            ] {
+                trusted_canonicals_by_fallback
+                    .entry(IdentityNode::Fallback(fallback))
+                    .or_default()
+                    .insert(canonical.clone());
+            }
+        }
+        for (index, fact) in facts.iter().enumerate() {
+            if is_latest_prior_eligible(fact)
+                || fact.ledger_layer != LEDGER_LAYER_STRICT_PROVEN
+                || fact.attribution_kind != ATTRIBUTION_KIND_STRICT_ACCOUNT
+                || trusted_canonical_by_evidence.contains_key(&fact.evidence_id)
+            {
+                continue;
+            }
+            let node = IdentityNode::Fallback(fallback_keys[index].clone());
+            if let Some(canonical) = unique_canonical(trusted_canonicals_by_fallback.get(&node)) {
+                trusted_canonical_by_evidence.insert(fact.evidence_id.clone(), canonical.clone());
+            }
+        }
+        for (fallback, canonicals) in trusted_canonicals_by_fallback {
+            canonical_by_node.insert(fallback, canonicals);
         }
 
         let mut timelines = BTreeMap::<String, Vec<ConfirmedIdentityPoint>>::new();
@@ -326,19 +374,48 @@ impl CanonicalAccountResolver {
             };
             resolve_latest_priors(timeline, &events, &mut latest_prior_by_evidence);
         }
-        let mut latest_prior_canonicals_by_fallback =
-            BTreeMap::<IdentityNode, BTreeSet<String>>::new();
+        let mut eligible_canonicals_by_fallback = BTreeMap::<IdentityNode, BTreeSet<String>>::new();
+        let noneligible_fallbacks = facts
+            .iter()
+            .enumerate()
+            .filter(|(_, fact)| !is_latest_prior_eligible(fact))
+            .flat_map(|(index, fact)| {
+                [
+                    fallback_keys[index].clone(),
+                    raw_identity_independent_fallback(fact),
+                ]
+            })
+            .collect::<BTreeSet<_>>();
         for (index, fact) in facts.iter().enumerate() {
-            let Some(canonical) = latest_prior_by_evidence.get(&fact.evidence_id) else {
+            if !latest_prior_eligible_evidence.contains(&fact.evidence_id) {
                 continue;
-            };
-            latest_prior_canonicals_by_fallback
-                .entry(IdentityNode::Fallback(fallback_keys[index].clone()))
-                .or_default()
-                .insert(canonical.clone());
+            }
+            let raw_fallback = raw_identity_independent_fallback(fact);
+            let canonical = latest_prior_by_evidence
+                .get(&fact.evidence_id)
+                .cloned()
+                .unwrap_or_else(|| raw_fallback.clone());
+            for fallback in [fallback_keys[index].clone(), raw_fallback] {
+                let shared_by_noneligible = noneligible_fallbacks.contains(&fallback);
+                let node = IdentityNode::Fallback(fallback);
+                if !shared_by_noneligible {
+                    if let Some(component_canonical) = canonical_by_root.get(&roots[index]) {
+                        if let Some(canonicals) = canonical_by_node.get_mut(&node) {
+                            canonicals.remove(component_canonical);
+                        }
+                    }
+                }
+                eligible_canonicals_by_fallback
+                    .entry(node)
+                    .or_default()
+                    .insert(canonical.clone());
+            }
         }
-        for (fallback, canonicals) in latest_prior_canonicals_by_fallback {
-            canonical_by_node.insert(fallback, canonicals);
+        for (fallback, canonicals) in eligible_canonicals_by_fallback {
+            canonical_by_node
+                .entry(fallback)
+                .or_default()
+                .extend(canonicals);
         }
         Self {
             canonical_by_node,
