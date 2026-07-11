@@ -2255,7 +2255,7 @@ html[data-theme] .toast.is-error {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .usage-refresh-dot {
+  .usage-refresh-button--busy .usage-refresh-dot {
     animation: none;
     opacity: 0.72;
     transform: none;

@@ -374,4 +374,13 @@ describe("renderUsage refresh states", () => {
     expect(refresh.getAttribute("aria-disabled")).toBeNull();
     expect(refresh.disabled).toBe(false);
   });
+
+  it("reduced-motion 以不低于 busy selector 的优先级关闭三点动画", async () => {
+    // @ts-expect-error 测试运行在 Node；产品 tsconfig 刻意不引入 Node 类型。
+    const { readFileSync } = await import("node:fs");
+    const baseCss = readFileSync(new URL("../base.css", import.meta.url), "utf8") as string;
+    expect(baseCss).toMatch(
+      /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{\s*\.usage-refresh-button--busy\s+\.usage-refresh-dot\s*\{[^}]*animation:\s*none[^}]*opacity:\s*0\.72[^}]*transform:\s*none/,
+    );
+  });
 });
