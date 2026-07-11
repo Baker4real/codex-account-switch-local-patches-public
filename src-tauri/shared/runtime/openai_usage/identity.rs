@@ -292,24 +292,34 @@ impl CanonicalAccountResolver {
             timeline.sort_by(|left, right| left.order.cmp(&right.order));
         }
 
-        let mut latest_prior_by_evidence = BTreeMap::new();
         let latest_prior_eligible_evidence = facts
             .iter()
             .filter(|fact| is_latest_prior_eligible(fact))
             .map(|fact| fact.evidence_id.clone())
             .collect::<BTreeSet<_>>();
-        for (index, fact) in facts.iter().enumerate() {
-            if confirmed_facts[index] || !latest_prior_eligible_evidence.contains(&fact.evidence_id)
-            {
-                continue;
-            }
-            let Some(timeline) = timelines.get(&fact.profile) else {
+        let mut eligible_events_by_profile = BTreeMap::<String, Vec<EligibleUsageEvent>>::new();
+        for fact in facts
+            .iter()
+            .filter(|fact| latest_prior_eligible_evidence.contains(&fact.evidence_id))
+        {
+            eligible_events_by_profile
+                .entry(fact.profile.clone())
+                .or_default()
+                .push(EligibleUsageEvent {
+                    order: attribution_order(fact),
+                    evidence_id: fact.evidence_id.clone(),
+                });
+        }
+        for events in eligible_events_by_profile.values_mut() {
+            events.sort_by(|left, right| left.order.cmp(&right.order));
+        }
+
+        let mut latest_prior_by_evidence = BTreeMap::new();
+        for (profile, events) in eligible_events_by_profile {
+            let Some(timeline) = timelines.get(&profile) else {
                 continue;
             };
-            let event_order = attribution_order(fact);
-            if let Some(point) = latest_proven_prior(timeline, &event_order) {
-                latest_prior_by_evidence.insert(fact.evidence_id.clone(), point.canonical.clone());
-            }
+            resolve_latest_priors(timeline, &events, &mut latest_prior_by_evidence);
         }
         Self {
             canonical_by_node,
@@ -339,13 +349,20 @@ impl CanonicalAccountResolver {
             .latest_prior_eligible_evidence
             .contains(&fact.evidence_id)
         {
-            return fallback;
+            return raw_identity_independent_fallback(fact);
         }
         self.canonical_by_node
             .get(&IdentityNode::Fallback(fallback.clone()))
             .cloned()
             .unwrap_or(fallback)
     }
+}
+
+fn raw_identity_independent_fallback(fact: &UsageFact) -> String {
+    fact.legacy_account_key
+        .as_deref()
+        .map(|value| format!("legacy:{value}"))
+        .unwrap_or_else(|| format!("profile:{}", fact.profile))
 }
 
 fn is_latest_prior_eligible(fact: &UsageFact) -> bool {
@@ -363,24 +380,6 @@ struct AttributionOrder {
     evidence_id: String,
 }
 
-impl AttributionOrder {
-    fn relation_to(&self, event: &Self) -> TemporalRelation {
-        match self.created_at_ms.cmp(&event.created_at_ms) {
-            std::cmp::Ordering::Less => TemporalRelation::Prior,
-            std::cmp::Ordering::Greater => TemporalRelation::After,
-            std::cmp::Ordering::Equal => match (self.numeric_window_id, event.numeric_window_id) {
-                (Some(confirmed_window), Some(event_window)) if confirmed_window < event_window => {
-                    TemporalRelation::Prior
-                }
-                (Some(confirmed_window), Some(event_window)) if confirmed_window > event_window => {
-                    TemporalRelation::After
-                }
-                _ => TemporalRelation::Unknown,
-            },
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TemporalRelation {
     Prior,
@@ -393,61 +392,211 @@ struct ConfirmedIdentityPoint {
     canonical: String,
 }
 
-fn latest_proven_prior<'a>(
-    timeline: &'a [ConfirmedIdentityPoint],
-    event: &AttributionOrder,
-) -> Option<&'a ConfirmedIdentityPoint> {
-    let mut end = timeline.len();
-    while end > 0 {
-        let created_at_ms = timeline[end - 1].order.created_at_ms;
-        let mut start = end - 1;
-        while start > 0 && timeline[start - 1].order.created_at_ms == created_at_ms {
-            start -= 1;
-        }
-        let prior = timeline[start..end]
-            .iter()
-            .filter(|point| point.order.relation_to(event) == TemporalRelation::Prior)
-            .collect::<Vec<_>>();
-        if let Some(point) = proven_latest_in_cohort(&prior) {
-            let conflicting_unknown = timeline[start..end].iter().any(|competitor| {
-                competitor.order.relation_to(event) == TemporalRelation::Unknown
-                    && competitor.canonical != point.canonical
-            });
-            if !conflicting_unknown {
-                return Some(point);
-            }
-        }
-        end = start;
-    }
-    None
+struct EligibleUsageEvent {
+    order: AttributionOrder,
+    evidence_id: String,
 }
 
-fn proven_latest_in_cohort<'a>(
-    points: &[&'a ConfirmedIdentityPoint],
-) -> Option<&'a ConfirmedIdentityPoint> {
-    let first = *points.first()?;
-    if points
-        .iter()
-        .all(|point| point.canonical == first.canonical)
-    {
-        return Some(first);
+fn resolve_latest_priors(
+    timeline: &[ConfirmedIdentityPoint],
+    events: &[EligibleUsageEvent],
+    latest_prior_by_evidence: &mut BTreeMap<String, String>,
+) {
+    let mut timeline_index = 0;
+    let mut event_index = 0;
+    let mut previous_prior = None::<String>;
+
+    while event_index < events.len() {
+        let event_time = events[event_index].order.created_at_ms;
+        while timeline_index < timeline.len()
+            && timeline[timeline_index].order.created_at_ms < event_time
+        {
+            let cohort_end = cohort_end(timeline, timeline_index);
+            if let Some(canonical) =
+                ConfirmedIdentityCohort::from_points(&timeline[timeline_index..cohort_end])
+                    .completed_candidate
+            {
+                previous_prior = Some(canonical);
+            }
+            timeline_index = cohort_end;
+        }
+
+        let event_end = event_cohort_end(events, event_index);
+        if timeline_index < timeline.len()
+            && timeline[timeline_index].order.created_at_ms == event_time
+        {
+            let cohort_end = cohort_end(timeline, timeline_index);
+            let cohort =
+                ConfirmedIdentityCohort::from_points(&timeline[timeline_index..cohort_end]);
+            for event in &events[event_index..event_end] {
+                if let Some(canonical) = cohort
+                    .prior_for_event(&event.order)
+                    .or(previous_prior.as_deref())
+                {
+                    latest_prior_by_evidence
+                        .insert(event.evidence_id.clone(), canonical.to_string());
+                }
+            }
+            if let Some(canonical) = cohort.completed_candidate {
+                previous_prior = Some(canonical);
+            }
+            timeline_index = cohort_end;
+        } else if let Some(canonical) = previous_prior.as_ref() {
+            for event in &events[event_index..event_end] {
+                latest_prior_by_evidence.insert(event.evidence_id.clone(), canonical.clone());
+            }
+        }
+        event_index = event_end;
     }
-    let latest_window = points
-        .iter()
-        .map(|point| point.order.numeric_window_id)
-        .collect::<Option<Vec<_>>>()?
-        .into_iter()
-        .max()?;
-    let latest = points
-        .iter()
-        .copied()
-        .filter(|point| point.order.numeric_window_id == Some(latest_window))
-        .collect::<Vec<_>>();
-    let first_latest = *latest.first()?;
-    latest
-        .iter()
-        .all(|point| point.canonical == first_latest.canonical)
-        .then_some(first_latest)
+}
+
+fn cohort_end(timeline: &[ConfirmedIdentityPoint], start: usize) -> usize {
+    let created_at_ms = timeline[start].order.created_at_ms;
+    timeline[start..].partition_point(|point| point.order.created_at_ms == created_at_ms) + start
+}
+
+fn event_cohort_end(events: &[EligibleUsageEvent], start: usize) -> usize {
+    let created_at_ms = events[start].order.created_at_ms;
+    events[start..].partition_point(|event| event.order.created_at_ms == created_at_ms) + start
+}
+
+struct ConfirmedIdentityCohort {
+    numeric_groups: Vec<ConfirmedWindowGroup>,
+    missing_window_canonicals: CanonicalSetSummary,
+    completed_candidate: Option<String>,
+}
+
+struct ConfirmedWindowGroup {
+    window_id: u64,
+    canonicals: CanonicalSetSummary,
+    candidate_after: Option<String>,
+}
+
+struct CanonicalSetSummary {
+    first: Option<String>,
+    has_multiple: bool,
+}
+
+impl CanonicalSetSummary {
+    fn from_canonicals(canonicals: BTreeSet<String>) -> Self {
+        Self {
+            first: canonicals.first().cloned(),
+            has_multiple: canonicals.len() > 1,
+        }
+    }
+
+    fn has_competitor(&self, candidate: &str) -> bool {
+        self.has_multiple
+            || self
+                .first
+                .as_deref()
+                .is_some_and(|value| value != candidate)
+    }
+}
+
+impl ConfirmedIdentityCohort {
+    fn from_points(points: &[ConfirmedIdentityPoint]) -> Self {
+        let mut all_canonicals = BTreeSet::new();
+        let mut missing_window_canonicals = BTreeSet::new();
+        let mut canonicals_by_window = BTreeMap::<u64, BTreeSet<String>>::new();
+        for point in points {
+            all_canonicals.insert(point.canonical.clone());
+            if let Some(window_id) = point.order.numeric_window_id {
+                canonicals_by_window
+                    .entry(window_id)
+                    .or_default()
+                    .insert(point.canonical.clone());
+            } else {
+                missing_window_canonicals.insert(point.canonical.clone());
+            }
+        }
+
+        let mut prefix_seen = false;
+        let mut prefix_uniform = None::<String>;
+        let mut numeric_groups = Vec::with_capacity(canonicals_by_window.len());
+        for (window_id, canonicals) in canonicals_by_window {
+            let group_uniform = single_canonical(&canonicals).cloned();
+            prefix_uniform = if !prefix_seen {
+                prefix_seen = true;
+                group_uniform.clone()
+            } else {
+                match (prefix_uniform.as_ref(), group_uniform.as_ref()) {
+                    (Some(prefix), Some(group)) if prefix == group => Some(prefix.clone()),
+                    _ => None,
+                }
+            };
+            let candidate_after = prefix_uniform.clone().or_else(|| group_uniform.clone());
+            numeric_groups.push(ConfirmedWindowGroup {
+                window_id,
+                canonicals: CanonicalSetSummary::from_canonicals(canonicals),
+                candidate_after,
+            });
+        }
+
+        let completed_candidate = single_canonical(&all_canonicals).cloned().or_else(|| {
+            missing_window_canonicals
+                .is_empty()
+                .then(|| {
+                    numeric_groups
+                        .last()
+                        .and_then(|group| group.candidate_after.clone())
+                })
+                .flatten()
+        });
+        Self {
+            numeric_groups,
+            missing_window_canonicals: CanonicalSetSummary::from_canonicals(
+                missing_window_canonicals,
+            ),
+            completed_candidate,
+        }
+    }
+
+    fn prior_for_event(&self, event: &AttributionOrder) -> Option<&str> {
+        let prior_group_count = self.numeric_groups.partition_point(|group| {
+            same_millisecond_relation(Some(group.window_id), event.numeric_window_id)
+                == TemporalRelation::Prior
+        });
+        let candidate = self
+            .numeric_groups
+            .get(prior_group_count.checked_sub(1)?)?
+            .candidate_after
+            .as_deref()?;
+        if same_millisecond_relation(None, event.numeric_window_id) == TemporalRelation::Unknown
+            && self.missing_window_canonicals.has_competitor(candidate)
+        {
+            return None;
+        }
+        if self
+            .numeric_groups
+            .get(prior_group_count)
+            .filter(|group| {
+                same_millisecond_relation(Some(group.window_id), event.numeric_window_id)
+                    == TemporalRelation::Unknown
+            })
+            .is_some_and(|group| group.canonicals.has_competitor(candidate))
+        {
+            return None;
+        }
+        Some(candidate)
+    }
+}
+
+fn same_millisecond_relation(
+    confirmed_window: Option<u64>,
+    event_window: Option<u64>,
+) -> TemporalRelation {
+    match (confirmed_window, event_window) {
+        (Some(confirmed), Some(event)) if confirmed < event => TemporalRelation::Prior,
+        (Some(confirmed), Some(event)) if confirmed > event => TemporalRelation::After,
+        _ => TemporalRelation::Unknown,
+    }
+}
+
+fn single_canonical(canonicals: &BTreeSet<String>) -> Option<&String> {
+    (canonicals.len() == 1)
+        .then(|| canonicals.first())
+        .flatten()
 }
 
 fn attribution_order(fact: &UsageFact) -> AttributionOrder {

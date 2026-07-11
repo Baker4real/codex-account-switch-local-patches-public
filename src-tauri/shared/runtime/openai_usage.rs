@@ -5932,6 +5932,121 @@ mod tests {
     }
 
     #[test]
+    fn dashboard_latest_prior_sweep_is_linear_for_pre_identity_history() {
+        const LEGACY_COUNT: usize = 25;
+        const STRICT_COUNT: usize = 25;
+        let codex_home = temp_codex_home("dashboard-latest-prior-linear-sweep");
+        let cumulative_totals = (1_u64..=(LEGACY_COUNT + STRICT_COUNT) as u64)
+            .map(|value| {
+                let triangular = value * (value + 1) / 2;
+                (triangular * 10, triangular)
+            })
+            .collect::<Vec<_>>();
+        let evidence_ids =
+            seed_usage_fact_fixture(&codex_home, "latest-prior-linear-sweep", &cumulative_totals);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (index, old_evidence_id) in evidence_ids.iter().enumerate() {
+            if index < LEGACY_COUNT {
+                let evidence_id = format!("e-legacy-{index:03}");
+                let legacy_key = format!("legacy-p-{index:03}");
+                conn.execute(
+                    r#"
+                    UPDATE openai_usage_facts
+                    SET evidence_id = ?1, request_id = ?2, fingerprint = ?1,
+                        profile = 'p', account_label = NULL, account_identity_key = NULL,
+                        account_id_alias = NULL, email_alias = NULL, legacy_account_key = ?3,
+                        ledger_layer = ?4, attribution_kind = ?5,
+                        attribution_window_id = ?6, created_at_ms = ?7
+                    WHERE evidence_id = ?8
+                    "#,
+                    rusqlite::params![
+                        evidence_id,
+                        format!("r-legacy-{index:03}"),
+                        legacy_key,
+                        LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
+                        ATTRIBUTION_KIND_LEGACY_PROFILE,
+                        (index + 1).to_string(),
+                        (index + 1) as i64,
+                        old_evidence_id,
+                    ],
+                )
+                .unwrap();
+            } else {
+                let strict_index = index - LEGACY_COUNT;
+                let evidence_id = format!("e-strict-{strict_index:03}");
+                let account_alias =
+                    identity::account_id_alias(Some(&format!("acct-strict-{strict_index:03}")))
+                        .unwrap();
+                conn.execute(
+                    r#"
+                    UPDATE openai_usage_facts
+                    SET evidence_id = ?1, request_id = ?2, fingerprint = ?1,
+                        profile = 'p', account_label = NULL, account_identity_key = ?3,
+                        account_id_alias = ?4, email_alias = NULL, legacy_account_key = NULL,
+                        ledger_layer = ?5, attribution_kind = ?6,
+                        attribution_window_id = ?7, created_at_ms = ?8
+                    WHERE evidence_id = ?9
+                    "#,
+                    rusqlite::params![
+                        evidence_id,
+                        format!("r-strict-{strict_index:03}"),
+                        format!("identity-strict-{strict_index:03}"),
+                        account_alias,
+                        LEDGER_LAYER_STRICT_PROVEN,
+                        ATTRIBUTION_KIND_STRICT_ACCOUNT,
+                        (100 + strict_index).to_string(),
+                        (100 + strict_index) as i64,
+                        old_evidence_id,
+                    ],
+                )
+                .unwrap();
+            }
+        }
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 100).unwrap();
+        assert_eq!(dashboard.account_summary.len(), LEGACY_COUNT + STRICT_COUNT);
+        let accounts = dashboard
+            .account_summary
+            .iter()
+            .map(|account| {
+                (
+                    account.account_group_key.as_deref().unwrap(),
+                    account.request_count,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        for index in 0..LEGACY_COUNT {
+            assert_eq!(
+                accounts.get(format!("legacy:legacy-p-{index:03}").as_str()),
+                Some(&1)
+            );
+        }
+        for index in 0..STRICT_COUNT {
+            let account_alias =
+                identity::account_id_alias(Some(&format!("acct-strict-{index:03}"))).unwrap();
+            assert_eq!(accounts.get(account_alias.as_str()), Some(&1));
+        }
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            (LEGACY_COUNT + STRICT_COUNT) as u64
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            14_025
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn dashboard_same_millisecond_prior_requires_earlier_numeric_window() {
         let codex_home = temp_codex_home("dashboard-latest-prior-numeric-window");
         let cumulative_totals = (1_u64..=13)
@@ -6252,7 +6367,10 @@ mod tests {
             accounts.get("acct:1933afe14abca7ece6bb7c820736c6c25f0960d2815743451ae9cd2a2cbbe829"),
             Some(&2)
         );
-        assert_eq!(accounts.get("identity:acct_key_same"), Some(&1));
+        assert_eq!(
+            accounts.get("legacy:legacy_profile:legacy:32472144005000"),
+            Some(&1)
+        );
         assert_eq!(accounts.values().sum::<u64>(), 3);
         assert_eq!(
             dashboard
@@ -7139,7 +7257,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_account_summary_merges_strict_and_legacy_by_account_label() {
+    fn dashboard_does_not_backfill_eligible_legacy_from_future_strict_label() {
         let codex_home = temp_codex_home("account-label-merge");
         fs::create_dir_all(&codex_home).unwrap();
         append_attribution_record(
@@ -7193,27 +7311,52 @@ mod tests {
 
         assert_eq!(dashboard.summary.total_requests, 1);
         assert_eq!(dashboard.logs.total, 1);
-        assert_eq!(dashboard.account_summary.len(), 1);
-        let account = &dashboard.account_summary[0];
-        assert_eq!(account.account_label.as_deref(), Some("same@example.com"));
-        assert_eq!(account.ledger_layer, LEDGER_LAYER_MIXED_ATTRIBUTED);
-        assert_eq!(account.attribution_kind, ATTRIBUTION_KIND_MIXED_ACCOUNT);
-        assert_eq!(account.request_count, 2);
-        assert_eq!(account.tokens.input_tokens, 160);
-        assert_eq!(account.profiles, vec!["b".to_string(), "c".to_string()]);
-        let filtered = load_openai_usage_dashboard(
-            Some(&codex_home),
-            Some(OpenAiUsageQuery {
-                account_group_key: account.account_group_key.clone(),
-                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
-                ..OpenAiUsageQuery::default()
-            }),
-            1,
-            20,
-        )
-        .unwrap();
-        assert_eq!(filtered.summary.total_requests, 2);
-        assert_eq!(filtered.logs.total, 2);
+        assert_eq!(dashboard.account_summary.len(), 2);
+        let legacy = dashboard
+            .account_summary
+            .iter()
+            .find(|account| account.profiles == ["b"])
+            .unwrap();
+        let strict = dashboard
+            .account_summary
+            .iter()
+            .find(|account| account.profiles == ["c"])
+            .unwrap();
+        assert_ne!(legacy.account_group_key, strict.account_group_key);
+        assert!(legacy
+            .account_group_key
+            .as_deref()
+            .is_some_and(|key| key.starts_with("legacy:")));
+        assert_eq!(
+            strict.account_group_key.as_deref(),
+            Some("identity:acct_same")
+        );
+        assert_eq!(legacy.account_label.as_deref(), Some("same@example.com"));
+        assert_eq!(strict.account_label.as_deref(), Some("same@example.com"));
+        assert_eq!(legacy.ledger_layer, LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED);
+        assert_eq!(legacy.attribution_kind, ATTRIBUTION_KIND_LEGACY_PROFILE);
+        assert_eq!(strict.ledger_layer, LEDGER_LAYER_STRICT_PROVEN);
+        assert_eq!(strict.attribution_kind, ATTRIBUTION_KIND_STRICT_ACCOUNT);
+        assert_eq!(legacy.request_count, 1);
+        assert_eq!(legacy.tokens.input_tokens, 100);
+        assert_eq!(strict.request_count, 1);
+        assert_eq!(strict.tokens.input_tokens, 60);
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.request_count)
+                .sum::<u64>(),
+            2
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|account| account.tokens.real_total_tokens)
+                .sum::<u64>(),
+            176
+        );
         let _ = fs::remove_dir_all(&codex_home);
     }
 
