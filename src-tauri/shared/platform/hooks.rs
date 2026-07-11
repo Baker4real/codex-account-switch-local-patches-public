@@ -4,9 +4,24 @@ use crate::errors::AppResult;
 use crate::shared::codex_app_server::AppServerSnapshot;
 use crate::shared::process_lock::ProcessLockGuard;
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AppExitObservation {
+    pub app_was_running: bool,
+    pub had_processes: bool,
+}
+
 pub trait PlatformHooks: Send + Sync {
     fn open_or_activate_codex_app(&self, codex_home: Option<&Path>) -> AppResult<String>;
     fn quit_codex_app_if_running(&self) -> AppResult<bool>;
+    fn quit_codex_app_and_observe(&self, observation: &mut AppExitObservation) -> AppResult<()> {
+        let app_was_running = self.quit_codex_app_if_running()?;
+        observation.app_was_running |= app_was_running;
+        observation.had_processes |= app_was_running;
+        Ok(())
+    }
+    fn profile_switch_exit_stability_attempts(&self) -> usize {
+        0
+    }
     fn reopen_codex_app_if_needed(
         &self,
         app_was_running: bool,

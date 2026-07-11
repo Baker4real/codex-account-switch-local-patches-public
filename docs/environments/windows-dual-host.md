@@ -16,8 +16,8 @@ UU 设备列表锁定，再用 UU 终端读取其主机身份、快捷方式目�
 
 - Tailscale 节点：`jia-li` / `<jia-li-tailscale-ip>`
 - 桌面快捷方式：`D:\Desktop\codex_switch.exe.lnk`
-- 2026-07-11 解析到的 `TargetPath`：`D:\Codex\.codex\artifacts\replicator\manual-artifacts\codex-account-switch\codex-account-switch-remote-20260701T071129Z\codex_switch.exe`
-- `WorkingDirectory`：与 `TargetPath` 所在目录一致。
+- 2026-07-11 已收敛到稳定 `TargetPath`：`D:\Codex\apps\codex_switch\codex_switch.exe`
+- `WorkingDirectory`：`D:\Codex\apps\codex_switch`
 - 替换时同时更新同目录的 `codex_switch.exe` 与 x64 `WebView2Loader.dll`，并在替换前后核对 SHA-256。
 
 ## 当前远端

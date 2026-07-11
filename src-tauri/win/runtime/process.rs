@@ -9,9 +9,28 @@ use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, APPMODEL_ERROR_NO_PACKAGE, ERROR_INSUFFICIENT_BUFFER,
+    ERROR_INVALID_PARAMETER, HANDLE, HWND, LPARAM, WAIT_OBJECT_0,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::Storage::Packaging::Appx::GetPackageFullName;
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_TERMINATE,
+};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+};
+
 use crate::errors::{AppError, AppResult};
 use crate::models::CodexCliCandidate;
-use crate::platform::hooks::PlatformHooks;
+use crate::platform::hooks::{AppExitObservation, PlatformHooks};
 use crate::shared::codex_app_server::{
     fetch_account_snapshot, run_chatgpt_browser_login, AppServerSnapshot,
 };
@@ -23,12 +42,14 @@ use crate::shared::metadata::load_profile_metadata;
 
 use super::paths::{get_codex_home, get_install_state_file};
 
-const APP_PROCESS_NAME: &str = "Codex.exe";
+const WINDOWS_STORE_PACKAGE_PREFIX: &str = "OpenAI.Codex_";
+const WINDOWS_STORE_PACKAGE_SUFFIX: &str = "__2p2nqsd0c76g0";
 const WINDOWS_INVOKABLE_SUFFIXES: [&str; 4] = ["cmd", "exe", "bat", "com"];
 const WINDOWS_APPS_PATH_SEGMENT: &str = r"\microsoft\windowsapps\";
 const WINDOWS_STORE_APP_ID: &str = "OpenAI.Codex_2p2nqsd0c76g0!App";
 const WINDOWS_STORE_SHELL_PREFIX: &str = r"shell:AppsFolder\";
 const WHERE_CODEX_TIMEOUT: Duration = Duration::from_secs(2);
+const PROFILE_SWITCH_EXIT_STABILITY_ATTEMPTS: usize = 3;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 static WINDOWS_APP_TARGET_CACHE: OnceLock<String> = OnceLock::new();
@@ -306,23 +327,131 @@ fn resolve_windows_app_target() -> AppLaunchTarget {
     AppLaunchTarget::WindowsStore(resolve_windows_store_shell_target())
 }
 
-pub fn is_codex_app_running() -> bool {
+fn is_windows_store_codex_package(package_name: &str) -> bool {
+    let package_name = package_name.to_ascii_lowercase();
+    package_name.starts_with(&WINDOWS_STORE_PACKAGE_PREFIX.to_ascii_lowercase())
+        && package_name.ends_with(&WINDOWS_STORE_PACKAGE_SUFFIX.to_ascii_lowercase())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowsStoreProcess {
+    image_name: String,
+    process_id: u32,
+}
+
+impl WindowsStoreProcess {
+    fn new(image_name: impl Into<String>, process_id: u32) -> Self {
+        Self {
+            image_name: image_name.into(),
+            process_id,
+        }
+    }
+
+    fn is_ui_host(&self) -> bool {
+        self.image_name
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default()
+            .eq_ignore_ascii_case("ChatGPT.exe")
+    }
+}
+
+trait AppProcessOps {
+    fn snapshot(&mut self) -> AppResult<Vec<WindowsStoreProcess>>;
+    fn terminate(&mut self, process_ids: &[u32], force: bool) -> AppResult<()>;
+    fn sleep(&mut self, duration: Duration);
+}
+
+fn parse_windows_store_processes(stdout: &str) -> AppResult<Vec<WindowsStoreProcess>> {
+    let mut processes = Vec::new();
+
+    for line in stdout.lines() {
+        let line = line.trim().trim_start_matches('\u{feff}');
+        let contains_codex_package = {
+            let line = line.to_ascii_lowercase();
+            line.contains(&WINDOWS_STORE_PACKAGE_PREFIX.to_ascii_lowercase())
+                && line.contains(&WINDOWS_STORE_PACKAGE_SUFFIX.to_ascii_lowercase())
+        };
+        let Some(row) = line
+            .strip_prefix('"')
+            .and_then(|value| value.strip_suffix('"'))
+        else {
+            if contains_codex_package {
+                return Err(AppError::new(
+                    "APP_PROCESS_QUERY_FAILED",
+                    "Codex Store process row was not valid tasklist CSV.",
+                ));
+            }
+            continue;
+        };
+        let fields = row.split("\",\"").collect::<Vec<_>>();
+        let Some(package_name) = fields.last() else {
+            if contains_codex_package {
+                return Err(AppError::new(
+                    "APP_PROCESS_QUERY_FAILED",
+                    "Codex Store process row did not contain package metadata.",
+                ));
+            }
+            continue;
+        };
+        if !is_windows_store_codex_package(package_name) {
+            if contains_codex_package {
+                return Err(AppError::new(
+                    "APP_PROCESS_QUERY_FAILED",
+                    "Codex Store package identity was not in the expected tasklist column.",
+                ));
+            }
+            continue;
+        }
+        let Some(image_name) = fields.first() else {
+            return Err(AppError::new(
+                "APP_PROCESS_QUERY_FAILED",
+                "Codex Store process row did not contain an image name.",
+            ));
+        };
+        let Some(raw_pid) = fields.get(1) else {
+            return Err(AppError::new(
+                "APP_PROCESS_QUERY_FAILED",
+                "Codex Store process row did not contain a PID.",
+            ));
+        };
+        let pid = raw_pid.parse::<u32>().map_err(|error| {
+            AppError::new(
+                "APP_PROCESS_QUERY_FAILED",
+                format!("Codex Store process row contained an invalid PID: {error}"),
+            )
+        })?;
+        processes.push(WindowsStoreProcess::new(*image_name, pid));
+    }
+
+    processes.sort_unstable_by_key(|process| process.process_id);
+    processes.dedup_by_key(|process| process.process_id);
+    Ok(processes)
+}
+
+fn query_windows_store_processes() -> AppResult<Vec<WindowsStoreProcess>> {
     let mut command = Command::new("tasklist");
-    command.args([
-        "/FI",
-        &format!("IMAGENAME eq {APP_PROCESS_NAME}"),
-        "/FO",
-        "CSV",
-        "/NH",
-    ]);
+    command.args(["/APPS", "/FO", "CSV", "/NH"]);
 
-    let output = match hide_console_window(&mut command).output() {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
+    let output = hide_console_window(&mut command)
+        .output()
+        .map_err(|error| {
+            AppError::new(
+                "APP_PROCESS_QUERY_FAILED",
+                format!("Failed to query Codex Store processes: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(AppError::new(
+            "APP_PROCESS_QUERY_FAILED",
+            format!(
+                "Codex Store process query exited with status {}.",
+                output.status
+            ),
+        ));
+    }
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-    stdout.contains(&APP_PROCESS_NAME.to_ascii_lowercase())
+    parse_windows_store_processes(&String::from_utf8_lossy(&output.stdout))
 }
 
 pub fn open_or_activate_codex_app(_codex_home: Option<&Path>) -> AppResult<String> {
@@ -861,35 +990,311 @@ pub fn redetect_runnable_codex_cli_paths(codex_home: Option<&Path>) -> Vec<Codex
         .collect()
 }
 
-pub fn quit_codex_app_if_running() -> AppResult<bool> {
-    if !is_codex_app_running() {
-        return Ok(false);
+#[cfg(target_os = "windows")]
+struct VerifiedCodexProcessHandle(HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for VerifiedCodexProcessHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn package_full_name_for_process(handle: HANDLE) -> AppResult<Option<String>> {
+    let mut buffer_length = 0u32;
+    let first_status =
+        unsafe { GetPackageFullName(handle, &mut buffer_length, std::ptr::null_mut()) };
+    if first_status == APPMODEL_ERROR_NO_PACKAGE || first_status == ERROR_INVALID_PARAMETER {
+        return Ok(None);
+    }
+    if first_status != ERROR_INSUFFICIENT_BUFFER || buffer_length == 0 {
+        return Err(AppError::new(
+            "APP_PROCESS_QUERY_FAILED",
+            format!("Failed to size Store package identity buffer: {first_status}"),
+        ));
     }
 
-    let mut taskkill = Command::new("taskkill");
-    taskkill.args(["/IM", APP_PROCESS_NAME]);
-    let _ = hide_console_window(&mut taskkill).output();
-    for _ in 0..20 {
-        if !is_codex_app_running() {
-            return Ok(true);
-        }
-        thread::sleep(Duration::from_millis(200));
+    let mut buffer = vec![0u16; buffer_length as usize];
+    let second_status =
+        unsafe { GetPackageFullName(handle, &mut buffer_length, buffer.as_mut_ptr()) };
+    if second_status == APPMODEL_ERROR_NO_PACKAGE || second_status == ERROR_INVALID_PARAMETER {
+        return Ok(None);
+    }
+    if second_status != 0 {
+        return Err(AppError::new(
+            "APP_PROCESS_QUERY_FAILED",
+            format!("Failed to read Store package identity: {second_status}"),
+        ));
     }
 
-    let mut force_taskkill = Command::new("taskkill");
-    force_taskkill.args(["/F", "/IM", APP_PROCESS_NAME]);
-    let _ = hide_console_window(&mut force_taskkill).output();
-    for _ in 0..10 {
-        if !is_codex_app_running() {
-            return Ok(true);
+    let end = buffer
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf16(&buffer[..end])
+        .map(Some)
+        .map_err(|error| {
+            AppError::new(
+                "APP_PROCESS_QUERY_FAILED",
+                format!("Store package identity was not valid UTF-16: {error}"),
+            )
+        })
+}
+
+#[cfg(target_os = "windows")]
+fn open_verified_codex_process(process_id: u32) -> AppResult<Option<VerifiedCodexProcessHandle>> {
+    let desired_access = PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE;
+    let handle = unsafe { OpenProcess(desired_access, 0, process_id) };
+    if handle.is_null() {
+        let error = unsafe { GetLastError() };
+        if error == ERROR_INVALID_PARAMETER {
+            return Ok(None);
         }
-        thread::sleep(Duration::from_millis(200));
+        return Err(AppError::new(
+            "APP_PROCESS_QUERY_FAILED",
+            format!("Failed to open Codex Store process {process_id}: {error}"),
+        ));
+    }
+
+    let handle = VerifiedCodexProcessHandle(handle);
+    let Some(package_name) = package_full_name_for_process(handle.0)? else {
+        return Ok(None);
+    };
+    if !is_windows_store_codex_package(&package_name) {
+        return Ok(None);
+    }
+
+    Ok(Some(handle))
+}
+
+#[cfg(target_os = "windows")]
+struct CloseWindowsContext {
+    process_id: u32,
+    process_handle: HANDLE,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn close_verified_process_window(window: HWND, context: LPARAM) -> i32 {
+    let context = unsafe { &*(context as *const CloseWindowsContext) };
+    if unsafe { WaitForSingleObject(context.process_handle, 0) } == WAIT_OBJECT_0 {
+        return 1;
+    }
+
+    let mut window_process_id = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(window, &mut window_process_id);
+    }
+    if window_process_id == context.process_id
+        && unsafe { WaitForSingleObject(context.process_handle, 0) } != WAIT_OBJECT_0
+    {
+        unsafe {
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        }
+    }
+    1
+}
+
+#[cfg(target_os = "windows")]
+fn request_graceful_codex_app_exit(
+    process: &VerifiedCodexProcessHandle,
+    process_id: u32,
+) -> AppResult<()> {
+    let context = CloseWindowsContext {
+        process_id,
+        process_handle: process.0,
+    };
+    if unsafe {
+        EnumWindows(
+            Some(close_verified_process_window),
+            &context as *const CloseWindowsContext as LPARAM,
+        )
+    } == 0
+    {
+        let error = unsafe { GetLastError() };
+        return Err(AppError::new(
+            "APP_EXIT_COMMAND_FAILED",
+            format!("Failed to enumerate Codex Store windows for process {process_id}: {error}"),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn request_codex_app_exit(process_ids: &[u32], force: bool) -> AppResult<()> {
+    for process_id in process_ids {
+        let Some(process) = open_verified_codex_process(*process_id)? else {
+            continue;
+        };
+        if !force {
+            request_graceful_codex_app_exit(&process, *process_id)?;
+            continue;
+        }
+
+        let exit_code = u32::from(force);
+        if unsafe { TerminateProcess(process.0, exit_code) } == 0 {
+            let error = unsafe { GetLastError() };
+            if unsafe { WaitForSingleObject(process.0, 0) } != WAIT_OBJECT_0 {
+                return Err(AppError::new(
+                    "APP_EXIT_COMMAND_FAILED",
+                    format!(
+                        "Failed to terminate verified Codex Store process {process_id}: {error}"
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn request_codex_app_exit(_process_ids: &[u32], _force: bool) -> AppResult<()> {
+    Err(AppError::new(
+        "APP_EXIT_COMMAND_FAILED",
+        "Codex Store process termination is only supported on Windows.",
+    ))
+}
+
+struct SystemAppProcessOps;
+
+impl AppProcessOps for SystemAppProcessOps {
+    fn snapshot(&mut self) -> AppResult<Vec<WindowsStoreProcess>> {
+        query_windows_store_processes()
+    }
+
+    fn terminate(&mut self, process_ids: &[u32], force: bool) -> AppResult<()> {
+        request_codex_app_exit(process_ids, force)
+    }
+
+    fn sleep(&mut self, duration: Duration) {
+        thread::sleep(duration);
+    }
+}
+
+fn record_app_exit_observation(
+    observation: &mut AppExitObservation,
+    processes: &[WindowsStoreProcess],
+) {
+    observation.had_processes |= !processes.is_empty();
+    observation.app_was_running |= processes.iter().any(WindowsStoreProcess::is_ui_host);
+}
+
+fn wait_for_stable_app_exit<O: AppProcessOps + ?Sized>(
+    ops: &mut O,
+    attempts: usize,
+    observation: &mut AppExitObservation,
+) -> AppResult<bool> {
+    let mut consecutive_empty_snapshots = 0;
+    for attempt in 0..attempts {
+        let processes = ops.snapshot()?;
+        record_app_exit_observation(observation, &processes);
+        if processes.is_empty() {
+            consecutive_empty_snapshots += 1;
+            if consecutive_empty_snapshots >= 2 {
+                return Ok(true);
+            }
+        } else {
+            consecutive_empty_snapshots = 0;
+        }
+        if attempt + 1 < attempts {
+            ops.sleep(Duration::from_millis(200));
+        }
+    }
+    Ok(false)
+}
+
+fn force_remaining_app_processes_until_stable<O: AppProcessOps + ?Sized>(
+    ops: &mut O,
+    attempts: usize,
+    observation: &mut AppExitObservation,
+) -> AppResult<bool> {
+    let mut consecutive_empty_snapshots = 0;
+    for attempt in 0..attempts {
+        let processes = ops.snapshot()?;
+        record_app_exit_observation(observation, &processes);
+        if processes.is_empty() {
+            consecutive_empty_snapshots += 1;
+            if consecutive_empty_snapshots >= 2 {
+                return Ok(true);
+            }
+        } else {
+            consecutive_empty_snapshots = 0;
+            let process_ids = processes
+                .iter()
+                .map(|process| process.process_id)
+                .collect::<Vec<_>>();
+            ops.terminate(&process_ids, true)?;
+        }
+        if attempt + 1 < attempts {
+            ops.sleep(Duration::from_millis(200));
+        }
+    }
+
+    ops.sleep(Duration::from_millis(200));
+    wait_for_stable_app_exit(ops, 2, observation)
+}
+
+fn quit_codex_app_with_ops_observed<O: AppProcessOps + ?Sized>(
+    ops: &mut O,
+    observation: &mut AppExitObservation,
+) -> AppResult<bool> {
+    let mut initial_processes = ops.snapshot()?;
+    record_app_exit_observation(observation, &initial_processes);
+    if initial_processes.is_empty() {
+        ops.sleep(Duration::from_millis(200));
+        initial_processes = ops.snapshot()?;
+        record_app_exit_observation(observation, &initial_processes);
+        if initial_processes.is_empty() {
+            return Ok(false);
+        }
+    }
+
+    let ui_process_ids = initial_processes
+        .iter()
+        .filter(|process| process.is_ui_host())
+        .map(|process| process.process_id)
+        .collect::<Vec<_>>();
+
+    if !ui_process_ids.is_empty() {
+        ops.terminate(&ui_process_ids, false)?;
+        if wait_for_stable_app_exit(ops, 20, observation)? {
+            return Ok(observation.app_was_running);
+        }
+    }
+
+    if force_remaining_app_processes_until_stable(ops, 10, observation)? {
+        return Ok(observation.app_was_running);
     }
 
     Err(AppError::new(
         "APP_EXIT_FAILED",
         "Codex did not exit cleanly. Close it manually and retry.",
     ))
+}
+
+#[cfg(test)]
+fn quit_codex_app_with_ops<O: AppProcessOps + ?Sized>(ops: &mut O) -> AppResult<bool> {
+    quit_codex_app_with_ops_observed(ops, &mut AppExitObservation::default())
+}
+
+pub fn quit_codex_app_and_observe(observation: &mut AppExitObservation) -> AppResult<()> {
+    quit_codex_app_with_ops_observed(&mut SystemAppProcessOps, observation).map(|_| ())
+}
+
+pub fn quit_codex_app_if_running() -> AppResult<bool> {
+    let mut observation = AppExitObservation::default();
+    match quit_codex_app_and_observe(&mut observation) {
+        Ok(()) => Ok(observation.app_was_running),
+        Err(mut error) => {
+            let warnings = reopen_codex_app_if_needed(observation.app_was_running, None);
+            if !warnings.is_empty() {
+                error.message = format!("{} {}", error.message, warnings.join(" "));
+            }
+            Err(error)
+        }
+    }
 }
 
 pub fn reopen_codex_app_if_needed(
@@ -924,6 +1329,14 @@ impl PlatformHooks for WindowsPlatformHooks {
 
     fn quit_codex_app_if_running(&self) -> AppResult<bool> {
         quit_codex_app_if_running()
+    }
+
+    fn quit_codex_app_and_observe(&self, observation: &mut AppExitObservation) -> AppResult<()> {
+        quit_codex_app_and_observe(observation)
+    }
+
+    fn profile_switch_exit_stability_attempts(&self) -> usize {
+        PROFILE_SWITCH_EXIT_STABILITY_ATTEMPTS
     }
 
     fn reopen_codex_app_if_needed(
@@ -986,18 +1399,24 @@ impl PlatformHooks for WindowsPlatformHooks {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "windows")]
+    use super::open_verified_codex_process;
     use super::{
         build_app_server_command, build_login_browser_command, discover_real_codex_cli_path,
         is_acceptable_real_codex_cli_path, load_install_state, login_browser_for_profile,
-        looks_like_codex_version, redetect_runnable_codex_cli_paths,
+        looks_like_codex_version, parse_windows_store_processes, quit_codex_app_with_ops,
+        quit_codex_app_with_ops_observed, redetect_runnable_codex_cli_paths,
         resolve_login_browser_app_server_launch, resolve_real_codex_cli,
         resolve_windows_app_target, where_codex_candidate_paths_with_timeout,
-        windows_store_shell_target, AppLaunchTarget, InstallState, LoginBrowser,
-        LoginBrowserLaunch, WindowsPlatformHooks, WINDOWS_STORE_APP_ID,
+        windows_store_shell_target, AppExitObservation, AppLaunchTarget, AppProcessOps,
+        InstallState, LoginBrowser, LoginBrowserLaunch, WindowsPlatformHooks, WindowsStoreProcess,
+        WINDOWS_STORE_APP_ID,
     };
+    use crate::errors::{AppError, AppResult};
     use crate::platform::hooks::PlatformHooks;
     use crate::windows::{env_guard, EnvVarGuard};
     use serde_json::to_string_pretty;
+    use std::collections::VecDeque;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1676,5 +2095,195 @@ mod tests {
             AppLaunchTarget::WindowsStore(windows_store_shell_target(WINDOWS_STORE_APP_ID))
         );
         let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn windows_store_process_query_is_package_scoped() {
+        let tasklist = concat!(
+            "\u{feff}\"ChatGPT.exe (App)\",\"46048\",\"514,408 K\",\"OpenAI.Codex_26.707.3748.0_x64__2p2nqsd0c76g0\"\r\n",
+            "\"codex.exe (App)\",\"31664\",\"334,712 K\",\"OpenAI.Codex_26.707.3748.0_x64__2p2nqsd0c76g0\"\n",
+            "\"ChatGPT.exe (App)\",\"777\",\"100 K\",\"OpenAI.ChatGPT_9.9.9.0_x64__2p2nqsd0c76g0\"\n",
+            "INFO: No matching tasks are running.\n",
+        );
+
+        let processes = parse_windows_store_processes(tasklist).unwrap();
+        assert_eq!(
+            processes,
+            vec![
+                WindowsStoreProcess::new("codex.exe (App)", 31664),
+                WindowsStoreProcess::new("ChatGPT.exe (App)", 46048),
+            ]
+        );
+    }
+
+    #[test]
+    fn windows_store_process_query_rejects_malformed_codex_package_rows() {
+        let malformed =
+            "ChatGPT.exe (App),46048,514 K,OpenAI.Codex_26.707.3748.0_x64__2p2nqsd0c76g0\n";
+
+        let error = parse_windows_store_processes(malformed).unwrap_err();
+
+        assert_eq!(error.error_code, "APP_PROCESS_QUERY_FAILED");
+
+        let shifted_package_column = concat!(
+            "\"ChatGPT.exe (App)\",\"46048\",\"514 K\",",
+            "\"OpenAI.Codex_26.707.3748.0_x64__2p2nqsd0c76g0\",\"unexpected\"\n",
+        );
+        let error = parse_windows_store_processes(shifted_package_column).unwrap_err();
+        assert_eq!(error.error_code, "APP_PROCESS_QUERY_FAILED");
+    }
+
+    #[test]
+    fn windows_store_ui_host_detection_ignores_tasklist_app_label() {
+        assert!(WindowsStoreProcess::new("ChatGPT.exe (App)", 10).is_ui_host());
+        assert!(WindowsStoreProcess::new("ChatGPT.exe (应用)", 11).is_ui_host());
+        assert!(!WindowsStoreProcess::new("codex.exe (App)", 12).is_ui_host());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_store_process_handle_verification_rejects_unrelated_process() {
+        assert!(open_verified_codex_process(std::process::id())
+            .unwrap()
+            .is_none());
+    }
+
+    enum FakeSnapshot {
+        Processes(Vec<WindowsStoreProcess>),
+        Error,
+    }
+
+    struct FakeAppProcessOps {
+        snapshots: VecDeque<FakeSnapshot>,
+        last_processes: Vec<WindowsStoreProcess>,
+        terminations: Vec<(Vec<u32>, bool)>,
+        sleeps: usize,
+    }
+
+    impl FakeAppProcessOps {
+        fn new(snapshots: Vec<FakeSnapshot>) -> Self {
+            Self {
+                snapshots: snapshots.into(),
+                last_processes: Vec::new(),
+                terminations: Vec::new(),
+                sleeps: 0,
+            }
+        }
+    }
+
+    impl AppProcessOps for FakeAppProcessOps {
+        fn snapshot(&mut self) -> AppResult<Vec<WindowsStoreProcess>> {
+            match self.snapshots.pop_front() {
+                Some(FakeSnapshot::Processes(processes)) => {
+                    self.last_processes = processes.clone();
+                    Ok(processes)
+                }
+                Some(FakeSnapshot::Error) => Err(AppError::new(
+                    "APP_PROCESS_QUERY_FAILED",
+                    "scripted process query failure",
+                )),
+                None => Ok(self.last_processes.clone()),
+            }
+        }
+
+        fn terminate(&mut self, process_ids: &[u32], force: bool) -> AppResult<()> {
+            self.terminations.push((process_ids.to_vec(), force));
+            Ok(())
+        }
+
+        fn sleep(&mut self, _duration: Duration) {
+            self.sleeps += 1;
+        }
+    }
+
+    fn ui_process(process_id: u32) -> WindowsStoreProcess {
+        WindowsStoreProcess::new("ChatGPT.exe (App)", process_id)
+    }
+
+    fn backend_process(process_id: u32) -> WindowsStoreProcess {
+        WindowsStoreProcess::new("codex.exe (App)", process_id)
+    }
+
+    #[test]
+    fn windows_store_shutdown_closes_ui_before_backend_and_requires_stable_empty_snapshots() {
+        let mut ops = FakeAppProcessOps::new(vec![
+            FakeSnapshot::Processes(vec![ui_process(10), backend_process(20)]),
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(vec![backend_process(21)]),
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(Vec::new()),
+        ]);
+
+        assert!(quit_codex_app_with_ops(&mut ops).unwrap());
+        assert_eq!(ops.terminations, vec![(vec![10], false)]);
+        assert_eq!(ops.sleeps, 3);
+    }
+
+    #[test]
+    fn windows_store_shutdown_rechecks_an_initial_empty_snapshot() {
+        let mut ops = FakeAppProcessOps::new(vec![
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(vec![backend_process(20)]),
+            FakeSnapshot::Processes(vec![backend_process(20)]),
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(Vec::new()),
+        ]);
+
+        assert!(!quit_codex_app_with_ops(&mut ops).unwrap());
+        assert_eq!(ops.terminations, vec![(vec![20], true)]);
+    }
+
+    #[test]
+    fn windows_store_force_shutdown_rescans_and_cleans_new_package_pids() {
+        let mut ops = FakeAppProcessOps::new(vec![
+            FakeSnapshot::Processes(vec![backend_process(20)]),
+            FakeSnapshot::Processes(vec![backend_process(20)]),
+            FakeSnapshot::Processes(vec![ui_process(21)]),
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(Vec::new()),
+        ]);
+
+        assert!(quit_codex_app_with_ops(&mut ops).unwrap());
+        assert_eq!(ops.terminations, vec![(vec![20], true), (vec![21], true)]);
+    }
+
+    #[test]
+    fn windows_store_shutdown_confirms_exit_after_the_last_force_attempt() {
+        let mut snapshots = vec![FakeSnapshot::Processes(vec![backend_process(20)])];
+        snapshots.extend((0..10).map(|_| FakeSnapshot::Processes(vec![backend_process(20)])));
+        snapshots.push(FakeSnapshot::Processes(Vec::new()));
+        snapshots.push(FakeSnapshot::Processes(Vec::new()));
+        let mut ops = FakeAppProcessOps::new(snapshots);
+
+        assert!(!quit_codex_app_with_ops(&mut ops).unwrap());
+        assert_eq!(ops.terminations.len(), 10);
+        assert!(ops.terminations.iter().all(|(_, force)| *force));
+    }
+
+    #[test]
+    fn windows_store_shutdown_fails_closed_on_query_error() {
+        let mut ops = FakeAppProcessOps::new(vec![FakeSnapshot::Error]);
+
+        let error = quit_codex_app_with_ops(&mut ops).unwrap_err();
+
+        assert_eq!(error.error_code, "APP_PROCESS_QUERY_FAILED");
+        assert!(ops.terminations.is_empty());
+    }
+
+    #[test]
+    fn windows_store_shutdown_errors_when_package_processes_never_exit() {
+        let mut ops = FakeAppProcessOps::new(vec![FakeSnapshot::Processes(vec![
+            ui_process(10),
+            backend_process(20),
+        ])]);
+
+        let mut observation = AppExitObservation::default();
+        let error = quit_codex_app_with_ops_observed(&mut ops, &mut observation).unwrap_err();
+
+        assert_eq!(error.error_code, "APP_EXIT_FAILED");
+        assert!(observation.app_was_running);
+        assert!(observation.had_processes);
+        assert_eq!(ops.terminations.first(), Some(&(vec![10], false)));
+        assert!(ops.terminations.iter().skip(1).all(|(_, force)| *force));
     }
 }

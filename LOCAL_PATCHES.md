@@ -163,6 +163,14 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   profile 目录整棵覆盖 live `skills`、`AGENTS.md`、`rules`、`memories`、
   `vendor_imports`、插件/cache/sqlite 或其它全局运行时资产。即使旧 profile
   目录里残留这些污染条目，切换和反向备份也必须忽略它们。
+- Windows profile 切换必须按 `OpenAI.Codex_*__2p2nqsd0c76g0` Store 包身份发现
+  整棵应用进程，并在采取退出动作前用已打开的进程句柄再次核对包身份；不得恢复
+  按镜像名执行 `taskkill /IM Codex.exe`、`taskkill /IM ChatGPT.exe` 或 `/T` 的旧逻辑。
+  先向已验证的 `ChatGPT.exe` 顶层窗口发送 `WM_CLOSE`，超时后才能强制结束仍属于
+  同一包的句柄；退出和初始空状态都必须经连续空快照确认。切换事务要在快照前后
+  复核进程稳定性，若提交期 Store 进程重现则重新覆盖目标账号态；任何失败必须先
+  恢复 root、原槽位、活动标记、索引和归因文件，再至多重开一次 Codex。恢复不完整
+  时返回 `SWITCH_RECOVERY_FAILED` 并保持 Codex 不自动重开，避免半切换状态继续写盘。
 - login / refresh runtime 目录是可再生运行态，但运行期间必须保持上游共享资产
   `plugins`、`cache`、`sqlite` 可用；runtime prune 只清理 `AGENTS.md`、
   `rules`、`skills`、`vendor_imports`、`memories` 等隔离状态。不要把
