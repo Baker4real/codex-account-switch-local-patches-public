@@ -370,15 +370,12 @@ impl CanonicalAccountResolver {
         &self,
         fact: &UsageFact,
         fallback: String,
-        selected_group_key: &str,
+        selected_canonical: &str,
     ) -> bool {
-        let Some(selected_canonical) = self.canonical_for_group_key(selected_group_key) else {
-            return false;
-        };
         self.canonical_key(fact, fallback) == selected_canonical
     }
 
-    fn canonical_for_group_key(&self, group_key: &str) -> Option<String> {
+    pub(super) fn resolve_group_filter(&self, group_key: &str) -> Option<String> {
         let mut candidates = self
             .canonical_by_node
             .values()

@@ -703,7 +703,15 @@ fn load_resolved_usage_facts(
     query: &OpenAiUsageQuery,
 ) -> AppResult<ResolvedUsageFacts> {
     let resolver_query = without_model_filter(&account_visibility_query(query));
-    let universe = load_usage_facts(conn, &resolver_query)?;
+    let mut attributed_query = resolver_query.clone();
+    attributed_query.scope = Some(SCOPE_COMBINED_ATTRIBUTED.to_string());
+    let mut universe = load_usage_facts(conn, &attributed_query)?;
+    if matches!(
+        normalized_usage_scope(query),
+        SCOPE_CANDIDATE | SCOPE_EXCLUDED
+    ) {
+        universe.extend(load_usage_facts(conn, &resolver_query)?);
+    }
     let label_identities = strict_label_identities(&universe);
     let fallback_keys = universe
         .iter()
@@ -2701,12 +2709,15 @@ fn filter_facts_by_account_group(
     else {
         return facts;
     };
+    let Some(selected_canonical) = resolver.resolve_group_filter(selected_account_group_key) else {
+        return Vec::new();
+    };
     let label_identities = strict_label_identities(&facts);
     facts
         .into_iter()
         .filter(|fact| {
             let fallback = account_group_key(fact, &label_identities);
-            resolver.matches_group_filter(fact, fallback, selected_account_group_key)
+            resolver.matches_group_filter(fact, fallback, &selected_canonical)
         })
         .collect()
 }
@@ -5012,7 +5023,7 @@ mod tests {
             BTreeSet::from(["r-alias-legacy".to_string(), "r-alias-strict".to_string()]);
 
         for query_key in [
-            canonical_key,
+            canonical_key.clone(),
             old_identity_key,
             raw_old_identity_key.to_string(),
             account_alias,
@@ -5049,6 +5060,20 @@ mod tests {
                 "{query_key}"
             );
         }
+        let legacy_dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                account_group_key: Some(canonical_key),
+                scope: Some(SCOPE_LEGACY.to_string()),
+                ..base_query
+            }),
+            1,
+            20,
+        )
+        .unwrap();
+        assert_eq!(legacy_dashboard.summary.total_requests, 1);
+        assert_eq!(legacy_dashboard.logs.total, 1);
+        assert_eq!(legacy_dashboard.logs.data[0].request_id, "r-alias-legacy");
         let _ = fs::remove_dir_all(&codex_home);
     }
 
