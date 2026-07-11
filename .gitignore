@@ -29,6 +29,11 @@ codex_history/
 *.local.md
 .env.local
 .env.*.local
+
+# Agent planning scratch (graduate durable conclusions into docs/evidence)
+/findings.md
+/progress.md
+/task_plan.md
 docs/*
 !docs/agents/
 !docs/agents/**
