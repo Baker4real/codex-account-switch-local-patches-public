@@ -3674,7 +3674,7 @@ fn add_fact_usage(
     add_to_aggregate(
         account
             .attribution_breakdown
-            .entry(attribution_breakdown_bucket(&fact.ledger_layer))
+            .entry(fact.ledger_layer.clone())
             .or_default(),
         fact.delta,
         &fact.cost.breakdown,
@@ -3701,16 +3701,6 @@ fn add_fact_usage(
         &fact.pricing_tier,
         &fact.pricing_source_url,
     );
-}
-
-fn attribution_breakdown_bucket(ledger_layer: &str) -> String {
-    match ledger_layer {
-        LEDGER_LAYER_STRICT_PROVEN => LEDGER_LAYER_STRICT_PROVEN.to_string(),
-        LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED => {
-            LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED.to_string()
-        }
-        unknown => unknown.to_string(),
-    }
 }
 
 fn new_account_aggregate(account_group_key: String, fact: &UsageFact) -> AccountAggregate {
@@ -3790,47 +3780,7 @@ fn normalized_account_label_key(label: Option<&str>) -> Option<String> {
 fn total_account_aggregate(accounts: &BTreeMap<String, AccountAggregate>) -> Aggregate {
     let mut total = Aggregate::default();
     for account in accounts.values() {
-        total.requests = total.requests.saturating_add(account.aggregate.requests);
-        total.tokens.input_tokens = total
-            .tokens
-            .input_tokens
-            .saturating_add(account.aggregate.tokens.input_tokens);
-        total.tokens.cached_input_tokens = total
-            .tokens
-            .cached_input_tokens
-            .saturating_add(account.aggregate.tokens.cached_input_tokens);
-        total.tokens.output_tokens = total
-            .tokens
-            .output_tokens
-            .saturating_add(account.aggregate.tokens.output_tokens);
-        total.tokens.reasoning_output_tokens = total
-            .tokens
-            .reasoning_output_tokens
-            .saturating_add(account.aggregate.tokens.reasoning_output_tokens);
-        total.tokens.real_total_tokens = total
-            .tokens
-            .real_total_tokens
-            .saturating_add(account.aggregate.tokens.real_total_tokens);
-        total.cost.input_cost_micros = total
-            .cost
-            .input_cost_micros
-            .saturating_add(account.aggregate.cost.input_cost_micros);
-        total.cost.cached_input_cost_micros = total
-            .cost
-            .cached_input_cost_micros
-            .saturating_add(account.aggregate.cost.cached_input_cost_micros);
-        total.cost.output_cost_micros = total
-            .cost
-            .output_cost_micros
-            .saturating_add(account.aggregate.cost.output_cost_micros);
-        total.cost.total_cost_micros = total
-            .cost
-            .total_cost_micros
-            .saturating_add(account.aggregate.cost.total_cost_micros);
-        total.cost.unpriced_tokens = total
-            .cost
-            .unpriced_tokens
-            .saturating_add(account.aggregate.cost.unpriced_tokens);
+        add_aggregate(&mut total, &account.aggregate);
     }
     total
 }
@@ -3899,6 +3849,36 @@ fn assert_aggregate_conservation(
         expected.tokens.real_total_tokens,
         actual.tokens.real_total_tokens,
     );
+    assert_conserved_value(
+        account_group_key,
+        "input_cost_micros",
+        expected.cost.input_cost_micros,
+        actual.cost.input_cost_micros,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "cached_input_cost_micros",
+        expected.cost.cached_input_cost_micros,
+        actual.cost.cached_input_cost_micros,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "output_cost_micros",
+        expected.cost.output_cost_micros,
+        actual.cost.output_cost_micros,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "total_cost_micros",
+        expected.cost.total_cost_micros,
+        actual.cost.total_cost_micros,
+    );
+    assert_conserved_value(
+        account_group_key,
+        "unpriced_tokens",
+        expected.cost.unpriced_tokens,
+        actual.cost.unpriced_tokens,
+    );
 }
 
 #[cfg(any(test, debug_assertions))]
@@ -3919,7 +3899,6 @@ fn assert_conserved_value(account_group_key: &str, metric: &str, expected: u64, 
     );
 }
 
-#[cfg(any(test, debug_assertions))]
 fn add_aggregate(target: &mut Aggregate, source: &Aggregate) {
     target.requests = target.requests.saturating_add(source.requests);
     target.tokens.input_tokens = target
@@ -3942,6 +3921,26 @@ fn add_aggregate(target: &mut Aggregate, source: &Aggregate) {
         .tokens
         .real_total_tokens
         .saturating_add(source.tokens.real_total_tokens);
+    target.cost.input_cost_micros = target
+        .cost
+        .input_cost_micros
+        .saturating_add(source.cost.input_cost_micros);
+    target.cost.cached_input_cost_micros = target
+        .cost
+        .cached_input_cost_micros
+        .saturating_add(source.cost.cached_input_cost_micros);
+    target.cost.output_cost_micros = target
+        .cost
+        .output_cost_micros
+        .saturating_add(source.cost.output_cost_micros);
+    target.cost.total_cost_micros = target
+        .cost
+        .total_cost_micros
+        .saturating_add(source.cost.total_cost_micros);
+    target.cost.unpriced_tokens = target
+        .cost
+        .unpriced_tokens
+        .saturating_add(source.cost.unpriced_tokens);
 }
 
 fn add_to_model(
@@ -6781,10 +6780,18 @@ mod tests {
         let evidence_ids = seed_usage_fact_fixture(
             &codex_home,
             "attribution-layer-conservation",
-            &[(10, 1), (30, 3)],
+            &[(10, 1), (30, 3), (60, 6)],
         );
         let account_alias = identity::account_id_alias(Some("acct_conservation")).unwrap();
         let fixtures = [
+            legacy_identity_fact(
+                "e-unknown-050",
+                "r-unknown-050",
+                "p",
+                "legacy-p-050",
+                "50",
+                50,
+            ),
             confirmed_identity_fact(
                 "e-strict-100",
                 "r-strict-100",
@@ -6808,6 +6815,11 @@ mod tests {
             rewrite_identity_fact(&conn, old_evidence_id, fixture);
         }
         conn.execute(
+            "UPDATE openai_usage_facts SET model = 'unknown-model', pricing_model = 'unknown-model', cached_input_tokens = 2, reasoning_output_tokens = 1, input_cost_micros = 0, cached_input_cost_micros = 0, output_cost_micros = 0, total_cost_micros = 0, unpriced_tokens = 11, priced = 0 WHERE evidence_id = 'e-unknown-050'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
             "UPDATE openai_usage_facts SET cached_input_tokens = 4, reasoning_output_tokens = 1 WHERE evidence_id = 'e-strict-100'",
             [],
         )
@@ -6821,12 +6833,23 @@ mod tests {
 
         let dashboard = load_combined_dashboard(&codex_home);
 
-        assert_eq!(dashboard.account_summary.len(), 1);
-        let account = &dashboard.account_summary[0];
+        assert_eq!(dashboard.account_summary.len(), 2);
+        let account = dashboard
+            .account_summary
+            .iter()
+            .find(|account| account.account_group_key.as_deref() == Some(account_alias.as_str()))
+            .unwrap();
+        let unknown = dashboard
+            .account_summary
+            .iter()
+            .find(|account| account.account_group_key.as_deref() == Some("legacy:legacy-p-050"))
+            .unwrap();
         assert_eq!(account.request_count, 2);
-        assert_eq!(account.tokens.input_tokens, 30);
-        assert_eq!(account.tokens.output_tokens, 3);
-        assert_eq!(account.tokens.real_total_tokens, 33);
+        assert_eq!(account.tokens.input_tokens, 50);
+        assert_eq!(account.tokens.cached_input_tokens, 10);
+        assert_eq!(account.tokens.output_tokens, 5);
+        assert_eq!(account.tokens.reasoning_output_tokens, 3);
+        assert_eq!(account.tokens.real_total_tokens, 55);
         assert_eq!(
             account.tokens.real_total_tokens,
             account.tokens.input_tokens + account.tokens.output_tokens
@@ -6839,20 +6862,22 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
         let strict = breakdown.get(LEDGER_LAYER_STRICT_PROVEN).unwrap();
         assert_eq!(strict.request_count, 1);
-        assert_eq!(strict.tokens.input_tokens, 10);
+        assert_eq!(strict.tokens.input_tokens, 20);
         assert_eq!(strict.tokens.cached_input_tokens, 4);
-        assert_eq!(strict.tokens.output_tokens, 1);
+        assert_eq!(strict.tokens.output_tokens, 2);
         assert_eq!(strict.tokens.reasoning_output_tokens, 1);
-        assert_eq!(strict.tokens.real_total_tokens, 11);
+        assert_eq!(strict.tokens.real_total_tokens, 22);
         let legacy = breakdown
             .get(LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED)
             .unwrap();
         assert_eq!(legacy.request_count, 1);
-        assert_eq!(legacy.tokens.input_tokens, 20);
+        assert_eq!(legacy.tokens.input_tokens, 30);
         assert_eq!(legacy.tokens.cached_input_tokens, 6);
-        assert_eq!(legacy.tokens.output_tokens, 2);
+        assert_eq!(legacy.tokens.output_tokens, 3);
         assert_eq!(legacy.tokens.reasoning_output_tokens, 2);
-        assert_eq!(legacy.tokens.real_total_tokens, 22);
+        assert_eq!(legacy.tokens.real_total_tokens, 33);
+        assert_eq!(strict.cost.total_cost_micros, 63);
+        assert_eq!(legacy.cost.total_cost_micros, 95);
 
         assert_eq!(
             account
@@ -6870,8 +6895,48 @@ mod tests {
                 .sum::<u64>(),
             account.tokens.real_total_tokens
         );
-        assert_eq!(dashboard.summary.total_requests, 2);
-        assert_eq!(dashboard.summary.tokens.real_total_tokens, 33);
+        assert_eq!(account.cost.total_cost_micros, 158);
+        assert_eq!(account.cost.unpriced_tokens, 0);
+        assert_eq!(
+            account
+                .attribution_breakdown
+                .iter()
+                .map(|layer| layer.cost.total_cost_micros)
+                .sum::<u64>(),
+            account.cost.total_cost_micros
+        );
+
+        assert_eq!(unknown.request_count, 1);
+        assert_eq!(unknown.tokens.input_tokens, 10);
+        assert_eq!(unknown.tokens.cached_input_tokens, 2);
+        assert_eq!(unknown.tokens.output_tokens, 1);
+        assert_eq!(unknown.tokens.reasoning_output_tokens, 1);
+        assert_eq!(unknown.tokens.real_total_tokens, 11);
+        assert_eq!(unknown.cost.total_cost_micros, 0);
+        assert_eq!(unknown.cost.unpriced_tokens, 11);
+        assert_eq!(unknown.attribution_breakdown.len(), 1);
+        assert_eq!(
+            unknown.attribution_breakdown[0].ledger_layer,
+            LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED
+        );
+        assert_eq!(unknown.attribution_breakdown[0].request_count, 1);
+        assert_eq!(
+            unknown.attribution_breakdown[0].tokens.real_total_tokens,
+            11
+        );
+        assert_eq!(unknown.attribution_breakdown[0].cost.unpriced_tokens, 11);
+
+        assert_eq!(dashboard.summary.total_requests, 3);
+        assert_eq!(dashboard.summary.tokens.input_tokens, 60);
+        assert_eq!(dashboard.summary.tokens.cached_input_tokens, 12);
+        assert_eq!(dashboard.summary.tokens.output_tokens, 6);
+        assert_eq!(dashboard.summary.tokens.reasoning_output_tokens, 4);
+        assert_eq!(dashboard.summary.tokens.real_total_tokens, 66);
+        assert_eq!(dashboard.summary.cost.input_cost_micros, 88);
+        assert_eq!(dashboard.summary.cost.cached_input_cost_micros, 0);
+        assert_eq!(dashboard.summary.cost.output_cost_micros, 70);
+        assert_eq!(dashboard.summary.cost.total_cost_micros, 158);
+        assert_eq!(dashboard.summary.cost.unpriced_tokens, 11);
         assert_eq!(
             dashboard
                 .account_summary
@@ -6879,6 +6944,46 @@ mod tests {
                 .map(|summary| summary.tokens.real_total_tokens)
                 .sum::<u64>(),
             dashboard.summary.tokens.real_total_tokens
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|summary| summary.cost.input_cost_micros)
+                .sum::<u64>(),
+            dashboard.summary.cost.input_cost_micros
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|summary| summary.cost.cached_input_cost_micros)
+                .sum::<u64>(),
+            dashboard.summary.cost.cached_input_cost_micros
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|summary| summary.cost.output_cost_micros)
+                .sum::<u64>(),
+            dashboard.summary.cost.output_cost_micros
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|summary| summary.cost.total_cost_micros)
+                .sum::<u64>(),
+            dashboard.summary.cost.total_cost_micros
+        );
+        assert_eq!(
+            dashboard
+                .account_summary
+                .iter()
+                .map(|summary| summary.cost.unpriced_tokens)
+                .sum::<u64>(),
+            dashboard.summary.cost.unpriced_tokens
         );
         let _ = fs::remove_dir_all(&codex_home);
     }
