@@ -84,18 +84,20 @@ The switch script itself does not create profile folders or generate missing aut
 
 1. Validate that the target profile name and directory are valid profile state, not runtime folders, symlinks, or reparse points.
 2. Validate that the target profile contains a regular-file `auth.json`.
-3. If the Codex desktop app is running, terminate it before switching.
+3. Quiesce the desktop app through the platform lifecycle hook and remember whether the UI was running. On Windows, discovery is scoped to the `OpenAI.Codex_*__2p2nqsd0c76g0` Store package and every candidate PID is reopened and verified with `GetPackageFullName`. When a verified `ChatGPT.exe` UI host exists, it receives `WM_CLOSE` first and the whole package gets a grace period; otherwise, or after that period expires, only verified remaining handles may be terminated. Two consecutive empty snapshots are required, including when the first snapshot is already empty.
 4. Resolve a current-profile marker candidate from `.current_profile` only when it is a valid profile name whose directory passes `is_profile_dir`; otherwise fall back to `.active_profile`.
 5. Load the live root `auth.json` identity and choose the write-back target by account identity, not by marker alone:
    - if the marker profile has the same `account_id` / `email`, write back to that marker;
    - if another managed profile owns the live identity, write back to that actual owner and heal the stale marker;
    - if the marker is a genuine empty placeholder, seat the new account there;
    - if the live root identity is known but unmanaged, do not write it into any existing slot and clear active markers.
-6. Write managed root account-state files from `~/.codex` back only into the resolved backup target.
-7. Save a timestamped snapshot of root `auth.json`.
-8. Overlay managed account-state files from the target profile into `~/.codex`.
-9. Update `.current_profile` and `.active_profile`.
-10. If the app was running before the switch, relaunch it.
+6. Capture a rollback snapshot of root `auth.json`, `profile.json`, `config.toml`, the current and per-profile active markers, the profiles index, the Usage attribution file, and the resolved backup target's managed files. Windows repeats the app-exit observation and snapshot until both the files and identity-routed backup target are stable.
+7. On Windows, reconfirm that the live identity still resolves to the same backup target. Then write managed root account-state files back only into that target and save a timestamped root `auth.json` snapshot.
+8. Overlay the target profile's managed account-state files, synchronize its Base URL configuration, update active markers, and rebuild the profiles index.
+9. On Windows, observe the Store package again after the commit. If a package process reappeared and may have written stale state, re-quiesce it and recommit the target state within the bounded retry budget; otherwise fail with `APP_RESTART_RACE`.
+10. Record the new current-account Usage attribution only after the profile commit is stable.
+11. If any post-quiescence step fails, Windows first attempts to quiesce the Store app again. When that succeeds (or the platform does not use the Windows stability loop), restore the complete snapshot and rebuild the profiles index before returning the original error. If quiescence, snapshot restoration, or index recovery fails, return `SWITCH_RECOVERY_FAILED` without invoking the relaunch hook. A failed quiescence may mean Store processes still exist, so the error instructs the user to close Codex manually before repairing account files.
+12. After a successful commit, or after a complete rollback, invoke the relaunch hook at most once when a UI host was observed at any point in the transaction. On Windows this opens the Store app; relaunch failures are returned as warnings.
 
 ## File sync strategy
 
@@ -210,22 +212,22 @@ Windows real-Codex resolution rejects the managed shim, Windows Apps aliases, an
 
 If a cached `install_state.json` path becomes stale after a Codex upgrade, the resolver falls through to discovery and persists the first runnable replacement. `install_state.json` is machine-local: account/auth state syncs should copy root/profile auth and metadata, but preserve the target host's `%CODEX_HOME%\account_backup\windows\install_state.json`.
 
-## Windows app discovery
+## Windows Store app lifecycle
 
-Windows desktop app discovery first prefers the path recorded in `install_state.json`. If that is missing or invalid, it probes common install locations including:
+Windows desktop lifecycle is package-based rather than executable-path-based:
 
-1. `%LOCALAPPDATA%\Programs\Codex\Codex.exe`
-2. `%LOCALAPPDATA%\Programs\OpenAI\Codex\Codex.exe`
-3. `%LOCALAPPDATA%\Codex\Codex.exe`
-4. `%LOCALAPPDATA%\OpenAI\Codex\Codex.exe`
-5. `%ProgramFiles%\Codex\Codex.exe`
-6. `%ProgramFiles%\OpenAI\Codex\Codex.exe`
-7. directories under `%LOCALAPPDATA%\Programs` or `%ProgramFiles` whose names contain `codex`
-8. Windows `App Paths\Codex.exe` registry entries
+1. Running processes are discovered from `tasklist /APPS /FO CSV /NH` rows whose package full name matches `OpenAI.Codex_*__2p2nqsd0c76g0`.
+2. A PID and image name are only discovery hints. Before either graceful close or forced termination, the process is opened and its package identity is rechecked from the handle with `GetPackageFullName`.
+3. The package's `ChatGPT.exe` process is the UI host. When present, its top-level windows receive `WM_CLOSE` and the whole package gets a grace period. If no UI host exists, or processes remain after that period, only the verified remaining handles are terminated.
+4. Stable shutdown requires consecutive empty package snapshots so delayed exits and Store relaunch races cannot overlap account-state writes.
+5. Relaunch tries to resolve the AppX entry with `Get-AppxPackage -Name OpenAI.Codex` and `Get-StartApps`, then opens `shell:AppsFolder\<AppID>` through `explorer.exe`. The known `OpenAI.Codex_2p2nqsd0c76g0!App` ID is the detection fallback; launch can still fail when the Store package is absent.
+
+`install_state.json` remains the machine-local cache for Codex CLI discovery; it is not used as proof of the desktop app's process identity or launch path.
 
 ## Validation strategy
 
 - Primary regression baseline is the Rust suite under `src-tauri/`
 - Root command: `npm test`
 - Equivalent direct command: `cargo test --manifest-path src-tauri/Cargo.toml`
+- Windows MSVC regression command: `npm run test:rust:windows`
 - Windows GNU/MinGW host check: `npm run test:rust:windows-gnu`

@@ -62,7 +62,7 @@ codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmo
 2. 进入「设置」页，确认 **Codex CLI 路径** 已自动填好（默认探测 PATH / `~/.codex/bin`）；缺失时手动指定，状态变绿即可。
 3. 进入「账号」页，点「添加账号」→ 输入账号别名（落地为 `~/.codex/account_backup/<别名>/`）。
 4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，只有 profile metadata 显式设置 `login_browser: "edge"` 的账号会打开 Edge；其他账号走普通登录浏览器行为。
-5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。
+5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。Windows Store 版会在切换事务中安全退出并按需重开 Codex，具体恢复语义见下方 FAQ。
 6. 需要清空 quota cache 或重新拉计划 / 额度时，点对应账号的「刷新」。刷新会先用现有 `access_token` 查询官方 usage；只有 access token 过期或后端返回 401 时才走 OAuth refresh。
 7. 需要查看真实 token 消耗时，进入「使用统计」页。当前采集来源是本机 Codex session JSONL 与冻结后的 cc-switch 只读证据；future OpenAI response adapter 已预留但暂不产出记录。profile 元数据只用于来源门禁和账号归属。自定义第三方 Base URL、无法证明历史归属或未知官方来源的记录会进入排除计数，不会混入官方 OpenAI 消耗。
 
@@ -160,6 +160,10 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 不会。当前原生 runtime 的 profile 切换只管理 `auth.json` 和 `profile.json` 两个账号态文件，并会按 profile 元数据同步当前账号需要的 Base URL 配置。写回当前 root 状态时，`.current_profile` / `.active_profile` 只作为候选提示，实际归属要用 `auth.json` 中可识别的账号身份匹配；如果 root 已经漂移到未管理账号，应用不会把它写进旧槽位。`skills`、插件缓存、`AGENTS.md`、`rules`、`memories`、`vendor_imports`、sqlite 状态和 sessions/jsonl 历史都不会从 profile 目录覆盖到 live `~/.codex/`。如果旧 profile 目录里残留这些全局资产，它们会被切换流程忽略。
 
+### Windows 切换账号时为什么 Codex 会退出
+
+为了避免旧账号的 Store 进程与切换流程同时写盘，应用会按 `OpenAI.Codex` 包身份关闭 `ChatGPT.exe` 外壳及包内后端，确认连续空快照后再写入账号态。事务期间只要曾观察到 UI host 运行，成功提交或完整回滚后就会至多重开一次。写盘失败会尝试恢复原账号态；恢复不完整时返回 `SWITCH_RECOVERY_FAILED` 且不会自动重开。此时已有 Store 进程仍可能存在，应按错误提示手动关闭 Codex 后再修复账号文件。
+
 ### 「刷新」按钮和「切换」之后会不会消耗 quota
 
 不会真发 ChatGPT 对话请求。Plan 数据来自 `id_token` claims；quota 走 ChatGPT Web API `account/rateLimits/read`（HTTP GET），或 Codex 0.130+ 的 `app-server` JSON-RPC fallback。没有 LLM 调用，不消耗用户额度。
@@ -170,7 +174,7 @@ npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.
 
 ### per-card「登录」按钮为什么有时变成「取消」
 
-普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会向登录子进程发 SIGTERM / taskkill 中止它，释放 `.switch.lock` 全局锁。Windows 本地补丁版中，profile metadata 显式设置 `login_browser: "edge"` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
+普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会通过持有的登录子进程句柄中止并回收该进程，释放 `.switch.lock` 全局锁；Windows 会围绕该 PID 清理对应的 shim 子进程树。Windows 本地补丁版中，profile metadata 显式设置 `login_browser: "edge"` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
 
 因为定向 Edge 登录复用的是 Edge 当前正常登录状态，点击登录前请确认 Edge 里的 ChatGPT 账号就是目标 profile 要保存的账号。若目标 profile 已有可识别账号，应用会在写入前校验新旧账号标识，不一致时拒绝覆盖旧 `auth.json`。
 

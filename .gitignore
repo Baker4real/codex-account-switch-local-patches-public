@@ -27,6 +27,10 @@ codex_history/
 .scratch/run-evidence/
 .local/
 *.local.md
+.env
+.env.*
+!.env.example
+!.env.*.example
 .env.local
 .env.*.local
 
@@ -34,12 +38,3 @@ codex_history/
 /findings.md
 /progress.md
 /task_plan.md
-docs/*
-!docs/agents/
-!docs/agents/**
-!docs/environments/
-!docs/environments/**
-!docs/plans/
-!docs/plans/**
-!docs/specs/
-!docs/specs/**
