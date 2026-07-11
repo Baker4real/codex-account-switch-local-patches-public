@@ -79,8 +79,10 @@ pub(super) fn validated_email_alias(value: Option<&str>) -> Option<String> {
 }
 
 pub(super) struct CanonicalAccountResolver {
-    canonical_by_node: BTreeMap<IdentityNode, String>,
+    canonical_by_node: BTreeMap<IdentityNode, BTreeSet<String>>,
+    untrusted_canonical_by_node: BTreeMap<IdentityNode, BTreeSet<String>>,
     trusted_canonical_by_evidence: BTreeMap<String, String>,
+    untrusted_canonical_by_evidence: BTreeMap<String, String>,
     latest_prior_by_evidence: BTreeMap<String, String>,
     latest_prior_eligible_evidence: BTreeSet<String>,
 }
@@ -226,7 +228,7 @@ impl CanonicalAccountResolver {
             component.fallbacks.insert(fallback_keys[index].clone());
         }
 
-        let mut canonical_by_node = BTreeMap::new();
+        let mut canonical_by_node = BTreeMap::<IdentityNode, BTreeSet<String>>::new();
         let mut canonical_by_root = BTreeMap::new();
         for (root, component) in components {
             let canonical = component
@@ -251,7 +253,10 @@ impl CanonicalAccountResolver {
                 )
                 .chain(component.fallbacks.into_iter().map(IdentityNode::Fallback))
             {
-                canonical_by_node.insert(node, canonical.clone());
+                canonical_by_node
+                    .entry(node)
+                    .or_default()
+                    .insert(canonical.clone());
             }
         }
 
@@ -321,18 +326,25 @@ impl CanonicalAccountResolver {
             };
             resolve_latest_priors(timeline, &events, &mut latest_prior_by_evidence);
         }
+        let mut latest_prior_canonicals_by_fallback =
+            BTreeMap::<IdentityNode, BTreeSet<String>>::new();
         for (index, fact) in facts.iter().enumerate() {
             let Some(canonical) = latest_prior_by_evidence.get(&fact.evidence_id) else {
                 continue;
             };
-            canonical_by_node.insert(
-                IdentityNode::Fallback(fallback_keys[index].clone()),
-                canonical.clone(),
-            );
+            latest_prior_canonicals_by_fallback
+                .entry(IdentityNode::Fallback(fallback_keys[index].clone()))
+                .or_default()
+                .insert(canonical.clone());
+        }
+        for (fallback, canonicals) in latest_prior_canonicals_by_fallback {
+            canonical_by_node.insert(fallback, canonicals);
         }
         Self {
             canonical_by_node,
+            untrusted_canonical_by_node: BTreeMap::new(),
             trusted_canonical_by_evidence,
+            untrusted_canonical_by_evidence: BTreeMap::new(),
             latest_prior_by_evidence,
             latest_prior_eligible_evidence,
         }
@@ -342,13 +354,14 @@ impl CanonicalAccountResolver {
         if let Some(canonical) = self.trusted_canonical_by_evidence.get(&fact.evidence_id) {
             return canonical.clone();
         }
+        if let Some(canonical) = self.untrusted_canonical_by_evidence.get(&fact.evidence_id) {
+            return canonical.clone();
+        }
         for alias in aliases(fact) {
-            if let Some(canonical) = self
-                .canonical_by_node
-                .get(&IdentityNode::Alias(alias))
-                .cloned()
+            if let Some(canonical) =
+                unique_canonical(self.canonical_by_node.get(&IdentityNode::Alias(alias)))
             {
-                return canonical;
+                return canonical.clone();
             }
         }
         if let Some(canonical) = self.latest_prior_by_evidence.get(&fact.evidence_id) {
@@ -360,10 +373,12 @@ impl CanonicalAccountResolver {
         {
             return raw_identity_independent_fallback(fact);
         }
-        self.canonical_by_node
-            .get(&IdentityNode::Fallback(fallback.clone()))
-            .cloned()
-            .unwrap_or(fallback)
+        unique_canonical(
+            self.canonical_by_node
+                .get(&IdentityNode::Fallback(fallback.clone())),
+        )
+        .cloned()
+        .unwrap_or(fallback)
     }
 
     pub(super) fn matches_group_filter(
@@ -379,24 +394,42 @@ impl CanonicalAccountResolver {
         let mut candidates = self
             .canonical_by_node
             .values()
+            .chain(self.untrusted_canonical_by_node.values())
+            .flatten()
             .filter(|canonical| canonical.as_str() == group_key)
             .cloned()
             .collect::<BTreeSet<_>>();
         candidates.extend(
             IdentityAlias::parse_account_id(Some(group_key))
                 .or_else(|| IdentityAlias::parse_email(Some(group_key)))
-                .and_then(|alias| self.canonical_by_node.get(&IdentityNode::Alias(alias)))
+                .into_iter()
+                .flat_map(|alias| {
+                    let node = IdentityNode::Alias(alias);
+                    self.canonical_by_node
+                        .get(&node)
+                        .into_iter()
+                        .chain(self.untrusted_canonical_by_node.get(&node))
+                        .flatten()
+                })
                 .cloned(),
         );
+        let raw_fallback = IdentityNode::Fallback(group_key.to_string());
         candidates.extend(
             self.canonical_by_node
-                .get(&IdentityNode::Fallback(group_key.to_string()))
+                .get(&raw_fallback)
+                .into_iter()
+                .chain(self.untrusted_canonical_by_node.get(&raw_fallback))
+                .flatten()
                 .cloned(),
         );
         for prefix in ["identity:", "legacy:"] {
+            let fallback = IdentityNode::Fallback(format!("{prefix}{group_key}"));
             candidates.extend(
                 self.canonical_by_node
-                    .get(&IdentityNode::Fallback(format!("{prefix}{group_key}")))
+                    .get(&fallback)
+                    .into_iter()
+                    .chain(self.untrusted_canonical_by_node.get(&fallback))
+                    .flatten()
                     .cloned(),
             );
         }
@@ -404,6 +437,56 @@ impl CanonicalAccountResolver {
             .then(|| candidates.into_iter().next())
             .flatten()
     }
+
+    pub(super) fn add_untrusted_facts(&mut self, facts: &[UsageFact], fallback_keys: &[String]) {
+        debug_assert_eq!(facts.len(), fallback_keys.len());
+        for (fact, fallback_key) in facts.iter().zip(fallback_keys) {
+            let fact_aliases = aliases(fact).collect::<Vec<_>>();
+            let mut trusted_candidates = BTreeSet::new();
+            let mut ambiguous = false;
+            for alias in &fact_aliases {
+                let Some(canonicals) = self
+                    .canonical_by_node
+                    .get(&IdentityNode::Alias(alias.clone()))
+                else {
+                    continue;
+                };
+                if canonicals.len() != 1 {
+                    ambiguous = true;
+                } else {
+                    trusted_candidates.extend(canonicals.iter().cloned());
+                }
+            }
+            ambiguous |= trusted_candidates.len() > 1;
+            let maps_aliases =
+                !ambiguous && (!trusted_candidates.is_empty() || fact_aliases.len() == 1);
+            let canonical = if !ambiguous && trusted_candidates.len() == 1 {
+                trusted_candidates.into_iter().next().unwrap()
+            } else if !ambiguous && fact_aliases.len() == 1 {
+                fact_aliases[0].clone().into_key()
+            } else {
+                fallback_key.clone()
+            };
+            self.untrusted_canonical_by_evidence
+                .insert(fact.evidence_id.clone(), canonical.clone());
+            self.untrusted_canonical_by_node
+                .entry(IdentityNode::Fallback(fallback_key.clone()))
+                .or_default()
+                .insert(canonical.clone());
+            if maps_aliases {
+                for alias in fact_aliases {
+                    self.untrusted_canonical_by_node
+                        .entry(IdentityNode::Alias(alias))
+                        .or_default()
+                        .insert(canonical.clone());
+                }
+            }
+        }
+    }
+}
+
+fn unique_canonical(canonicals: Option<&BTreeSet<String>>) -> Option<&String> {
+    canonicals.filter(|values| values.len() == 1)?.first()
 }
 
 fn raw_identity_independent_fallback(fact: &UsageFact) -> String {
