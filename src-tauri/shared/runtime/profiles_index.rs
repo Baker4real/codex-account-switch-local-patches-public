@@ -17,7 +17,7 @@ use super::paths::{
 };
 use super::profiles::{
     build_display_title, compute_subscription_days_left, detect_unmanaged_live_account,
-    resolve_current_profile,
+    resolve_backup_target, resolve_current_profile,
 };
 use super::session_usage::{load_latest_local_quota_snapshot, normalize_quota_summary};
 
@@ -390,14 +390,15 @@ fn select_current_quota(
 pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSnapshotResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index = load_profiles_index(Some(&codex_home))?;
-    let unmanaged_live_account =
-        detect_unmanaged_live_account(&get_backup_root(Some(&codex_home)), &codex_home);
+    let backup_root = get_backup_root(Some(&codex_home));
+    let unmanaged_live_account = detect_unmanaged_live_account(&backup_root, &codex_home);
     let current_profile = if unmanaged_live_account.is_some() {
         None
     } else {
-        index.current_profile.as_deref()
+        resolve_backup_target(&backup_root, &codex_home)
     };
-    let current_entry = current_profile.and_then(|profile_name| {
+    let current_profile_ref = current_profile.as_deref();
+    let current_entry = current_profile_ref.and_then(|profile_name| {
         index
             .profiles
             .iter()
@@ -409,7 +410,7 @@ pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSn
         profiles: index
             .profiles
             .iter()
-            .map(|entry| build_profile_card(entry, current_profile))
+            .map(|entry| build_profile_card(entry, current_profile_ref))
             .collect(),
         current_card: current_entry.map(|entry| build_current_card(entry, &codex_home)),
         current_quota_card: current_entry.map(|entry| {
@@ -427,13 +428,8 @@ pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSn
 pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQuotaResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index = load_profiles_index(Some(&codex_home))?;
-    if detect_unmanaged_live_account(&get_backup_root(Some(&codex_home)), &codex_home).is_some() {
-        return Ok(CurrentQuotaResponse {
-            profile: None,
-            quota: None,
-        });
-    }
-    let Some(current_profile) = index.current_profile.clone() else {
+    let backup_root = get_backup_root(Some(&codex_home));
+    let Some(current_profile) = resolve_backup_target(&backup_root, &codex_home) else {
         return Ok(CurrentQuotaResponse {
             profile: None,
             quota: None,
@@ -582,6 +578,60 @@ mod tests {
         );
         assert_eq!(current_quota.profile, None);
         assert!(current_quota.quota.is_none());
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn snapshot_and_live_quota_follow_managed_live_identity_instead_of_stale_marker() {
+        let codex_home = temp_codex_home("snapshot-managed-drift");
+        let backup_root = get_backup_root(Some(&codex_home));
+        let profile_a_dir = backup_root.join("a");
+        let profile_b_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::create_dir_all(&profile_b_dir).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
+        fs::write(
+            profile_a_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"a@example.com","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            profile_b_dir.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":73},"weekly":{"remaining_percent":91}}}"#,
+        )
+        .unwrap();
+        fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_B")).unwrap();
+
+        let snapshot = load_profiles_snapshot(Some(&codex_home)).unwrap();
+        let current_quota = load_current_live_quota(Some(&codex_home)).unwrap();
+
+        assert_eq!(snapshot.unmanaged_live_account, None);
+        assert_eq!(
+            snapshot
+                .current_card
+                .as_ref()
+                .map(|card| card.folder_name.as_str()),
+            Some("b")
+        );
+        assert_eq!(
+            snapshot
+                .profiles
+                .iter()
+                .find(|card| card.status == "current")
+                .map(|card| card.folder_name.as_str()),
+            Some("b")
+        );
+        assert_eq!(current_quota.profile.as_deref(), Some("b"));
+        assert_eq!(
+            current_quota
+                .quota
+                .as_ref()
+                .and_then(|quota| quota.five_hour.remaining_percent),
+            Some(73)
+        );
 
         let _ = fs::remove_dir_all(&codex_home);
     }
