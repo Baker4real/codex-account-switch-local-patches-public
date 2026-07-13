@@ -29,8 +29,11 @@ pub fn check_update(update_url: &str) -> AppResult<UpdateCheckResponse> {
         })?;
     let current_version = env!("CARGO_PKG_VERSION").to_string();
     let has_update = compare_versions(&latest_version, &current_version)? == Ordering::Greater;
-    let release_url = read_string_field(&payload, &["html_url", "release_url"])
-        .or_else(|| Some(RELEASES_URL.to_string()));
+    // The public upstream endpoint is used only as a version/notes source. Never
+    // propagate its html_url into the UI, because that could lead a private patch
+    // build to a public binary release. Product release links stay on our private
+    // patch repository even when the upstream payload contains html_url.
+    let release_url = Some(RELEASES_URL.to_string());
     let notes = read_string_field(&payload, &["notes", "body"]);
 
     Ok(UpdateCheckResponse {

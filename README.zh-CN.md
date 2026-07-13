@@ -31,6 +31,8 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 
 Windows SmartScreen 可能提示未签名；确认来源后可选择“更多信息 → 仍要运行”。账号凭据和 OAuth token 只写入本机，请勿把 `auth.json` 上传到公共位置。
 
+历史版本说明：旧版仓库曾发布过 macOS/Linux 资产，那些 Release 只用于保留历史记录，当前不再支持；不要安装旧平台或公共上游二进制。
+
 ## 仓库结构
 
 - `src-tauri/win/`：Windows Tauri 前端壳与原生 runtime。
@@ -62,7 +64,7 @@ npm run tauri:build:windows:portable
 
 产物为 `src-tauri\target\x86_64-pc-windows-msvc\release\codex_switch.exe`。替换安装目录时必须同时复制同一构建产生的 x64 `WebView2Loader.dll`；loader 通常位于 `release\build\webview2-com-sys-*\out\x64\`，不保证在 release 根目录。
 
-GitHub Actions 只在 `windows-latest` 上执行 Windows x64 CI/release，tag release 仅附加 NSIS `.exe`。版本号源头是 `package.json`，常用命令：
+GitHub Actions 的 Windows CI 和构建只在 `windows-latest` 上执行；tag release 仅附加 Windows NSIS `.exe`，中性的 release 编排 runner 不参与平台构建。版本号源头是 `package.json`，常用命令：
 
 ```powershell
 npm run version:sync
