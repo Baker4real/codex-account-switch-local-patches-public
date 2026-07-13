@@ -1,5 +1,7 @@
 # Windows-only 裁剪与 Cockpit Tools 功能对齐设计
 
+> 状态（2026-07-14）：阶段一 Windows-only 裁剪与阶段二第一组能力均已完成。实现计划见 [`docs/plans/2026-07-13-cockpit-phase1.md`](../plans/2026-07-13-cockpit-phase1.md)，验收证据见 [`docs/evidence/2026-07-13-cockpit-phase1-verification.md`](../evidence/2026-07-13-cockpit-phase1-verification.md)；后续候选能力仍须单独设计和验收。
+
 ## 目标
 
 把项目从跨平台 Codex 账号切换器收敛为仅面向 Windows 的个人本地工具，并在平台裁剪完成后，分阶段吸收 Cockpit Tools 中与现有产品定位一致的 Codex 功能。
@@ -88,7 +90,7 @@
 
 ## 阶段二：Cockpit Tools 第一组功能
 
-平台裁剪单独验收通过后，按下列顺序实现：
+平台裁剪单独验收通过后，第一组已按下列顺序实现；第二、三组仍需独立计划和验收：
 
 1. Windows GUI 下补充 `nvm`、`fnm`、`asdf` 的 Codex CLI/Node 候选发现；最终候选仍必须通过真实 `codex --version` 校验。
 2. 账号搜索和动态套餐筛选；筛选只影响视图，不改变底层账号集合。

@@ -1,5 +1,7 @@
 # Cockpit Tools 第一组能力实施计划
 
+> 状态：已完成并归档（2026-07-13）；实现、测试、构建和部署证据见 [`docs/evidence/2026-07-13-cockpit-phase1-verification.md`](../evidence/2026-07-13-cockpit-phase1-verification.md)。
+
 > **For agentic workers:** Implement this plan task-by-task. Prefer `subagent-driven-development` when available for independent tasks; otherwise use the repository's normal implementation workflow. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在已经完成的 Windows-only 基线上，补齐与 Codex Switch 定位一致的 Cockpit Tools 第一组能力：Windows GUI 下的 nvm/fnm/asdf Codex CLI 候选发现、账号搜索与动态套餐筛选、可见/总数提示，以及 additional/model-specific 配额的安全显示偏好。

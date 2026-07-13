@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Cockpit phase one 已落地 Windows GUI 的 nvm-windows/fnm/asdf CLI 候选发现、账号搜索与动态套餐筛选、显示数/总数提示，以及 additional/model-specific 配额显示偏好；默认隐藏 Spark 噪声行，筛选和偏好不写入账号凭据。
 - **Breaking:** the supported product boundary is now Windows x64 only. Runtime sources,
   frontend entrypoints, build scripts, CI, and release assets are maintained for the Windows
   MSVC target; other platform packages and launch paths are no longer part of the product.

@@ -19,7 +19,7 @@ git -C "D:\Codex\projects\codex-account-switch" status --short --branch
 
 没有后续文件行，因此基线工作区干净；本地 `main` 比 `origin/main` 多 11 个提交。
 
-最近 6 个提交：
+截至 2026-07-13 的 6 个提交：
 
 ```text
 039834b (HEAD -> main) docs: plan Windows-only platform retirement

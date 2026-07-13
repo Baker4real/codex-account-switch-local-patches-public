@@ -72,11 +72,14 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
   Edge 状态，不传 `--user-data-dir` / `--new-window`，写入前必须比较 OAuth 身份，防止
   浏览器当前账号覆盖已知 profile。
 - 未设置 Edge metadata 的 profile 使用普通 `codex login`，保留上游默认行为。
-- CLI resolver 按手动 override、`install_state`、PATH 和常见 Windows runtime 顺序探测，
-  每个候选都用 `codex --version` 验证；失效的缓存 shim 不会继续使用。
+- CLI resolver 按手动 override、`install_state`、PATH、nvm-windows、fnm、asdf 和常见
+  Windows runtime 顺序探测，每个候选都用 `codex --version` 验证；失效的缓存 shim 不会
+  继续使用。版本管理器扫描只读取受限的直接版本目录，不做全盘递归。
 - plan 来自 OAuth `id_token` claims；quota 优先走 ChatGPT Web API，必要时使用
   app-server `account/rateLimits/read` fallback。UI 显示 provenance 和观测时间，低于阈值
-  只告警，不自动切换。
+  只告警，不自动切换。账号页支持本地搜索、动态套餐筛选和显示数/总数；additional/
+  model-specific 配额保留 unknown/stale 语义，Spark 噪声行默认隐藏，显示偏好只写浏览器
+  localStorage，不写入账号凭据或 profile 配置。
 
 ## 更新检查
 

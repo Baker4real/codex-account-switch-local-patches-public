@@ -83,6 +83,8 @@ pub(super) struct CanonicalAccountResolver {
     untrusted_canonical_by_node: BTreeMap<IdentityNode, BTreeSet<String>>,
     trusted_canonical_by_evidence: BTreeMap<String, String>,
     untrusted_canonical_by_evidence: BTreeMap<String, String>,
+    fallback_by_evidence: BTreeMap<String, String>,
+    untrusted_fallback_by_evidence: BTreeMap<String, String>,
     latest_prior_by_evidence: BTreeMap<String, String>,
     latest_prior_eligible_evidence: BTreeSet<String>,
 }
@@ -90,16 +92,18 @@ pub(super) struct CanonicalAccountResolver {
 pub(super) type VerifiedProfileAliases = BTreeMap<(String, String), VerifiedIdentityAliases>;
 
 pub(super) struct VerifiedIdentityAliases {
-    account_id: IdentityAlias,
-    email: IdentityAlias,
+    account_id: Option<IdentityAlias>,
+    email: Option<IdentityAlias>,
 }
 
 pub(super) fn verified_identity_aliases(
     identity: &AccountIdentity,
 ) -> Option<(String, VerifiedIdentityAliases)> {
-    let account_id =
-        account_id_alias(identity.account_id.as_deref()).map(IdentityAlias::AccountId)?;
-    let email = email_alias(identity.email.as_deref()).map(IdentityAlias::Email)?;
+    let account_id = account_id_alias(identity.account_id.as_deref()).map(IdentityAlias::AccountId);
+    let email = email_alias(identity.email.as_deref()).map(IdentityAlias::Email);
+    if account_id.is_none() && email.is_none() {
+        return None;
+    }
     Some((
         account_identity_key(identity),
         VerifiedIdentityAliases { account_id, email },
@@ -108,7 +112,7 @@ pub(super) fn verified_identity_aliases(
 
 impl VerifiedIdentityAliases {
     fn aliases(&self) -> impl Iterator<Item = IdentityAlias> + '_ {
-        [self.account_id.clone(), self.email.clone()].into_iter()
+        self.account_id.iter().chain(self.email.iter()).cloned()
     }
 }
 
@@ -420,14 +424,31 @@ impl CanonicalAccountResolver {
                 .or_default()
                 .extend(canonicals);
         }
+        let fallback_by_evidence = facts
+            .iter()
+            .zip(fallback_keys)
+            .map(|(fact, fallback)| (fact.evidence_id.clone(), fallback.clone()))
+            .collect();
         Self {
             canonical_by_node,
             untrusted_canonical_by_node: BTreeMap::new(),
             trusted_canonical_by_evidence,
             untrusted_canonical_by_evidence: BTreeMap::new(),
+            fallback_by_evidence,
+            untrusted_fallback_by_evidence: BTreeMap::new(),
             latest_prior_by_evidence,
             latest_prior_eligible_evidence,
         }
+    }
+
+    pub(super) fn canonical_key_for_fact(&self, fact: &UsageFact) -> String {
+        let fallback = self
+            .fallback_by_evidence
+            .get(&fact.evidence_id)
+            .or_else(|| self.untrusted_fallback_by_evidence.get(&fact.evidence_id))
+            .cloned()
+            .unwrap_or_else(|| raw_identity_independent_fallback(fact));
+        self.canonical_key(fact, fallback)
     }
 
     pub(super) fn canonical_key(&self, fact: &UsageFact, fallback: String) -> String {
@@ -466,13 +487,8 @@ impl CanonicalAccountResolver {
         .unwrap_or(fallback)
     }
 
-    pub(super) fn matches_group_filter(
-        &self,
-        fact: &UsageFact,
-        fallback: String,
-        selected_canonical: &str,
-    ) -> bool {
-        self.canonical_key(fact, fallback) == selected_canonical
+    pub(super) fn matches_group_filter(&self, fact: &UsageFact, selected_canonical: &str) -> bool {
+        self.canonical_key_for_fact(fact) == selected_canonical
     }
 
     pub(super) fn resolve_group_filter(&self, group_key: &str) -> Option<String> {
@@ -526,6 +542,8 @@ impl CanonicalAccountResolver {
     pub(super) fn add_untrusted_facts(&mut self, facts: &[UsageFact], fallback_keys: &[String]) {
         debug_assert_eq!(facts.len(), fallback_keys.len());
         for (fact, fallback_key) in facts.iter().zip(fallback_keys) {
+            self.untrusted_fallback_by_evidence
+                .insert(fact.evidence_id.clone(), fallback_key.clone());
             let fact_aliases = aliases(fact).collect::<Vec<_>>();
             let mut trusted_candidates = BTreeSet::new();
             let mut ambiguous = false;

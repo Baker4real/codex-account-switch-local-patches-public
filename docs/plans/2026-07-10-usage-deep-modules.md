@@ -1,5 +1,7 @@
 # Usage Deep Modules 实施计划
 
+> 状态：已完成并归档；所有实施任务与最终集成步骤已勾选，本文仅保留实施和审查记录。
+
 > **For agentic workers:** Implement this plan task-by-task. Prefer `subagent-driven-development` when available for independent tasks; otherwise use the repository's normal implementation workflow. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在保持公开上游核心功能和现有 Usage 语义不变的前提下，完成 Usage 前端纵向 deep module 与真实 evidence adapter seam。
@@ -14,12 +16,12 @@
 - 不改变现有 Tauri Usage command 名称、参数与返回模型。
 - 不改变 `openai_usage.sqlite` schema、重建条件、证据分层、去重、定价或 official Base URL 判定语义。
 - 不把 provider sync 接入账号切换或 Usage 默认流程。
-- Windows 与 macOS 平台 runtime 继续独立；本设计不扩大共享平台行为。
+- Windows runtime 保持为当前唯一活动平台；已退役的非 Windows runtime 不在本设计范围内，也不扩大 shared 平台行为。
 - 不修改账号、设置、主题、语言、登录和切换页面的用户行为。
 - 不引入新的前端状态框架、DOM 模拟依赖或通用插件系统。
 - `npm test` 继续表示完整 Rust suite；新增前端入口必须命名为 `npm run test:front`。
 - 只提交本任务文件；不得暂存或提交用户现有 `.gitignore`、`AGENTS.md` 改动。
-- Windows 前端构建使用 `npm run build -- --mode windows`；不运行需要编译 `src-tauri/mac/**` 的验证路径。
+- Windows 前端构建使用 `npm run build -- --mode windows`；不运行需要编译已退役非 Windows runtime 的验证路径。
 
 ---
 

@@ -1,5 +1,7 @@
 # OpenAI 官方 Token 使用统计 Implementation Plan
 
+> 状态：已完成并归档；所有实施任务已勾选，本文保留功能、约束和验收记录。
+
 > **For agentic workers:** Implement this plan task-by-task. Prefer `subagent-driven-development` when available for independent tasks; otherwise use the repository's normal implementation workflow. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 新增一个只统计 OpenAI 官方 Codex token 消耗的“使用统计”模块，并在 UI 中按账号、模型和费用展示。

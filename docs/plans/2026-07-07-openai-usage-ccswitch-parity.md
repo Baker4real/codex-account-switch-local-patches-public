@@ -1,5 +1,7 @@
 # OpenAI Usage CC Switch Parity Implementation Plan
 
+> 状态：已完成并归档；所有实施任务已勾选，本文保留功能、约束和验收记录。
+
 > **For agentic workers:** Implement this plan task-by-task. Prefer inline execution in this repository because backend and frontend types must move together. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bring the Usage page to CC Switch feature parity for time filtering, trends, stats tables, request logs, and near-real-time refresh while keeping Codex Switch's OpenAI-official accounting rules.

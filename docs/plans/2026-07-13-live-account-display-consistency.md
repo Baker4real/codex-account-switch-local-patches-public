@@ -1,5 +1,7 @@
 # 当前账号显示一致性 Implementation Plan
 
+> 状态：已完成并归档（2026-07-14）；实现、Windows 回归、远端部署、独立探针和成对哈希核验均已通过。
+
 > **For agentic workers:** Implement this plan task-by-task. Prefer `subagent-driven-development` when available for independent tasks; otherwise use the repository's normal implementation workflow. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让账号列表快照和实时额度始终以实时 `auth.json` 的托管身份所有者作为当前 profile。
@@ -14,7 +16,7 @@
 - 不新增依赖。
 - 不处理、检测或兼容 `CC Switch`。
 - 测试必须通过公开 seam `load_profiles_snapshot` 与 `load_current_live_quota` 验证行为。
-- Windows 验证使用 `x86_64-pc-windows-msvc`，不编译 `src-tauri/mac/**`。
+- Windows-only 验证使用 `x86_64-pc-windows-msvc`，不编译已退役非 Windows runtime。
 
 ---
 
@@ -189,6 +191,8 @@ git commit -m 'fix: align current profile with live identity'
 
 - [x] **Step 5: 重建、部署本机并验证实际界面**
 
-- [ ] **Step 6: 对抗性复审后部署远端并核验哈希**
+- [x] **Step 6: 对抗性复审后部署远端并核验哈希**
 
-对抗性复审已完成且无剩余阻断；远端“自习室”在 2026-07-13 本次部署窗口内连续三次显示离线，因此远端替换与哈希核验保持未完成，不能标记为已部署。
+历史暂缓记录（2026-07-13）：对抗性复审已完成；用户于 2026-07-13 指示暂不进行部署。2026-07-13 的传输窗口完成脚本预置并短暂生成 staging payload；临时 HTTP 已停止，staging payload 已删除，未进入 exe/loader 安装替换；远端保留当日已有安装状态。
+
+本次完成（2026-07-14）：设备“自习室”（`aeawutfrjia4s5i6`）在线，UU 控制通道执行 `remote-deploy-20260714-005800`。远端快捷方式目标仍为 `D:\Codex\apps\codex_switch\codex_switch.exe`，工作目录为 `D:\Codex\apps\codex_switch`；替换后的 `codex_switch.exe` 为 `25,541,632` 字节、SHA-256 `FBA221AF9163516A42DCE84DCA15DCE809B9438DCB0D6DF3F64AE0037584470E`，`WebView2Loader.dll` 为 `160,320` 字节、SHA-256 `8427B1FC58EC707813E5C0A51EB5D69397BB333250A7B891BE4D3B123F1E0F1C`。部署保留成对旧文件备份，独立 cmd 探针确认精确目标进程 PID `35156` 且 `Responding=True`；远端 staging 仅保留成对备份与部署报告，HTTP 服务已停止、UU 会话已退出。完整证据位于 `D:\Codex\.codex\run-evidence\codex-account-switch\remote-deploy-20260714-005800\`。
