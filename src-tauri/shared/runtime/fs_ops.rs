@@ -9,7 +9,7 @@ use crate::errors::{AppError, AppResult};
 use crate::models::ProfileMetadata;
 
 use super::metadata::{
-    load_auth_metadata_from_path, profile_metadata_matches_identity, AuthIdentityEvidence,
+    load_account_identity_from_path, profile_metadata_matches_identity, AuthIdentityEvidence,
 };
 use super::paths::{
     autosave_timestamp, get_auto_save_root, get_current_profile_file, is_profile_dir,
@@ -52,10 +52,9 @@ fn root_metadata_matches_profile_identity(
                 format!("Invalid profile metadata: {}", metadata_path.display()),
             )
         })?;
-    let auth_metadata = load_auth_metadata_from_path(auth_path);
-    let auth_identity = auth_metadata
+    let auth_identity = load_account_identity_from_path(auth_path);
+    let auth_identity = auth_identity
         .as_ref()
-        .and_then(|auth| auth.account_label.as_deref())
         .map(AuthIdentityEvidence::Bound)
         .unwrap_or(AuthIdentityEvidence::PresentUnbound);
     Ok(profile_metadata_matches_identity(

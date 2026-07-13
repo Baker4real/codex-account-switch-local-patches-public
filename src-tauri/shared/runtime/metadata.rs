@@ -75,7 +75,7 @@ pub struct AuthDerivedMetadata {
 
 pub(super) enum AuthIdentityEvidence<'a> {
     Missing,
-    Bound(&'a str),
+    Bound(&'a AccountIdentity),
     PresentUnbound,
 }
 
@@ -94,12 +94,19 @@ pub(super) fn profile_metadata_matches_identity(
 
     match auth_identity {
         AuthIdentityEvidence::Missing => true,
-        AuthIdentityEvidence::Bound(auth_account_label) => metadata
+        AuthIdentityEvidence::Bound(auth_identity) => metadata
             .account_label
             .as_deref()
             .map(str::trim)
             .is_some_and(|stored_label| {
-                stored_label.eq_ignore_ascii_case(auth_account_label.trim())
+                auth_identity
+                    .account_id
+                    .as_deref()
+                    .is_some_and(|account_id| stored_label == account_id)
+                    || auth_identity
+                        .email
+                        .as_deref()
+                        .is_some_and(|email| stored_label.eq_ignore_ascii_case(email))
             }),
         AuthIdentityEvidence::PresentUnbound => !metadata_has_identity_bound_fields(metadata),
     }
@@ -497,11 +504,10 @@ fn load_stored_profile_metadata(
     let auth_path = get_backup_root(codex_home)
         .join(profile_name)
         .join("auth.json");
-    let auth_metadata = load_auth_metadata(profile_name, codex_home);
+    let auth_identity = load_account_identity_from_path(&auth_path);
     let auth_identity = if auth_path.is_file() {
-        auth_metadata
+        auth_identity
             .as_ref()
-            .and_then(|auth| auth.account_label.as_deref())
             .map(AuthIdentityEvidence::Bound)
             .unwrap_or(AuthIdentityEvidence::PresentUnbound)
     } else {
@@ -931,6 +937,53 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn load_profile_metadata_accepts_either_account_id_or_email_for_same_auth_identity() {
+        let payload =
+            general_purpose::URL_SAFE_NO_PAD.encode(r#"{"email":"user@example.com"}"#.as_bytes());
+        let token = format!("header.{payload}.signature");
+
+        for stored_label in ["acct_B", "USER@example.com"] {
+            let codex_home = temp_dir(&format!(
+                "dual-identity-label-{}",
+                stored_label.replace('@', "-")
+            ));
+            let profile_dir = get_profile_metadata_path("b", Some(&codex_home))
+                .parent()
+                .expect("profile metadata has parent")
+                .to_path_buf();
+            std::fs::create_dir_all(&profile_dir).unwrap();
+            std::fs::write(
+                profile_dir.join("auth.json"),
+                serde_json::json!({
+                    "tokens": {
+                        "account_id": "acct_B",
+                        "id_token": token
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::write(
+                profile_dir.join("profile.json"),
+                serde_json::json!({
+                    "folder_name": "b",
+                    "account_label": stored_label,
+                    "quota": {"five_hour": {"remaining_percent": 73}}
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+            let metadata = load_profile_metadata("b", Some(&codex_home));
+
+            assert_eq!(metadata.account_label.as_deref(), Some(stored_label));
+            assert_eq!(metadata.quota.five_hour.remaining_percent, Some(73));
+
+            let _ = std::fs::remove_dir_all(&codex_home);
+        }
     }
 
     fn quota_with_five_hour() -> QuotaSummary {
