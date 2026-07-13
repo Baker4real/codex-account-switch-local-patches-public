@@ -989,15 +989,19 @@ mod tests {
         fs::create_dir_all(&live_skill_dir).unwrap();
         fs::create_dir_all(&live_system_skill_dir).unwrap();
         fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(codex_home.join("profile.json"), "{\"folder_name\":\"a\"}\n").unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
         fs::write(
-            codex_home.join("profile.json"),
-            "root-profile-before-switch\n",
+            profile_a_dir.join("profile.json"),
+            "{\"folder_name\":\"a\"}\n",
         )
         .unwrap();
-        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
-        fs::write(profile_a_dir.join("profile.json"), "profile-a-profile\n").unwrap();
         fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
-        fs::write(profile_b_dir.join("profile.json"), "profile-b-profile\n").unwrap();
+        fs::write(
+            profile_b_dir.join("profile.json"),
+            "{\"folder_name\":\"b\"}\n",
+        )
+        .unwrap();
         fs::write(
             profile_a_skill_dir.join("SKILL.md"),
             "stale profile skill\n",
@@ -1026,11 +1030,11 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(codex_home.join("profile.json")).unwrap(),
-            "profile-b-profile\n"
+            "{\"folder_name\":\"b\"}\n"
         );
         assert_eq!(
             fs::read_to_string(profile_a_dir.join("profile.json")).unwrap(),
-            "root-profile-before-switch\n"
+            "{\"folder_name\":\"a\"}\n"
         );
         assert_eq!(
             fs::read_to_string(profile_a_skill_dir.join("SKILL.md")).unwrap(),
@@ -1188,13 +1192,13 @@ mod tests {
         fs::create_dir_all(&profile_a_dir).unwrap();
         fs::create_dir_all(&profile_b_metadata_dir).unwrap();
         fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
+        fs::write(codex_home.join("profile.json"), "{\"folder_name\":\"a\"}\n").unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
         fs::write(
-            codex_home.join("profile.json"),
-            "root-profile-before-switch\n",
+            profile_a_dir.join("profile.json"),
+            "{\"folder_name\":\"a\"}\n",
         )
         .unwrap();
-        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
-        fs::write(profile_a_dir.join("profile.json"), "profile-a-profile\n").unwrap();
         fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
         fs::write(profile_b_metadata_dir.join("payload"), "not metadata\n").unwrap();
         fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
@@ -1209,7 +1213,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(codex_home.join("profile.json")).unwrap(),
-            "root-profile-before-switch\n"
+            "{\"folder_name\":\"a\"}\n"
         );
         assert!(codex_home.join("profile.json").is_file());
 

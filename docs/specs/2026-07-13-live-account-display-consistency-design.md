@@ -29,8 +29,8 @@ Codex Switch 显示的“当前账号”必须与实时 `CODEX_HOME/auth.json` �
 - 实时身份完全未托管：不显示任何托管 profile 为当前账号；账号快照继续返回 unmanaged 提示。
 - 实时身份不可解析：保留现有兼容行为，回退到合法 marker。
 - 读取快照不修改 marker、不复制账号文件，也不触发 Codex 生命周期操作。
-- 读取 profile 元数据时，若其显式 `folder_name` 与所在目录不一致，则整份展示元数据失效，并从该目录的 `auth.json` 重新派生账号标签。
-- 根状态写回托管 profile 时，若根 `profile.json` 显式声明属于另一个 profile，则只写回身份文件并保留目标 profile 原有元数据，阻止再次串号。
+- 读取 profile 元数据时，以目录名和同目录 `auth.json` 派生的账号标签共同校验归属；不一致或无法绑定的账号标签、套餐、订阅和额度字段全部失效，并从 auth 重新派生，设备配置字段仍保留。
+- 根状态写回托管 profile 时，只有目录声明与实时 auth 身份均匹配的 `profile.json` 才能覆盖目标；明确属于其他 profile 的元数据跳过，无效 JSON 或读取错误直接失败并保留目标文件。
 
 不采用以下方案：
 
@@ -46,6 +46,7 @@ Codex Switch 显示的“当前账号”必须与实时 `CODEX_HOME/auth.json` �
 - 保留并运行已有 unmanaged drift 测试，确保实时身份未托管时仍不显示伪造的当前账号。
 - 构造 `account_backup/b/profile.json` 声明 `folder_name=c` 的污染 fixture，断言读取 `b` 时不会显示 `c` 的标签、套餐或额度。
 - 构造根 `profile.json` 声明 `c`、写回目标为 `b` 的 fixture，断言 `b/auth.json` 正常更新而 `b/profile.json` 不被覆盖。
+- 覆盖 `folder_name=b` 与旧格式缺失 `folder_name`、但 `account_label` 属于 `c` 的绕过路径；另验证无效根 JSON 会 fail closed。
 
 ## 失败模式
 

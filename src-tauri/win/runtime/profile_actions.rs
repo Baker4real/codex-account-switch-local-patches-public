@@ -15,7 +15,7 @@ use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile
 use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{
     get_backup_root, get_codex_home, get_login_runtime_dir, validate_profile_name,
-    ACTIVE_MARKER_FILE,
+    ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
 };
 #[cfg(not(test))]
 use super::paths::{CONTACT_URL, RELEASES_URL, XIAOHONGSHU_URL};
@@ -205,7 +205,11 @@ fn rename_profile_with_home(
         ));
     }
 
-    let mut metadata = load_profile_metadata(&profile_name, Some(&codex_home));
+    let mut metadata = fs::read_to_string(profile_dir.join(PROFILE_METADATA_FILENAME))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ProfileMetadata>(&raw).ok())
+        .and_then(ProfileMetadata::validate)
+        .unwrap_or_else(|| load_profile_metadata(&profile_name, Some(&codex_home)));
 
     fs::rename(&profile_dir, &renamed_dir).map_err(|error| {
         AppError::new(
@@ -384,7 +388,7 @@ mod tests {
         fs::write(
             profile_dir.join("profile.json"),
             format!(
-                r#"{{"folder_name":"{profile_name}","account_label":"user@example.com","quota":{{"five_hour":{{"remaining_percent":33}},"weekly":{{"remaining_percent":66}}}}}}"#
+                r#"{{"folder_name":"{profile_name}","account_label":"acct_123","quota":{{"five_hour":{{"remaining_percent":33}},"weekly":{{"remaining_percent":66}}}}}}"#
             ),
         )
         .unwrap();
@@ -410,7 +414,7 @@ mod tests {
         );
         let metadata = load_profile_metadata("new_name", Some(&codex_home));
         assert_eq!(metadata.folder_name.as_deref(), Some("new_name"));
-        assert_eq!(metadata.account_label.as_deref(), Some("user@example.com"));
+        assert_eq!(metadata.account_label.as_deref(), Some("acct_123"));
         assert_eq!(metadata.quota.five_hour.remaining_percent, Some(33));
         assert_eq!(metadata.quota.weekly.remaining_percent, Some(66));
         let _ = fs::remove_dir_all(&codex_home);

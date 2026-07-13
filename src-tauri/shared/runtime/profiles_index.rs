@@ -563,7 +563,7 @@ mod tests {
         fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
         fs::write(
             profile_a_dir.join("profile.json"),
-            r#"{"folder_name":"a","account_label":"a@example.com","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}}}"#,
+            r#"{"folder_name":"a","account_label":"acct_A","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}}}"#,
         )
         .unwrap();
         fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
@@ -628,7 +628,7 @@ mod tests {
         .unwrap();
         fs::write(
             profile_b_dir.join("profile.json"),
-            r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":73},"weekly":{"remaining_percent":91}}}"#,
+            r#"{"folder_name":"b","account_label":"acct_B","quota":{"five_hour":{"remaining_percent":73},"weekly":{"remaining_percent":91}}}"#,
         )
         .unwrap();
         fs::write(backup_root.join(".current_profile"), "a\n").unwrap();

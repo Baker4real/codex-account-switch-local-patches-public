@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::errors::{AppError, AppResult};
+use crate::models::ProfileMetadata;
 
+use super::metadata::{load_auth_metadata_from_path, profile_metadata_matches_identity};
 use super::paths::{
     autosave_timestamp, get_auto_save_root, get_current_profile_file, is_profile_dir,
     list_profile_dirs, utc_timestamp, ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
@@ -25,17 +27,36 @@ fn is_profile_managed_entry(name: &str) -> bool {
     PROFILE_MANAGED_FILES.contains(&name)
 }
 
-fn metadata_claims_another_profile(path: &Path, target_profile: &str) -> bool {
-    fs::read_to_string(path)
+fn root_metadata_matches_profile_identity(
+    metadata_path: &Path,
+    auth_path: &Path,
+    target_profile: &str,
+) -> AppResult<bool> {
+    let raw = fs::read_to_string(metadata_path).map_err(|error| {
+        AppError::new(
+            "PROFILE_METADATA_READ_FAILED",
+            format!(
+                "Failed to read profile metadata {}: {error}",
+                metadata_path.display()
+            ),
+        )
+    })?;
+    let metadata = serde_json::from_str::<ProfileMetadata>(&raw)
         .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .and_then(|value| {
-            value
-                .get("folder_name")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .is_some_and(|stored_profile| stored_profile != target_profile)
+        .and_then(ProfileMetadata::validate)
+        .ok_or_else(|| {
+            AppError::new(
+                "PROFILE_METADATA_INVALID",
+                format!("Invalid profile metadata: {}", metadata_path.display()),
+            )
+        })?;
+    let auth_account_label =
+        load_auth_metadata_from_path(auth_path).and_then(|auth| auth.account_label);
+    Ok(profile_metadata_matches_identity(
+        &metadata,
+        target_profile,
+        auth_account_label.as_deref(),
+    ))
 }
 
 fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
@@ -412,10 +433,23 @@ pub fn backup_root_state_to_profile(
         managed_sources.push((name, src, exists));
     }
 
+    let metadata_should_copy = managed_sources
+        .iter()
+        .find(|(name, _, _)| name == PROFILE_METADATA_FILENAME)
+        .map(|(_, src, exists)| {
+            if *exists {
+                root_metadata_matches_profile_identity(src, &codex_home.join("auth.json"), profile)
+            } else {
+                Ok(false)
+            }
+        })
+        .transpose()?
+        .unwrap_or(false);
+
     for (name, src, exists) in managed_sources {
         let dst = profile_dir.join(&name);
         if exists {
-            if name == PROFILE_METADATA_FILENAME && metadata_claims_another_profile(&src, profile) {
+            if name == PROFILE_METADATA_FILENAME && !metadata_should_copy {
                 continue;
             }
             copy_entry(&src, &dst)?;
@@ -620,6 +654,61 @@ mod tests {
         assert_eq!(
             fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
             "new auth for b"
+        );
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("profile.json")).unwrap(),
+            original_metadata
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn backup_root_state_keeps_profile_metadata_when_root_label_conflicts_with_auth() {
+        let codex_home = temp_root("backup-root-cross-profile-label");
+        let backup_root = codex_home.join("account_backup");
+        let profile_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_dir).unwrap();
+        write(
+            &codex_home.join("auth.json"),
+            r#"{"tokens":{"account_id":"acct_B"}}"#,
+        );
+        write(
+            &codex_home.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"acct_C"}"#,
+        );
+        let original_metadata = r#"{"folder_name":"b","account_label":"acct_B"}"#;
+        write(&profile_dir.join("auth.json"), "old auth for b");
+        write(&profile_dir.join("profile.json"), original_metadata);
+
+        backup_root_state_to_profile("b", &codex_home, &backup_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("profile.json")).unwrap(),
+            original_metadata
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn backup_root_state_fails_closed_on_invalid_root_metadata() {
+        let codex_home = temp_root("backup-root-invalid-metadata");
+        let backup_root = codex_home.join("account_backup");
+        let profile_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_dir).unwrap();
+        write(&codex_home.join("auth.json"), "new auth for b");
+        write(&codex_home.join("profile.json"), "{invalid json");
+        let original_metadata = r#"{"folder_name":"b","account_label":"acct_B"}"#;
+        write(&profile_dir.join("auth.json"), "old auth for b");
+        write(&profile_dir.join("profile.json"), original_metadata);
+
+        let error = backup_root_state_to_profile("b", &codex_home, &backup_root).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_METADATA_INVALID");
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            "old auth for b"
         );
         assert_eq!(
             fs::read_to_string(profile_dir.join("profile.json")).unwrap(),

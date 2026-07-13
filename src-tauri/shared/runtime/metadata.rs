@@ -73,6 +73,38 @@ pub struct AuthDerivedMetadata {
     pub has_plan_claims: bool,
 }
 
+pub(super) fn profile_metadata_matches_identity(
+    metadata: &ProfileMetadata,
+    profile_name: &str,
+    auth_account_label: Option<&str>,
+) -> bool {
+    if metadata
+        .folder_name
+        .as_deref()
+        .is_some_and(|stored_name| stored_name != profile_name)
+    {
+        return false;
+    }
+
+    let Some(auth_account_label) = auth_account_label.map(str::trim) else {
+        return true;
+    };
+    metadata
+        .account_label
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|stored_label| stored_label.eq_ignore_ascii_case(auth_account_label))
+}
+
+fn clear_identity_bound_metadata(metadata: &mut ProfileMetadata) {
+    metadata.account_label = None;
+    metadata.plan_name = None;
+    metadata.subscription_expires_at = None;
+    metadata.quota = QuotaSummary::default();
+    metadata.quota_updated_at_ms = None;
+    metadata.last_plan_check_ms = None;
+}
+
 const TOKEN_REFRESH_DUE_MS: u64 = 24 * 60 * 60 * 1000;
 // Official Codex CI/CD guidance describes last_refresh older than about
 // 8 days as a stale token bundle. This is not a refresh-token expiry.
@@ -428,15 +460,16 @@ fn load_stored_profile_metadata(
 ) -> Option<ProfileMetadata> {
     let metadata_path = get_profile_metadata_path(profile_name, codex_home);
     let raw = fs::read_to_string(metadata_path).ok()?;
-    serde_json::from_str::<ProfileMetadata>(&raw)
+    let mut metadata = serde_json::from_str::<ProfileMetadata>(&raw)
         .ok()
-        .and_then(ProfileMetadata::validate)
-        .filter(|metadata| {
-            metadata
-                .folder_name
-                .as_deref()
-                .is_none_or(|stored_name| stored_name == profile_name)
-        })
+        .and_then(ProfileMetadata::validate)?;
+    let auth_account_label =
+        load_auth_metadata(profile_name, codex_home).and_then(|auth| auth.account_label);
+    if !profile_metadata_matches_identity(&metadata, profile_name, auth_account_label.as_deref()) {
+        clear_identity_bound_metadata(&mut metadata);
+        metadata.folder_name = Some(profile_name.to_string());
+    }
+    Some(metadata)
 }
 
 fn load_or_init_profile_metadata(profile_name: &str, codex_home: Option<&Path>) -> ProfileMetadata {
@@ -779,6 +812,50 @@ mod tests {
         assert_eq!(metadata.quota.five_hour.remaining_percent, None);
 
         let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn load_profile_metadata_rejects_identity_fields_with_wrong_label_even_when_folder_matches() {
+        for (case, stored_folder) in [("matching-folder", Some("b")), ("legacy", None)] {
+            let codex_home = temp_dir(&format!("cross-profile-label-{case}"));
+            let profile_dir = get_profile_metadata_path("b", Some(&codex_home))
+                .parent()
+                .expect("profile metadata has parent")
+                .to_path_buf();
+            std::fs::create_dir_all(&profile_dir).unwrap();
+            std::fs::write(
+                profile_dir.join("auth.json"),
+                r#"{"tokens":{"account_id":"acct_B"}}"#,
+            )
+            .unwrap();
+            let mut stored = serde_json::json!({
+                "account_label": "acct_C",
+                "plan_name": "prolite",
+                "openai_base_url": "https://example.invalid/v1",
+                "quota": {"five_hour": {"remaining_percent": 12}}
+            });
+            if let Some(stored_folder) = stored_folder {
+                stored["folder_name"] = serde_json::Value::String(stored_folder.to_string());
+            }
+            std::fs::write(
+                profile_dir.join("profile.json"),
+                serde_json::to_string(&stored).unwrap(),
+            )
+            .unwrap();
+
+            let metadata = load_profile_metadata("b", Some(&codex_home));
+
+            assert_eq!(metadata.folder_name.as_deref(), Some("b"));
+            assert_eq!(metadata.account_label.as_deref(), Some("acct_B"));
+            assert_eq!(metadata.plan_name, None);
+            assert_eq!(metadata.quota.five_hour.remaining_percent, None);
+            assert_eq!(
+                metadata.openai_base_url.as_deref(),
+                Some("https://example.invalid/v1")
+            );
+
+            let _ = std::fs::remove_dir_all(&codex_home);
+        }
     }
 
     fn quota_with_five_hour() -> QuotaSummary {

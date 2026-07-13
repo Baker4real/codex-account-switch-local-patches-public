@@ -181,7 +181,7 @@ git commit -m 'fix: align current profile with live identity'
 
 - [x] **Step 3: 写最小防护并确认绿灯**
 
-读取端仅接受未声明目录的兼容旧元数据或与目标目录一致的元数据；写回端跳过显式声明属于其他 profile 的根 `profile.json`，仍正常写回 `auth.json`。
+读取端同时校验目录声明与 auth 派生账号标签，冲突时只清空账号绑定的标签、套餐、订阅和额度字段，保留设备配置；写回端仅复制与目标身份匹配的根 `profile.json`，冲突时跳过，无效 JSON 或读取错误时 fail closed。
 
 - [x] **Step 4: 运行全量 Windows 验证并提交**
 
