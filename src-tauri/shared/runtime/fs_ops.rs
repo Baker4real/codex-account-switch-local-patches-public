@@ -25,6 +25,19 @@ fn is_profile_managed_entry(name: &str) -> bool {
     PROFILE_MANAGED_FILES.contains(&name)
 }
 
+fn metadata_claims_another_profile(path: &Path, target_profile: &str) -> bool {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value
+                .get("folder_name")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .is_some_and(|stored_profile| stored_profile != target_profile)
+}
+
 fn is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
     #[cfg(windows)]
     {
@@ -402,6 +415,9 @@ pub fn backup_root_state_to_profile(
     for (name, src, exists) in managed_sources {
         let dst = profile_dir.join(&name);
         if exists {
+            if name == PROFILE_METADATA_FILENAME && metadata_claims_another_profile(&src, profile) {
+                continue;
+            }
             copy_entry(&src, &dst)?;
         } else {
             remove_path(&dst)?;
@@ -582,6 +598,35 @@ mod tests {
         assert_eq!(fs::read_to_string(&target).unwrap(), "new auth");
 
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn backup_root_state_keeps_profile_metadata_when_root_claims_another_profile() {
+        let codex_home = temp_root("backup-root-cross-profile-metadata");
+        let backup_root = codex_home.join("account_backup");
+        let profile_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_dir).unwrap();
+        write(&codex_home.join("auth.json"), "new auth for b");
+        write(
+            &codex_home.join("profile.json"),
+            r#"{"folder_name":"c","account_label":"c@example.com"}"#,
+        );
+        write(&profile_dir.join("auth.json"), "old auth for b");
+        let original_metadata = r#"{"folder_name":"b","account_label":"b@example.com"}"#;
+        write(&profile_dir.join("profile.json"), original_metadata);
+
+        backup_root_state_to_profile("b", &codex_home, &backup_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            "new auth for b"
+        );
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("profile.json")).unwrap(),
+            original_metadata
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]

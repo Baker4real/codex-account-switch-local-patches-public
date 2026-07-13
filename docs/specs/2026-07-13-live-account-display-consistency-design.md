@@ -19,6 +19,7 @@ Codex Switch 显示的“当前账号”必须与实时 `CODEX_HOME/auth.json` �
 - `resolve_backup_target` 会比较实时 `auth.json` 与各托管 profile 的 `account_id`/邮箱；实时身份属于另一个 profile 时，它能返回真实所有者。
 - `detect_unmanaged_live_account` 只区分“是否属于任意托管 profile”，不能指出实时身份具体属于哪个 profile。
 - 当前 `load_profiles_snapshot` 和 `load_current_live_quota` 在实时身份已托管时仍使用 profile index 中的旧 marker，因此会显示错误账号。
+- `profile.json` 只是展示元数据，可能因历史写回而落在错误的 profile 目录；它不能覆盖同目录 `auth.json` 所证明的账号身份。
 
 ## 方案
 
@@ -28,6 +29,8 @@ Codex Switch 显示的“当前账号”必须与实时 `CODEX_HOME/auth.json` �
 - 实时身份完全未托管：不显示任何托管 profile 为当前账号；账号快照继续返回 unmanaged 提示。
 - 实时身份不可解析：保留现有兼容行为，回退到合法 marker。
 - 读取快照不修改 marker、不复制账号文件，也不触发 Codex 生命周期操作。
+- 读取 profile 元数据时，若其显式 `folder_name` 与所在目录不一致，则整份展示元数据失效，并从该目录的 `auth.json` 重新派生账号标签。
+- 根状态写回托管 profile 时，若根 `profile.json` 显式声明属于另一个 profile，则只写回身份文件并保留目标 profile 原有元数据，阻止再次串号。
 
 不采用以下方案：
 
@@ -41,16 +44,20 @@ Codex Switch 显示的“当前账号”必须与实时 `CODEX_HOME/auth.json` �
 - `load_profiles_snapshot`：构造 `marker=a`、实时身份属于 `b`，断言只有 `b` 状态为 `current`，`current_card` 也属于 `b`。
 - `load_current_live_quota`：同一 fixture 下断言返回 profile `b`，并读取 `b` 的额度，而不是 `a`。
 - 保留并运行已有 unmanaged drift 测试，确保实时身份未托管时仍不显示伪造的当前账号。
+- 构造 `account_backup/b/profile.json` 声明 `folder_name=c` 的污染 fixture，断言读取 `b` 时不会显示 `c` 的标签、套餐或额度。
+- 构造根 `profile.json` 声明 `c`、写回目标为 `b` 的 fixture，断言 `b/auth.json` 正常更新而 `b/profile.json` 不被覆盖。
 
 ## 失败模式
 
 - 多个 profile 共享同一身份时，沿用现有 profile 枚举的确定性所有者选择；本次不扩展重复账号治理。
 - profile index 缺少解析出的所有者时，不构造虚假 current card；返回 profile 名但额度为空，沿用现有失败语义。
 - 不因 marker 过期而把实时根状态写回错误 profile。
+- 不信任与目录身份冲突的展示元数据；宁可暂时不显示套餐或额度，也不能把另一个账号的数据拼到当前账号卡片。
 
 ## 验收标准
 
 - managed drift fixture 下，账号快照和实时额度都选择实时身份所有者。
 - unmanaged drift、正常 marker 匹配和身份不可解析行为不回归。
+- 已污染的跨 profile 元数据读取时失效，后续写回不会继续传播污染。
 - Windows 定向 Rust 测试通过。
 - 不新增依赖，不修改前端，不触碰 `CC Switch`。

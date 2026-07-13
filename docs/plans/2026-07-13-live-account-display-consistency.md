@@ -10,7 +10,7 @@
 
 ## Global Constraints
 
-- 只修改 shared Rust 运行时，不修改前端或 macOS/Windows 平台专属模块。
+- 账号身份规则只修改 shared Rust 运行时；Windows profile 重命名流程可做必要的兼容顺序调整，不修改前端或 macOS 模块。
 - 不新增依赖。
 - 不处理、检测或兼容 `CC Switch`。
 - 测试必须通过公开 seam `load_profiles_snapshot` 与 `load_current_live_quota` 验证行为。
@@ -29,7 +29,7 @@
 - Consumes: `profiles::resolve_backup_target(backup_root: &Path, codex_home: &Path) -> Option<String>`。
 - Produces: `load_profiles_snapshot` 和 `load_current_live_quota` 保持原签名，但返回的 current profile 由 live identity 决定。
 
-- [ ] **Step 1: 写 managed drift 失败测试**
+- [x] **Step 1: 写 managed drift 失败测试**
 
 在现有 tests 模块增加：
 
@@ -86,7 +86,7 @@ fn snapshot_and_live_quota_follow_managed_live_identity_instead_of_stale_marker(
 }
 ```
 
-- [ ] **Step 2: 运行测试并确认红灯**
+- [x] **Step 2: 运行测试并确认红灯**
 
 Run:
 
@@ -96,7 +96,7 @@ cargo test --manifest-path 'D:\Codex\projects\codex-account-switch\src-tauri\Car
 
 Expected: 运行 1 个测试并失败；旧实现把 `a` 而不是 `b` 作为 current profile。
 
-- [ ] **Step 3: 写最小实现**
+- [x] **Step 3: 写最小实现**
 
 把 `resolve_backup_target` 加入现有 profiles import，并在两个公开入口使用同一个解析结果：
 
@@ -123,13 +123,13 @@ let Some(current_profile) = resolve_backup_target(&backup_root, &codex_home) els
 };
 ```
 
-- [ ] **Step 4: 运行新测试并确认绿灯**
+- [x] **Step 4: 运行新测试并确认绿灯**
 
 Run Step 2 的同一命令。
 
 Expected: `1 passed; 0 failed`。
 
-- [ ] **Step 5: 运行相关回归测试**
+- [x] **Step 5: 运行相关回归测试**
 
 Run:
 
@@ -139,7 +139,7 @@ cargo test --manifest-path 'D:\Codex\projects\codex-account-switch\src-tauri\Car
 
 Expected: managed 与 unmanaged 两个测试全部通过。
 
-- [ ] **Step 6: 运行格式、Windows 全量 Rust 测试与差异检查**
+- [x] **Step 6: 运行格式、Windows 全量 Rust 测试与差异检查**
 
 Run:
 
@@ -151,13 +151,40 @@ git diff --check
 
 Expected: 格式检查退出 0；Windows Rust 测试 0 failures；diff check 退出 0。
 
-- [ ] **Step 7: 提交实现**
+- [x] **Step 7: 提交实现**
 
 ```powershell
 git add -- 'src-tauri/shared/runtime/profiles_index.rs'
 git commit -m 'fix: align current profile with live identity'
 ```
 
-- [ ] **Step 8: 对抗性代码评审**
+- [x] **Step 8: 对抗性代码评审**
 
 以本计划提交为 fixed point，按 `code-review` skill 并行执行 Standards 与 Spec 两轴审查。若发现问题，先修复并重跑 Step 6，再提交修复。
+
+---
+
+### Task 2: 阻断跨 profile 展示元数据污染
+
+**Files:**
+- Modify: `src-tauri/shared/runtime/metadata.rs`
+- Modify: `src-tauri/shared/runtime/fs_ops.rs`
+- Test: 同文件 tests 模块
+
+- [x] **Step 1: 写两个失败回归测试**
+
+一个验证读取 `b` 时拒绝显式声明 `folder_name=c` 的元数据；另一个验证把根状态写回 `b` 时不会用声明为 `c` 的根 `profile.json` 覆盖 `b/profile.json`。
+
+- [x] **Step 2: 确认旧实现红灯**
+
+两个定向测试均在旧实现上失败，分别暴露错误标签读取和跨目录元数据覆盖。
+
+- [x] **Step 3: 写最小防护并确认绿灯**
+
+读取端仅接受未声明目录的兼容旧元数据或与目标目录一致的元数据；写回端跳过显式声明属于其他 profile 的根 `profile.json`，仍正常写回 `auth.json`。
+
+- [x] **Step 4: 运行全量 Windows 验证并提交**
+
+- [ ] **Step 5: 重建、部署本机并验证实际界面**
+
+- [ ] **Step 6: 对抗性复审后部署远端并核验哈希**

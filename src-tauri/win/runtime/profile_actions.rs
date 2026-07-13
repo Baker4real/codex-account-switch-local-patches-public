@@ -205,6 +205,8 @@ fn rename_profile_with_home(
         ));
     }
 
+    let mut metadata = load_profile_metadata(&profile_name, Some(&codex_home));
+
     fs::rename(&profile_dir, &renamed_dir).map_err(|error| {
         AppError::new(
             "PROFILE_RENAME_FAILED",
@@ -216,7 +218,6 @@ fn rename_profile_with_home(
         )
     })?;
 
-    let mut metadata = load_profile_metadata(&new_folder_name, Some(&codex_home));
     metadata.folder_name = Some(new_folder_name.clone());
     save_profile_metadata(&new_folder_name, &metadata, Some(&codex_home))?;
     super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;

@@ -431,6 +431,12 @@ fn load_stored_profile_metadata(
     serde_json::from_str::<ProfileMetadata>(&raw)
         .ok()
         .and_then(ProfileMetadata::validate)
+        .filter(|metadata| {
+            metadata
+                .folder_name
+                .as_deref()
+                .is_none_or(|stored_name| stored_name == profile_name)
+        })
 }
 
 fn load_or_init_profile_metadata(profile_name: &str, codex_home: Option<&Path>) -> ProfileMetadata {
@@ -744,6 +750,35 @@ mod tests {
             has_plan_claims: true,
             ..AuthDerivedMetadata::default()
         }
+    }
+
+    #[test]
+    fn load_profile_metadata_rejects_stored_metadata_for_another_folder() {
+        let codex_home = temp_dir("cross-profile-metadata");
+        let profile_dir = get_profile_metadata_path("b", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(
+            profile_dir.join("auth.json"),
+            r#"{"tokens":{"account_id":"acct_B"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"c","account_label":"c@example.com","plan_name":"prolite","quota":{"five_hour":{"remaining_percent":12}}}"#,
+        )
+        .unwrap();
+
+        let metadata = load_profile_metadata("b", Some(&codex_home));
+
+        assert_eq!(metadata.folder_name.as_deref(), Some("b"));
+        assert_eq!(metadata.account_label.as_deref(), Some("acct_B"));
+        assert_eq!(metadata.plan_name, None);
+        assert_eq!(metadata.quota.five_hour.remaining_percent, None);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     fn quota_with_five_hour() -> QuotaSummary {
