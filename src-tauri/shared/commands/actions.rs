@@ -5,10 +5,6 @@ use crate::models::{
     UpdateCheckResponse, UpdateProfileBaseUrlPayload,
 };
 
-#[cfg(target_os = "macos")]
-use crate::macos as platform_runtime;
-
-#[cfg(not(target_os = "macos"))]
 use crate::windows as platform_runtime;
 
 #[tauri::command]

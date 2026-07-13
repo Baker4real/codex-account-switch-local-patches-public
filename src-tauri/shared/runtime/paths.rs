@@ -19,7 +19,7 @@ pub const REFRESH_RUNTIME_DIRNAME: &str = "refresh_runtime";
 pub const LOGIN_RUNTIME_DIRNAME: &str = "login_runtime";
 pub const SWITCH_LOCK_FILENAME: &str = ".switch.lock";
 pub const WINDOWS_RUNTIME_DIRNAME: &str = "windows";
-pub const MACOS_RUNTIME_DIRNAME: &str = "macos";
+pub const LEGACY_MACOS_RUNTIME_DIRNAME: &str = "macos";
 pub const CONTACT_URL: &str = "https://github.com/Cmochance/Codex_Account_Switch";
 pub const RELEASES_URL: &str = "https://github.com/Cmochance/Codex_Account_Switch/releases";
 pub const UPDATE_CHECK_URL: &str =
@@ -147,7 +147,10 @@ pub fn is_profile_dir(path: &Path) -> bool {
 
     !matches!(
         name,
-        "_autosave" | WINDOWS_RUNTIME_DIRNAME | MACOS_RUNTIME_DIRNAME | USAGE_EVIDENCE_DIRNAME
+        "_autosave"
+            | WINDOWS_RUNTIME_DIRNAME
+            | LEGACY_MACOS_RUNTIME_DIRNAME
+            | USAGE_EVIDENCE_DIRNAME
     ) && validate_profile_name(name).is_ok()
 }
 
@@ -193,7 +196,8 @@ pub fn autosave_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_profile_dir, MACOS_RUNTIME_DIRNAME, USAGE_EVIDENCE_DIRNAME, WINDOWS_RUNTIME_DIRNAME,
+        is_profile_dir, LEGACY_MACOS_RUNTIME_DIRNAME, USAGE_EVIDENCE_DIRNAME,
+        WINDOWS_RUNTIME_DIRNAME,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -209,11 +213,11 @@ mod tests {
 
     #[test]
     fn is_profile_dir_excludes_runtime_directories() {
-        let root = temp_dir("runtime-filter");
-        let profile_dir = root.join("a");
-        let windows_runtime_dir = root.join(WINDOWS_RUNTIME_DIRNAME);
-        let macos_runtime_dir = root.join(MACOS_RUNTIME_DIRNAME);
-        let usage_evidence_dir = root.join(USAGE_EVIDENCE_DIRNAME);
+        let backup_root = temp_dir("runtime-filter").join("account_backup");
+        let profile_dir = backup_root.join("a");
+        let windows_runtime_dir = backup_root.join(WINDOWS_RUNTIME_DIRNAME);
+        let macos_runtime_dir = backup_root.join(LEGACY_MACOS_RUNTIME_DIRNAME);
+        let usage_evidence_dir = backup_root.join(USAGE_EVIDENCE_DIRNAME);
 
         fs::create_dir_all(&profile_dir).unwrap();
         fs::create_dir_all(&windows_runtime_dir).unwrap();
@@ -225,7 +229,7 @@ mod tests {
         assert!(!is_profile_dir(&macos_runtime_dir));
         assert!(!is_profile_dir(&usage_evidence_dir));
 
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(backup_root.parent().unwrap());
     }
 
     #[test]

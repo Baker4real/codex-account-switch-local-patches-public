@@ -1,3 +1,6 @@
+#[cfg(not(windows))]
+compile_error!("codex_switch supports Windows only");
+
 #[cfg(not(test))]
 use tauri::Manager;
 
@@ -8,19 +11,15 @@ pub mod cli;
 pub mod commands;
 #[path = "../shared/runtime/errors.rs"]
 pub mod errors;
-#[cfg(target_os = "macos")]
-#[path = "../mac/runtime/mod.rs"]
-pub mod macos;
 #[path = "../shared/runtime/models.rs"]
 pub mod models;
 #[path = "../shared/platform/mod.rs"]
 pub mod platform;
 #[path = "../shared/runtime/mod.rs"]
 pub mod shared;
-#[cfg(all(not(target_os = "macos"), not(test)))]
+#[cfg(not(test))]
 #[path = "../win/runtime/windowing.rs"]
 pub mod windowing;
-#[cfg(not(target_os = "macos"))]
 #[path = "../win/runtime/mod.rs"]
 pub mod windows;
 

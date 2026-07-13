@@ -12,9 +12,6 @@
 
 use std::env;
 
-#[cfg(target_os = "macos")]
-use codex_switch_lib::macos::profiles_index;
-#[cfg(not(target_os = "macos"))]
 use codex_switch_lib::windows::profiles_index;
 
 use codex_switch_lib::shared::chatgpt_api;

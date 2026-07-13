@@ -8,12 +8,6 @@ use hooks::PlatformHooks;
 #[cfg(not(test))]
 use tauri::App;
 
-#[cfg(target_os = "macos")]
-fn platform_hooks_impl() -> &'static dyn PlatformHooks {
-    crate::macos::process::platform_hooks()
-}
-
-#[cfg(not(target_os = "macos"))]
 fn platform_hooks_impl() -> &'static dyn PlatformHooks {
     crate::windows::process::platform_hooks()
 }
@@ -22,17 +16,6 @@ pub fn current_hooks() -> &'static dyn PlatformHooks {
     platform_hooks_impl()
 }
 
-#[cfg(target_os = "macos")]
-pub fn setup_runtime() -> AppResult<()> {
-    crate::macos::bootstrap::ensure_backup_initialized(None)?;
-    crate::macos::bootstrap::ensure_refresh_runtime_config_initialized(None)?;
-    crate::macos::bootstrap::sync_root_state_to_current_profile(None)?;
-    current_hooks().sync_root_openai_base_url_for_current_profile(None)?;
-    crate::shared::profiles_index::load_profiles_index(None)?;
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
 pub fn setup_runtime() -> AppResult<()> {
     crate::windows::bootstrap::ensure_backup_initialized(None)?;
     crate::windows::bootstrap::ensure_refresh_runtime_config_initialized(None)?;
@@ -66,13 +49,6 @@ pub fn sync_on_window_close() -> AppResult<()> {
 }
 
 #[cfg(not(test))]
-#[cfg(target_os = "macos")]
-pub fn install_windowing(app: &mut App) -> tauri::Result<()> {
-    crate::macos::windowing::install(app)
-}
-
-#[cfg(not(test))]
-#[cfg(not(target_os = "macos"))]
 pub fn install_windowing(app: &mut App) -> tauri::Result<()> {
     crate::windowing::install(app)
 }

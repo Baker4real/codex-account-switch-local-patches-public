@@ -2,9 +2,6 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::AppError;
 
-#[cfg(target_os = "macos")]
-use crate::macos as native;
-#[cfg(not(target_os = "macos"))]
 use crate::windows as native;
 
 const USAGE: &str = "Usage:\n  codex_switch_cli install\n  codex_switch_cli uninstall [--remove-script]\n  codex_switch_cli shim switch <profile>\n  codex_switch_cli shim switch list\n  codex_switch_cli shim <codex args...>";

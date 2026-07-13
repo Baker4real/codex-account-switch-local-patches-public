@@ -27,10 +27,8 @@ tauri-plugin-opener = "2.5.3"
 [features]
 custom-protocol = ["tauri/custom-protocol"]
 
-[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
-tauri-plugin-single-instance = "2.4.1"
-
 [target.'cfg(windows)'.dependencies]
+tauri-plugin-single-instance = "2.4.1"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
