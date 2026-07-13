@@ -429,6 +429,12 @@ pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQu
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index = load_profiles_index(Some(&codex_home))?;
     let backup_root = get_backup_root(Some(&codex_home));
+    if detect_unmanaged_live_account(&backup_root, &codex_home).is_some() {
+        return Ok(CurrentQuotaResponse {
+            profile: None,
+            quota: None,
+        });
+    }
     let Some(current_profile) = resolve_backup_target(&backup_root, &codex_home) else {
         return Ok(CurrentQuotaResponse {
             profile: None,
@@ -576,6 +582,29 @@ mod tests {
                 .all(|card| card.status != "current"),
             "no stale profile card should be displayed as current"
         );
+        assert_eq!(current_quota.profile, None);
+        assert!(current_quota.quota.is_none());
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn current_live_quota_hides_unmanaged_account_when_marker_is_empty_placeholder() {
+        let codex_home = temp_codex_home("quota-unmanaged-placeholder");
+        let backup_root = get_backup_root(Some(&codex_home));
+        let profile_a_dir = backup_root.join("a");
+        fs::create_dir_all(&profile_a_dir).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), "{}\n").unwrap();
+        fs::write(
+            profile_a_dir.join("profile.json"),
+            r#"{"folder_name":"a","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}}}"#,
+        )
+        .unwrap();
+        fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_Z")).unwrap();
+
+        let current_quota = load_current_live_quota(Some(&codex_home)).unwrap();
+
         assert_eq!(current_quota.profile, None);
         assert!(current_quota.quota.is_none());
 
