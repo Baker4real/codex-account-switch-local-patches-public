@@ -12,11 +12,13 @@
   已安装目录。
 - 当前发布产物只有 Windows x64 NSIS `.exe`；本地便携构建仍必须走下方已验证脚本。
 
-## 私有补丁栈策略
+## 私有主分支发布策略
 
-- 本仓库对应的私有远端 `Baker4real/codex-account-switch-local-patches` 是本地补丁栈仓库。
-- 本地和远端只保留 `main` 分支；`main` 的提交历史与本文补丁清单共同承载累计补丁栈，不再维护长期 `patch-stack/*` 分支。
-- 需要额外回滚锚点时使用提交历史或显式 tag，不要迁移到 public fork，也不要重新创建常驻补丁分支。
+- 本仓库的用户自有远端是 `private`（`Baker4real/codex-account-switch-local-patches`）；正常修改只提交并推送到 `private/main`。
+- 本地和远端当前只保留 `main`；提交历史与本文补丁清单共同承载累计补丁记录。不再创建、更新、推送或重新建立长期 `patch-stack/*` 分支。
+- 若其他位置仍存在遗留 patch-stack refs，只作历史，默认不读取、不修改、不迁移、不删除。
+- 如确有必要隔离高风险修改，Agent 必须先推荐具体临时分支并取得 owner 事前确认；owner 验收后才推进到 `private/main`，随后删除本地和远端临时分支，除非 owner 明确要求保留。
+- `origin` 是第三方上游，只读且禁止推送；目标远端、归属或 `main` 基线无法证明时停止发布。
 
 先把上游 tag 合并进这份源码树，保留下面的本地补丁，再重新构建并替换已安装的可执行文件：
 
