@@ -19,7 +19,6 @@ const tauriVersionSource = '../package.json'
 /// avoids false positives on unrelated version-shaped strings (release
 /// links, file paths, dates) that may appear elsewhere in the markup.
 const versionHardcodeForbiddenPaths = [
-  'src-tauri/mac/front/index.html',
   'src-tauri/win/front/index.html',
 ]
 const settingsVersionElementPattern =

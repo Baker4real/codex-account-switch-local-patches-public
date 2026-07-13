@@ -1304,8 +1304,7 @@ html[data-theme] body {
   background: var(--app-background);
 }
 
-html[data-theme] .window-shell,
-html[data-theme] .window-shell--macos {
+html[data-theme] .window-shell {
   background: var(--shell-background);
 }
 

@@ -3,8 +3,7 @@ import { readFileSync } from "node:fs";
 
 import { defineConfig } from "vite";
 
-const uiTarget = process.env.CODEX_UI_TARGET ?? (process.platform === "darwin" ? "macos" : "windows");
-const root = uiTarget === "macos" ? "src-tauri/mac/front" : "src-tauri/win/front";
+const root = "src-tauri/win/front";
 
 const packageJson = JSON.parse(
   readFileSync(fileURLToPath(new URL("./package.json", import.meta.url)), "utf8"),
@@ -14,7 +13,6 @@ const appVersion = packageJson.version;
 export default defineConfig({
   root,
   define: {
-    __CODEX_UI_TARGET__: JSON.stringify(uiTarget),
     // Single source of truth for the app version that the front-end can
     // render in the Settings page (and anywhere else the version label
     // shows up). `package.json` → `version-sync.mjs` already drives the
@@ -26,7 +24,6 @@ export default defineConfig({
     alias: {
       "@front-shared": fileURLToPath(new URL("./src-tauri/shared/front", import.meta.url)),
       "@win-front": fileURLToPath(new URL("./src-tauri/win/front", import.meta.url)),
-      "@mac-front": fileURLToPath(new URL("./src-tauri/mac/front", import.meta.url)),
     },
   },
   server: {

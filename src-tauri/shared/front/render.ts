@@ -17,7 +17,6 @@ import { t, type MessageKey } from "@front-shared/i18n";
 import { state } from "@front-shared/state";
 import { getThemeOption, isThemeId } from "@front-shared/theme";
 
-const isWindowsUiTarget = __CODEX_UI_TARGET__ === "windows";
 const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "usage", "settings", "guide"];
 const LOW_QUOTA_THRESHOLD_PERCENT = 20;
 
@@ -885,7 +884,7 @@ export function renderProfiles(
 
           ${buildProfileQuotaMarkup(profile)}
 
-          <div class="profile-card-actions${isWindowsUiTarget ? " profile-card-actions--windows" : ""}">
+          <div class="profile-card-actions profile-card-actions--windows">
             ${
               hasDeleteProfileUi
                 ? `<button
@@ -1043,7 +1042,7 @@ export function applyLocale(): void {
     elements.clearProfileAccountButton!.textContent = t(state.locale, "clearAccount");
     elements.cancelDeleteProfileButton!.textContent = t(state.locale, "cancel");
   }
-  const baseUrlCopy = t(state.locale, isWindowsUiTarget ? "baseUrlWindowsCopy" : "baseUrlCopy");
+  const baseUrlCopy = t(state.locale, "baseUrlWindowsCopy");
   elements.baseUrlDialogTitle.textContent = t(state.locale, "baseUrlTitle");
   elements.baseUrlDialogCopy.textContent = baseUrlCopy;
   elements.folderNameLabel.textContent = t(state.locale, "folderName");
