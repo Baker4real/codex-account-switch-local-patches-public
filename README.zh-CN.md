@@ -3,7 +3,7 @@
 <p align="center">
   <a href="README.md">简体中文主说明</a> |
   <a href="CHANGELOG.md">Changelog</a> |
-  <a href="https://github.com/Cmochance/Codex_Account_Switch/releases">Releases</a>
+  <a href="https://github.com/Baker4real/codex-account-switch-local-patches/releases">私有补丁 Releases</a>
 </p>
 
 Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号管理器。它为每个账号保存独立的 `auth.json` 与 `profile.json`，支持安全切换、plan/quota 查看、Codex CLI 路径检测和本机 Usage 统计。
@@ -23,7 +23,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 
 ## 安装与使用
 
-1. 从 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases/latest) 下载 Windows x64 NSIS 安装包 `codex_switch_<版本>_x64-setup.exe` 并安装。
+1. 私有补丁仓库已有 Release 时，从 [私有补丁 Releases](https://github.com/Baker4real/codex-account-switch-local-patches/releases/latest) 下载 Windows x64 NSIS 安装包 `codex_switch_<版本>_x64-setup.exe` 并安装；没有私有 Release 时，按下方本地构建命令生成，不要从公共上游下载。
 2. 打开应用，在“设置”确认 Codex CLI 路径；缺失时点击“自动检测”或手动选择可运行的 `codex.exe` / `codex.cmd`。
 3. 在“账号”页添加 profile，点击“登录”完成 ChatGPT OAuth。
 4. 在目标账号卡片点击“切换”。应用会先保存当前账号，再按身份路由写回目标账号；全局 `skills`、插件缓存、sessions、`AGENTS.md`、`rules`、`memories` 等不会被 profile 覆盖。
