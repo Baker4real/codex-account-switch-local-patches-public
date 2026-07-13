@@ -200,7 +200,7 @@
 - Delete: \`src-tauri/mac/**\`, \`macOS-backup/**\`
 - Delete: \`scripts/macos-artifacts.mjs\`, \`scripts/create-macos-pkg.mjs\`
 - Delete: \`src-tauri/tauri.macos.conf.json\`, \`src-tauri/tauri.linux.conf.json\`
-- Delete: \`src-tauri/icons/icon.icns\`, \`icons/ios/**\`, \`icons/android/**\`
+- Delete: \`src-tauri/icons/icon.icns\`, \`src-tauri/icons/ios/**\`, \`src-tauri/icons/android/**\`
 - Delete: \`docs/plans/2026-04-16-macos-desktop-app.md\`, \`2026-04-20-macos-sync-latest-windows-updates.md\`
 
 **Interfaces:**
