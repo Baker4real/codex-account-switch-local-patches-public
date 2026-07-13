@@ -219,6 +219,13 @@ mod tests {
         std::env::temp_dir().join(format!("codex-switch-win-switch-{name}-{unique}"))
     }
 
+    fn auth_with_account(account_id: &str) -> String {
+        format!(
+            "{{\"tokens\":{{\"account_id\":{}}}}}",
+            serde_json::Value::String(account_id.to_string())
+        )
+    }
+
     fn write_quota_session(path: &Path) {
         let line = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":11.0,"resets_at":1730000000,"window_minutes":300},"secondary":{"used_percent":12.0,"resets_at":1730600000,"window_minutes":10080}}}}"#;
         if let Some(parent) = path.parent() {
@@ -236,16 +243,24 @@ mod tests {
 
         fs::create_dir_all(&profile_a_dir).unwrap();
         fs::create_dir_all(&profile_b_dir).unwrap();
-        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
-        fs::write(codex_home.join("profile.json"), r#"{"folder_name":"a"}"#).unwrap();
-        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_A")).unwrap();
         fs::write(
-            profile_a_dir.join("profile.json"),
-            r#"{"folder_name":"a","quota":{"five_hour":{"remaining_percent":25},"weekly":{"remaining_percent":50}},"quota_updated_at_ms":1}"#,
+            codex_home.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_A"}"#,
         )
         .unwrap();
-        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
-        fs::write(profile_b_dir.join("profile.json"), r#"{"folder_name":"b"}"#).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            profile_a_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_A","quota":{"five_hour":{"remaining_percent":25},"weekly":{"remaining_percent":50}},"quota_updated_at_ms":1}"#,
+        )
+        .unwrap();
+        fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
+        fs::write(
+            profile_b_dir.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"acct_B"}"#,
+        )
+        .unwrap();
         fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
         write_quota_session(&codex_home.join("sessions").join("session-001.jsonl"));
 
@@ -274,15 +289,19 @@ mod tests {
 
         fs::create_dir_all(&profile_a_dir).unwrap();
         fs::create_dir_all(&profile_b_dir).unwrap();
-        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
-        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
         fs::write(
             profile_a_dir.join("profile.json"),
-            r#"{"folder_name":"a","quota":{"five_hour":{"remaining_percent":77},"weekly":{"remaining_percent":66}},"quota_updated_at_ms":9999999999999}"#,
+            r#"{"folder_name":"a","account_label":"acct_A","quota":{"five_hour":{"remaining_percent":77},"weekly":{"remaining_percent":66}},"quota_updated_at_ms":9999999999999}"#,
         )
         .unwrap();
-        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
-        fs::write(profile_b_dir.join("profile.json"), r#"{"folder_name":"b"}"#).unwrap();
+        fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
+        fs::write(
+            profile_b_dir.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"acct_B"}"#,
+        )
+        .unwrap();
         fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();
         write_quota_session(&codex_home.join("sessions").join("session-001.jsonl"));
 
@@ -306,14 +325,22 @@ mod tests {
 
         fs::create_dir_all(&profile_a_dir).unwrap();
         fs::create_dir_all(&profile_b_dir).unwrap();
-        fs::write(codex_home.join("auth.json"), "root-auth-before-switch\n").unwrap();
-        fs::write(codex_home.join("profile.json"), r#"{"folder_name":"a"}"#).unwrap();
-        fs::write(profile_a_dir.join("auth.json"), "profile-a-auth\n").unwrap();
-        fs::write(profile_a_dir.join("profile.json"), r#"{"folder_name":"a"}"#).unwrap();
-        fs::write(profile_b_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(codex_home.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            codex_home.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_A"}"#,
+        )
+        .unwrap();
+        fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            profile_a_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_A"}"#,
+        )
+        .unwrap();
+        fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
         fs::write(
             profile_b_dir.join("profile.json"),
-            r#"{"folder_name":"b","quota":{"five_hour":{"remaining_percent":41},"weekly":{"remaining_percent":63}}}"#,
+            r#"{"folder_name":"b","account_label":"acct_B","quota":{"five_hour":{"remaining_percent":41},"weekly":{"remaining_percent":63}}}"#,
         )
         .unwrap();
         fs::write(get_current_profile_file(Some(&codex_home)), "a\n").unwrap();

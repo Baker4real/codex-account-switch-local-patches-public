@@ -183,6 +183,8 @@ git commit -m 'fix: align current profile with live identity'
 
 读取端同时校验目录声明与 auth 派生账号标签，冲突时只清空账号绑定的标签、套餐、订阅和额度字段，保留设备配置；写回端仅复制与目标身份匹配的根 `profile.json`，冲突时跳过，无效 JSON 或读取错误时 fail closed。
 
+对 auth 无法提供账号标签的路径，带任何账号绑定字段的元数据均不可验证；读取时清洗、写回时跳过。重命名流程必须先走同一清洗入口再持久化新目录名。
+
 - [x] **Step 4: 运行全量 Windows 验证并提交**
 
 - [ ] **Step 5: 重建、部署本机并验证实际界面**

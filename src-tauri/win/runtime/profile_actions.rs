@@ -15,7 +15,7 @@ use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile
 use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{
     get_backup_root, get_codex_home, get_login_runtime_dir, validate_profile_name,
-    ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
+    ACTIVE_MARKER_FILE,
 };
 #[cfg(not(test))]
 use super::paths::{CONTACT_URL, RELEASES_URL, XIAOHONGSHU_URL};
@@ -205,11 +205,7 @@ fn rename_profile_with_home(
         ));
     }
 
-    let mut metadata = fs::read_to_string(profile_dir.join(PROFILE_METADATA_FILENAME))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<ProfileMetadata>(&raw).ok())
-        .and_then(ProfileMetadata::validate)
-        .unwrap_or_else(|| load_profile_metadata(&profile_name, Some(&codex_home)));
+    let mut metadata = load_profile_metadata(&profile_name, Some(&codex_home));
 
     fs::rename(&profile_dir, &renamed_dir).map_err(|error| {
         AppError::new(
@@ -362,6 +358,7 @@ mod tests {
         add_profile, clear_profile_account, delete_profile, rename_profile_with_home,
         update_profile_base_url,
     };
+    use crate::models::ProfileMetadata;
     use crate::windows::env_guard;
     use crate::windows::metadata::load_profile_metadata;
     use crate::windows::paths::get_current_profile_file;
@@ -431,6 +428,42 @@ mod tests {
         assert_eq!(error.error_code, "CURRENT_PROFILE_RENAME_FORBIDDEN");
         assert!(codex_home.join("account_backup").join("active").is_dir());
         assert!(!codex_home.join("account_backup").join("renamed").exists());
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn rename_profile_with_home_persists_sanitized_identity_metadata() {
+        let codex_home = temp_codex_home("rename-profile-sanitizes-metadata");
+        let profile_dir = codex_home.join("account_backup").join("old_name");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(
+            profile_dir.join("auth.json"),
+            r#"{"tokens":{"account_id":"acct_B"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"old_name","account_label":"acct_C","plan_name":"prolite","quota":{"five_hour":{"remaining_percent":12}}}"#,
+        )
+        .unwrap();
+
+        rename_profile_with_home("old_name", "new_name", Some(&codex_home)).unwrap();
+
+        let stored: ProfileMetadata = serde_json::from_str(
+            &fs::read_to_string(
+                codex_home
+                    .join("account_backup")
+                    .join("new_name")
+                    .join("profile.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stored.folder_name.as_deref(), Some("new_name"));
+        assert_eq!(stored.account_label.as_deref(), Some("acct_B"));
+        assert_eq!(stored.plan_name, None);
+        assert_eq!(stored.quota.five_hour.remaining_percent, None);
+
         let _ = fs::remove_dir_all(&codex_home);
     }
 

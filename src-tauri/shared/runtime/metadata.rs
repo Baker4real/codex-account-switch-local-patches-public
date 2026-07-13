@@ -73,10 +73,16 @@ pub struct AuthDerivedMetadata {
     pub has_plan_claims: bool,
 }
 
+pub(super) enum AuthIdentityEvidence<'a> {
+    Missing,
+    Bound(&'a str),
+    PresentUnbound,
+}
+
 pub(super) fn profile_metadata_matches_identity(
     metadata: &ProfileMetadata,
     profile_name: &str,
-    auth_account_label: Option<&str>,
+    auth_identity: AuthIdentityEvidence<'_>,
 ) -> bool {
     if metadata
         .folder_name
@@ -86,14 +92,39 @@ pub(super) fn profile_metadata_matches_identity(
         return false;
     }
 
-    let Some(auth_account_label) = auth_account_label.map(str::trim) else {
-        return true;
+    match auth_identity {
+        AuthIdentityEvidence::Missing => true,
+        AuthIdentityEvidence::Bound(auth_account_label) => metadata
+            .account_label
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|stored_label| {
+                stored_label.eq_ignore_ascii_case(auth_account_label.trim())
+            }),
+        AuthIdentityEvidence::PresentUnbound => !metadata_has_identity_bound_fields(metadata),
+    }
+}
+
+fn metadata_has_identity_bound_fields(metadata: &ProfileMetadata) -> bool {
+    let quota_window_has_data = |window: &crate::models::QuotaWindow| {
+        window.remaining_percent.is_some()
+            || window.refresh_at.is_some()
+            || window.reset_at_timestamp.is_some()
     };
-    metadata
-        .account_label
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|stored_label| stored_label.eq_ignore_ascii_case(auth_account_label))
+    let provenance = &metadata.quota.provenance;
+
+    metadata.account_label.is_some()
+        || metadata.plan_name.is_some()
+        || metadata.subscription_expires_at.is_some()
+        || metadata.quota_updated_at_ms.is_some()
+        || metadata.last_plan_check_ms.is_some()
+        || quota_window_has_data(&metadata.quota.five_hour)
+        || quota_window_has_data(&metadata.quota.weekly)
+        || provenance.source != crate::models::QuotaSource::Unknown
+        || provenance.confidence != crate::models::QuotaConfidence::Unknown
+        || provenance.observed_at_ms.is_some()
+        || provenance.source_mtime_ms.is_some()
+        || provenance.note.is_some()
 }
 
 fn clear_identity_bound_metadata(metadata: &mut ProfileMetadata) {
@@ -463,9 +494,20 @@ fn load_stored_profile_metadata(
     let mut metadata = serde_json::from_str::<ProfileMetadata>(&raw)
         .ok()
         .and_then(ProfileMetadata::validate)?;
-    let auth_account_label =
-        load_auth_metadata(profile_name, codex_home).and_then(|auth| auth.account_label);
-    if !profile_metadata_matches_identity(&metadata, profile_name, auth_account_label.as_deref()) {
+    let auth_path = get_backup_root(codex_home)
+        .join(profile_name)
+        .join("auth.json");
+    let auth_metadata = load_auth_metadata(profile_name, codex_home);
+    let auth_identity = if auth_path.is_file() {
+        auth_metadata
+            .as_ref()
+            .and_then(|auth| auth.account_label.as_deref())
+            .map(AuthIdentityEvidence::Bound)
+            .unwrap_or(AuthIdentityEvidence::PresentUnbound)
+    } else {
+        AuthIdentityEvidence::Missing
+    };
+    if !profile_metadata_matches_identity(&metadata, profile_name, auth_identity) {
         clear_identity_bound_metadata(&mut metadata);
         metadata.folder_name = Some(profile_name.to_string());
     }
@@ -856,6 +898,39 @@ mod tests {
 
             let _ = std::fs::remove_dir_all(&codex_home);
         }
+    }
+
+    #[test]
+    fn load_profile_metadata_clears_identity_fields_when_auth_has_no_account_label() {
+        let codex_home = temp_dir("unbound-apikey-metadata");
+        let profile_dir = get_profile_metadata_path("b", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(
+            profile_dir.join("auth.json"),
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"secret"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"acct_C","plan_name":"prolite","openai_base_url":"https://example.invalid/v1","quota":{"weekly":{"remaining_percent":12}}}"#,
+        )
+        .unwrap();
+
+        let metadata = load_profile_metadata("b", Some(&codex_home));
+
+        assert_eq!(metadata.folder_name.as_deref(), Some("b"));
+        assert_eq!(metadata.account_label, None);
+        assert_eq!(metadata.plan_name, None);
+        assert_eq!(metadata.quota.weekly.remaining_percent, None);
+        assert_eq!(
+            metadata.openai_base_url.as_deref(),
+            Some("https://example.invalid/v1")
+        );
+
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     fn quota_with_five_hour() -> QuotaSummary {

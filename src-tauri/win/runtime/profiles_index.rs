@@ -112,7 +112,11 @@ mod tests {
             "b\n",
         )
         .unwrap();
-        fs::write(profile_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(
+            profile_dir.join("auth.json"),
+            auth_with_account("b@example.com"),
+        )
+        .unwrap();
         fs::write(
             profile_dir.join("profile.json"),
             r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{},"weekly":{}},"quota_updated_at_ms":9999999999999}"#,
@@ -145,7 +149,11 @@ mod tests {
             "b\n",
         )
         .unwrap();
-        fs::write(profile_dir.join("auth.json"), "profile-b-auth\n").unwrap();
+        fs::write(
+            profile_dir.join("auth.json"),
+            auth_with_account("b@example.com"),
+        )
+        .unwrap();
         fs::write(
             profile_dir.join("profile.json"),
             r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":41},"weekly":{"remaining_percent":63}},"quota_updated_at_ms":1}"#,

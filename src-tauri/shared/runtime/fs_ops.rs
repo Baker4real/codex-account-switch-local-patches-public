@@ -8,7 +8,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::errors::{AppError, AppResult};
 use crate::models::ProfileMetadata;
 
-use super::metadata::{load_auth_metadata_from_path, profile_metadata_matches_identity};
+use super::metadata::{
+    load_auth_metadata_from_path, profile_metadata_matches_identity, AuthIdentityEvidence,
+};
 use super::paths::{
     autosave_timestamp, get_auto_save_root, get_current_profile_file, is_profile_dir,
     list_profile_dirs, utc_timestamp, ACTIVE_MARKER_FILE, PROFILE_METADATA_FILENAME,
@@ -50,12 +52,16 @@ fn root_metadata_matches_profile_identity(
                 format!("Invalid profile metadata: {}", metadata_path.display()),
             )
         })?;
-    let auth_account_label =
-        load_auth_metadata_from_path(auth_path).and_then(|auth| auth.account_label);
+    let auth_metadata = load_auth_metadata_from_path(auth_path);
+    let auth_identity = auth_metadata
+        .as_ref()
+        .and_then(|auth| auth.account_label.as_deref())
+        .map(AuthIdentityEvidence::Bound)
+        .unwrap_or(AuthIdentityEvidence::PresentUnbound);
     Ok(profile_metadata_matches_identity(
         &metadata,
         target_profile,
-        auth_account_label.as_deref(),
+        auth_identity,
     ))
 }
 
@@ -679,6 +685,34 @@ mod tests {
         );
         let original_metadata = r#"{"folder_name":"b","account_label":"acct_B"}"#;
         write(&profile_dir.join("auth.json"), "old auth for b");
+        write(&profile_dir.join("profile.json"), original_metadata);
+
+        backup_root_state_to_profile("b", &codex_home, &backup_root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("profile.json")).unwrap(),
+            original_metadata
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn backup_root_state_keeps_target_when_auth_cannot_bind_identity_metadata() {
+        let codex_home = temp_root("backup-root-unbound-apikey-metadata");
+        let backup_root = codex_home.join("account_backup");
+        let profile_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_dir).unwrap();
+        write(
+            &codex_home.join("auth.json"),
+            r#"{"auth_mode":"apikey","OPENAI_API_KEY":"secret"}"#,
+        );
+        write(
+            &codex_home.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"acct_C","plan_name":"prolite"}"#,
+        );
+        let original_metadata =
+            r#"{"folder_name":"b","openai_base_url":"https://api.openai.com/v1"}"#;
         write(&profile_dir.join("profile.json"), original_metadata);
 
         backup_root_state_to_profile("b", &codex_home, &backup_root).unwrap();
