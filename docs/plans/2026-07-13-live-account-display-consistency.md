@@ -1,0 +1,163 @@
+# 当前账号显示一致性 Implementation Plan
+
+> **For agentic workers:** Implement this plan task-by-task. Prefer `subagent-driven-development` when available for independent tasks; otherwise use the repository's normal implementation workflow. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** 让账号列表快照和实时额度始终以实时 `auth.json` 的托管身份所有者作为当前 profile。
+
+**Architecture:** 复用 `profiles::resolve_backup_target` 作为唯一 effective-current 解析规则。公开读取入口保持只读：它们选择正确 profile，但不修改 marker、不复制文件、不触发 Codex 生命周期。
+
+**Tech Stack:** Rust 2021、Tauri 2、现有 `cargo test` Windows MSVC 测试链。
+
+## Global Constraints
+
+- 只修改 shared Rust 运行时，不修改前端或 macOS/Windows 平台专属模块。
+- 不新增依赖。
+- 不处理、检测或兼容 `CC Switch`。
+- 测试必须通过公开 seam `load_profiles_snapshot` 与 `load_current_live_quota` 验证行为。
+- Windows 验证使用 `x86_64-pc-windows-msvc`，不编译 `src-tauri/mac/**`。
+
+---
+
+### Task 1: 按实时身份解析当前 profile
+
+**Files:**
+- Modify: `src-tauri/shared/runtime/profiles_index.rs:17-21`
+- Modify: `src-tauri/shared/runtime/profiles_index.rs:390-463`
+- Test: `src-tauri/shared/runtime/profiles_index.rs:475-588`
+
+**Interfaces:**
+- Consumes: `profiles::resolve_backup_target(backup_root: &Path, codex_home: &Path) -> Option<String>`。
+- Produces: `load_profiles_snapshot` 和 `load_current_live_quota` 保持原签名，但返回的 current profile 由 live identity 决定。
+
+- [ ] **Step 1: 写 managed drift 失败测试**
+
+在现有 tests 模块增加：
+
+```rust
+#[test]
+fn snapshot_and_live_quota_follow_managed_live_identity_instead_of_stale_marker() {
+    let codex_home = temp_codex_home("snapshot-managed-drift");
+    let backup_root = get_backup_root(Some(&codex_home));
+    let profile_a_dir = backup_root.join("a");
+    let profile_b_dir = backup_root.join("b");
+    fs::create_dir_all(&profile_a_dir).unwrap();
+    fs::create_dir_all(&profile_b_dir).unwrap();
+    fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+    fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
+    fs::write(
+        profile_a_dir.join("profile.json"),
+        r#"{"folder_name":"a","account_label":"a@example.com","quota":{"five_hour":{"remaining_percent":42},"weekly":{"remaining_percent":88}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        profile_b_dir.join("profile.json"),
+        r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":73},"weekly":{"remaining_percent":91}}}"#,
+    )
+    .unwrap();
+    fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
+    fs::write(codex_home.join("auth.json"), auth_with_account("acct_B")).unwrap();
+
+    let snapshot = load_profiles_snapshot(Some(&codex_home)).unwrap();
+    let current_quota = load_current_live_quota(Some(&codex_home)).unwrap();
+
+    assert_eq!(snapshot.unmanaged_live_account, None);
+    assert_eq!(
+        snapshot.current_card.as_ref().map(|card| card.folder_name.as_str()),
+        Some("b")
+    );
+    assert_eq!(
+        snapshot
+            .profiles
+            .iter()
+            .find(|card| card.status == "current")
+            .map(|card| card.folder_name.as_str()),
+        Some("b")
+    );
+    assert_eq!(current_quota.profile.as_deref(), Some("b"));
+    assert_eq!(
+        current_quota
+            .quota
+            .as_ref()
+            .and_then(|quota| quota.five_hour.remaining_percent),
+        Some(73)
+    );
+
+    let _ = fs::remove_dir_all(&codex_home);
+}
+```
+
+- [ ] **Step 2: 运行测试并确认红灯**
+
+Run:
+
+```powershell
+cargo test --manifest-path 'D:\Codex\projects\codex-account-switch\src-tauri\Cargo.toml' snapshot_and_live_quota_follow_managed_live_identity_instead_of_stale_marker --lib --target x86_64-pc-windows-msvc -- --nocapture
+```
+
+Expected: 运行 1 个测试并失败；旧实现把 `a` 而不是 `b` 作为 current profile。
+
+- [ ] **Step 3: 写最小实现**
+
+把 `resolve_backup_target` 加入现有 profiles import，并在两个公开入口使用同一个解析结果：
+
+```rust
+let backup_root = get_backup_root(Some(&codex_home));
+let unmanaged_live_account = detect_unmanaged_live_account(&backup_root, &codex_home);
+let current_profile = if unmanaged_live_account.is_some() {
+    None
+} else {
+    resolve_backup_target(&backup_root, &codex_home)
+};
+let current_profile_ref = current_profile.as_deref();
+```
+
+账号快照用 `current_profile_ref` 构造 cards。实时额度入口直接处理：
+
+```rust
+let backup_root = get_backup_root(Some(&codex_home));
+let Some(current_profile) = resolve_backup_target(&backup_root, &codex_home) else {
+    return Ok(CurrentQuotaResponse {
+        profile: None,
+        quota: None,
+    });
+};
+```
+
+- [ ] **Step 4: 运行新测试并确认绿灯**
+
+Run Step 2 的同一命令。
+
+Expected: `1 passed; 0 failed`。
+
+- [ ] **Step 5: 运行相关回归测试**
+
+Run:
+
+```powershell
+cargo test --manifest-path 'D:\Codex\projects\codex-account-switch\src-tauri\Cargo.toml' snapshot_and_live_quota --lib --target x86_64-pc-windows-msvc -- --nocapture
+```
+
+Expected: managed 与 unmanaged 两个测试全部通过。
+
+- [ ] **Step 6: 运行格式、Windows 全量 Rust 测试与差异检查**
+
+Run:
+
+```powershell
+cargo fmt --manifest-path 'D:\Codex\projects\codex-account-switch\src-tauri\Cargo.toml' -- --check
+npm run test:rust:windows
+git diff --check
+```
+
+Expected: 格式检查退出 0；Windows Rust 测试 0 failures；diff check 退出 0。
+
+- [ ] **Step 7: 提交实现**
+
+```powershell
+git add -- 'src-tauri/shared/runtime/profiles_index.rs'
+git commit -m 'fix: align current profile with live identity'
+```
+
+- [ ] **Step 8: 对抗性代码评审**
+
+以本计划提交为 fixed point，按 `code-review` skill 并行执行 Standards 与 Spec 两轴审查。若发现问题，先修复并重跑 Step 6，再提交修复。
