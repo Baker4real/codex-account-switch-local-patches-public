@@ -19,6 +19,8 @@ pub const REFRESH_RUNTIME_DIRNAME: &str = "refresh_runtime";
 pub const LOGIN_RUNTIME_DIRNAME: &str = "login_runtime";
 pub const SWITCH_LOCK_FILENAME: &str = ".switch.lock";
 pub const WINDOWS_RUNTIME_DIRNAME: &str = "windows";
+// Kept only to exclude an old data directory from profile enumeration. This is
+// compatibility filtering for existing data, not a supported runtime path.
 pub const LEGACY_MACOS_RUNTIME_DIRNAME: &str = "macos";
 pub const CONTACT_URL: &str = "https://github.com/Cmochance/Codex_Account_Switch";
 pub const RELEASES_URL: &str = "https://github.com/Cmochance/Codex_Account_Switch/releases";

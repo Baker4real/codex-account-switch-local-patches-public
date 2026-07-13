@@ -152,9 +152,9 @@ const enMessages = {
   updateDialogTitle: "New version available",
   updateDialogCopy: "Version {latest} is available. Current version: {current}.",
   updateDialogLocalPatchRequired:
-    "This installed build contains local fixes. Merge the upstream tag into this source tree and rebuild before replacing the app, otherwise the local browser-login and PowerShell update fixes will be lost.",
+    "This installed build contains local fixes. No public binary will be downloaded or installed. Merge the upstream tag into this source tree, preserve the local fixes, and rebuild before replacing the app.",
   updateDialogLater: "Later",
-  updateDialogOpen: "View release",
+  updateDialogOpen: "View release notes",
   openedXiaohongshu: "Opened Xiaohongshu",
   failedToOpenXiaohongshu: "Failed to open Xiaohongshu.",
   createdProfile: "Created profile {profile}",
@@ -390,7 +390,7 @@ const enMessages = {
   codexCliInputPlaceholder: "/full/path/to/codex",
   codexCliSuggestionsHeading: "Common locations",
   codexCliSuggestionsEmpty:
-    "No common locations found. Open a terminal and run `where codex` (Windows) or `which codex` (macOS) to locate it.",
+    "No common locations found. Open a Windows terminal and run `where codex` to locate it.",
   codexCliClearOverride: "Clear override",
   codexCliPathSaved: "Codex CLI path saved.",
   codexCliPathCleared: "Codex CLI override cleared.",
@@ -581,9 +581,9 @@ const messages: Record<Locale, Messages> = {
     updateDialogTitle: "发现新版本更新",
     updateDialogCopy: "新版本 {latest} 已可用，当前版本为 {current}。",
     updateDialogLocalPatchRequired:
-      "当前安装版包含本地修复。请先把上游 tag 合并到这份源码后重新构建，再替换应用；否则本地的分浏览器登录和 PowerShell 更新修复会被覆盖。",
+      "当前安装版包含本地修复。不会下载或安装公共二进制。请先把上游 tag 合并到这份源码，保留本地修复并重新构建，再替换应用。",
     updateDialogLater: "稍后",
-    updateDialogOpen: "查看更新",
+    updateDialogOpen: "查看发布说明",
     openedXiaohongshu: "已打开小红书",
     failedToOpenXiaohongshu: "打开小红书失败。",
     createdProfile: "已创建账号 {profile}",
@@ -819,7 +819,7 @@ const messages: Record<Locale, Messages> = {
     codexCliInputPlaceholder: "C:\\路径\\codex.cmd 或 /路径/codex",
     codexCliSuggestionsHeading: "常见安装位置",
     codexCliSuggestionsEmpty:
-      "没找到常见的安装位置。可以在终端里执行 `where codex`（Windows）或 `which codex`（macOS）查询。",
+      "没找到常见的安装位置。可以在 Windows 终端里执行 `where codex` 查询。",
     codexCliClearOverride: "清除手动设置",
     codexCliPathSaved: "Codex CLI 路径已保存。",
     codexCliPathCleared: "已清除 Codex CLI 手动设置。",

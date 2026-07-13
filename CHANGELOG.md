@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Breaking:** the supported product boundary is now Windows x64 only. Runtime sources,
+  frontend entrypoints, build scripts, CI, and release assets are maintained for the Windows
+  MSVC target; other platform packages and launch paths are no longer part of the product.
+- Update checks remain informational: they query version metadata and open release notes only.
+  A local-patch build must merge the upstream tag into this source tree and rebuild before an
+  installed copy is replaced; the app never downloads or installs a public upstream binary.
 - Hardened native profile switching so profile directories, markers, identities, and managed account files are validated before copy. Switch write-back now routes by live `auth.json` account identity instead of blindly trusting `.current_profile`, refuses unmanaged drift instead of overwriting a stale slot, manages only `auth.json` / `profile.json`, rejects symlink/reparse or directory-shaped managed entries, and ignores stale profile `skills` trees instead of overlaying live global Codex assets.
 - Windows 账号切换不再按镜像名执行 `taskkill`：现在按 `OpenAI.Codex` Store 包发现并用进程句柄复核 `ChatGPT.exe` 外壳及包内后端，先请求正常退出，再确认连续空快照；提交期若进程重现会重试目标态写入，写盘失败先事务回滚，恢复不完整时返回 `SWITCH_RECOVERY_FAILED`、不自动重开并提示手动关闭。
 - 当 live `CODEX_HOME` 账号不属于任何已保存账号卡片时，启动同步会清除 stale current-profile marker，账号页也不会继续把旧卡片显示为 current，并会暴露未管理账号提示。

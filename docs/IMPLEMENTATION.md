@@ -1,233 +1,121 @@
-# Implementation Notes
+# Windows 实现说明
 
-## Data locations
+本文描述当前私有补丁版的 Windows x64 运行契约。仓库只构建和发布
+`x86_64-pc-windows-msvc`；`src-tauri/shared/` 只承载真正中性的文件格式、协议和
+账号生命周期逻辑，Windows 行为放在 `src-tauri/win/`。
 
-- Shared Codex state root: `CODEX_HOME` or `~/.codex`
-- Profile backups: `~/.codex/account_backup/<profile>`
-- Current profile pointer: `~/.codex/account_backup/.current_profile` (routing hint, not account identity)
-- Active marker per profile: `~/.codex/account_backup/<profile>/.active_profile` (routing hint, not account identity)
-- Auto snapshots: `~/.codex/account_backup/_autosave/<timestamp>/auth.json`
-- macOS runtime files: `~/.codex/account_backup/macos/`
-- macOS command shim: `~/.codex/bin/codex`
-- Windows runtime files: `%CODEX_HOME%\account_backup\windows\`
-- Windows command shim: `%CODEX_HOME%\bin\codex.cmd`
-- OpenAI usage ledger: `%CODEX_HOME%\account_backup\openai_usage.sqlite`
-- OpenAI usage source evidence: `%CODEX_HOME%\usage_evidence\`
+## 数据位置
 
-## Runtime shape
+- Codex 根目录：`%CODEX_HOME%`；未设置时使用 `%USERPROFILE%\.codex`。
+- 当前账号：`%CODEX_HOME%\auth.json` 与 `%CODEX_HOME%\profile.json`。
+- 账号备份：`%CODEX_HOME%\account_backup\<profile>\`。
+- 当前账号提示：`account_backup\.current_profile`；profile 活跃提示：各 profile 下的
+  `.active_profile`。两者都只是路由提示，不是账号身份证明。
+- 自动快照：`account_backup\_autosave\<timestamp>\auth.json`。
+- Windows runtime：`account_backup\windows\`，包括 `install_state.json`、
+  `quota_cache.json`、`login_runtime`、`refresh_runtime` 和 `codex_switch_cli.exe`。
+- Windows 命令 shim：`%CODEX_HOME%\bin\codex.cmd`。
+- Usage ledger：`account_backup\openai_usage.sqlite`；外部只读证据冻结到
+  `%CODEX_HOME%\usage_evidence\`，不属于 profile。
 
-- macOS still keeps shell entrypoints under `macOS-backup/` as retained compatibility fallback
-- Windows desktop UI and CLI both use Rust/Tauri:
-  - Windows shell frontend under `src-tauri/win/front/`
-  - shared frontend bridge code under `src-tauri/shared/front/`
-    - controller/orchestration in `src-tauri/shared/front/actions.ts`
-    - dashboard view-model shaping in `src-tauri/shared/front/dashboard-view-model.ts`
-    - native invoke wrapper in `src-tauri/shared/front/tauri.ts`
-    - `src-tauri/shared/front/usage/` 是 Usage workspace deep module；它通过单一 workspace interface 内聚 Usage 状态、异步请求时序、刷新与 timer 生命周期、DOM binding 和渲染
-- macOS desktop shell now has a separate frontend root under `src-tauri/mac/front/`
-  - `src-tauri/mac/front/index.html` removes the Windows-style custom title bar
-  - `src-tauri/mac/front/styles.css` carries macOS-specific shell styling overrides
-  - `src-tauri/mac/front/lib/window-controls.ts` is intentionally a no-op because macOS uses native window controls
-- native commands and CLI runtime stay under `src-tauri/`, but the source tree is now split by responsibility:
-  - `src-tauri/win/front/` holds the Windows desktop shell
-  - `src-tauri/mac/front/` holds the macOS desktop shell
-  - `src-tauri/shared/front/` holds shared frontend bridge code and font assets
-  - `src-tauri/win/runtime/` holds Windows-only bootstrap, install, process, refresh, and windowing code
-  - `src-tauri/mac/runtime/` holds macOS-only bootstrap, CLI shim, install, process, switch, and windowing code
-  - `src-tauri/shared/runtime/` holds platform-neutral profile, metadata, quota, path, config, CLI, error, and model logic
-    - `src-tauri/shared/runtime/openai_usage/ingestion.rs` 是 Usage evidence 的 private adapter seam，负责 session JSONL、future OpenAI response usage 与 cc-switch 来源采集
-  - `src-tauri/shared/platform/` defines platform lifecycle hooks so window close, login, auth refresh, and app reopen can be routed without hard-coding those call sites to Windows modules
-  - `src-tauri/shared/commands/` holds the Tauri command boundary used by both platforms
-  - `src-tauri/src/` is now kept as the crate entry layer only, because Cargo expects `lib.rs` and `main.rs` there by default
-- `src-tauri/shared/runtime/switch_core.rs` now owns the profile switch orchestration
-- `src-tauri/mac/runtime/windowing.rs` now applies native macOS window decorations instead of reusing the Windows custom chrome assumptions
-- `src-tauri/shared/runtime/cli.rs` now resolves to `windows::*` or `macos::*` through compile-time aliases instead of directly binding the CLI to Windows modules
-- The desktop app does not use a separate local backend or HTTP server at runtime
+`account_backup\macos` 仍被 `paths.rs` 排除，是为了让旧数据目录不会重新显示为账号；
+它是兼容旧数据的过滤项，不是当前运行时目录，也不会被创建或写入。
 
-## Installation behavior
+## 运行时边界
 
-- `macOS-backup/install.sh` is now a compatibility entrypoint with `auto`, `desktop`, and `legacy` modes
-- In `auto` mode, `macOS-backup/install.sh` prefers the native desktop installer and falls back to the legacy shell installer if no native installer binary is available
-- `macOS-backup/install-legacy.sh` keeps the original shell-based installation behavior
-- `macOS-backup/install-desktop.sh` delegates to the native `codex_switch` installer and then wires `~/.codex/bin` into the shell
-- Legacy macOS install creates `~/.codex/account_backup` if missing
-- Legacy macOS install creates `~/.codex/account_backup/a` through `~/.codex/account_backup/d`
-- Legacy macOS install fills any missing `a`-`d` `auth.json` files from `examples/account_backup/demo/auth.json.example`
-- If `~/.codex/auth.json` exists during legacy macOS install, it is copied to `~/.codex/account_backup/a/auth.json`
-- If a real root auth exists and no active profile is initialized yet, legacy macOS install sets `a` as the active profile
-- `codex_switch.exe install` creates the same profile layout plus `%CODEX_HOME%\account_backup\windows\` and `%CODEX_HOME%\bin\`
-- Windows install copies `codex_switch_cli.exe` into the runtime directory
-- Windows install fills any missing `a`-`d` `auth.json` files from `examples/account_backup/demo/auth.json.example`
-- If a real root `%CODEX_HOME%\auth.json` exists, Windows install overwrites `a/auth.json` with it
-- If a real root auth exists and no active profile is initialized yet, Windows install sets `a` as the active profile
-- Windows install records `real_codex_path` and `path_added_by_installer` in `install_state.json` after resolving a runnable real Codex CLI
+- Windows UI 壳位于 `src-tauri/win/front/`，共享前端桥接和 Usage workspace 位于
+  `src-tauri/shared/front/`。
+- Windows runtime adapter 位于 `src-tauri/win/runtime/`，负责安装、CLI spawn、登录、
+  Store 进程生命周期和窗口控制。
+- `src-tauri/shared/runtime/` 负责 profile、metadata、路径、ChatGPT API、app-server、
+  quota cache、Usage ledger 和错误模型；`src-tauri/shared/commands/` 是 Tauri command
+  边界。
+- 应用不启动本地 HTTP backend；更新检查使用 Windows PowerShell 请求版本 JSON。
 
-## Desktop app first-run bootstrap
+## 首次安装与初始化
 
-- On desktop app startup, if `account_backup` is missing, the app initializes it automatically
-- Bootstrap creates `a` through `d`
-- Bootstrap writes placeholder `auth.json` files from `examples/account_backup/demo/auth.json.example`
-- If root `auth.json` exists, it is copied into `a/auth.json`
-- If root `auth.json` exists, bootstrap marks `a` as the active profile
-- Bootstrap also refreshes `%CODEX_HOME%\account_backup\windows\install_state.json`
+`codex_switch.exe install` 和桌面首次启动都会确保 `account_backup` 存在，创建默认
+`a`–`d` profile，并从 `examples/account_backup/demo/auth.json.example` 填充占位文件。
+若 live `%CODEX_HOME%\auth.json` 存在，会先保存到 `a\auth.json`，再以身份检查结果设置
+当前 profile。安装过程记录可运行的真实 Codex CLI 到 `install_state.json`，不会把管理的
+shim 当成真实 CLI。
 
-## Preconditions for switching
+## Profile 切换
 
-- The target profile name must pass `validate_profile_name`
-- The target profile directory must already exist, must pass `is_profile_dir`, and must not be a symlink or Windows reparse point
-- The target profile directory must already contain `auth.json`
-- Profile-managed entries such as `auth.json` and `profile.json` must be regular files when present
+切换前必须满足：profile 名称通过 `validate_profile_name`；目录是真实目录而非 symlink
+或 Windows reparse point；目标含普通文件 `auth.json`；被管理文件不是目录或其他特殊文件。
 
-The switch script itself does not create profile folders or generate missing auth files.
+事务顺序如下：
 
-## Switching algorithm
+1. 按 Store 包身份发现 Codex 进程。对已验证的 `ChatGPT.exe` 先发 `WM_CLOSE`，再在有界
+   等待后处理同一包的剩余句柄；退出和初始空状态都要求连续两个空快照。
+2. 读取 live `auth.json` 身份，按 `account_id` / 规范化 email 查找实际所属 profile。
+   marker 只有在身份匹配、或确实是空占位槽位时才可使用；身份已知但未管理时拒绝写回并
+   清理活动提示。
+3. 快照 root 的 `auth.json`、`profile.json`、`config.toml`、markers、profiles index、
+   Usage attribution 和目标 profile 的受管文件。
+4. 把旧账号态写回身份解析出的 profile，保存时间戳 autosave；再把目标 profile 的
+   `auth.json` / `profile.json` 覆盖到 live root，并同步其 Base URL 和 markers。
+5. 提交后再次观察 Store 进程。若进程在提交期间重现，在有界重试内重新静默并写入目标态；
+   超出预算返回 `APP_RESTART_RACE`。
+6. 任一步失败时先再次静默，再恢复完整快照和 profiles index。恢复不完整返回
+   `SWITCH_RECOVERY_FAILED`，不自动重开 Codex；成功提交或完整回滚后最多调用一次 relaunch。
 
-1. Validate that the target profile name and directory are valid profile state, not runtime folders, symlinks, or reparse points.
-2. Validate that the target profile contains a regular-file `auth.json`.
-3. Quiesce the desktop app through the platform lifecycle hook and remember whether the UI was running. On Windows, discovery is scoped to the `OpenAI.Codex_*__2p2nqsd0c76g0` Store package and every candidate PID is reopened and verified with `GetPackageFullName`. When a verified `ChatGPT.exe` UI host exists, it receives `WM_CLOSE` first and the whole package gets a grace period; otherwise, or after that period expires, only verified remaining handles may be terminated. Two consecutive empty snapshots are required, including when the first snapshot is already empty.
-4. Resolve a current-profile marker candidate from `.current_profile` only when it is a valid profile name whose directory passes `is_profile_dir`; otherwise fall back to `.active_profile`.
-5. Load the live root `auth.json` identity and choose the write-back target by account identity, not by marker alone:
-   - if the marker profile has the same `account_id` / `email`, write back to that marker;
-   - if another managed profile owns the live identity, write back to that actual owner and heal the stale marker;
-   - if the marker is a genuine empty placeholder, seat the new account there;
-   - if the live root identity is known but unmanaged, do not write it into any existing slot and clear active markers.
-6. Capture a rollback snapshot of root `auth.json`, `profile.json`, `config.toml`, the current and per-profile active markers, the profiles index, the Usage attribution file, and the resolved backup target's managed files. Windows repeats the app-exit observation and snapshot until both the files and identity-routed backup target are stable.
-7. On Windows, reconfirm that the live identity still resolves to the same backup target. Then write managed root account-state files back only into that target and save a timestamped root `auth.json` snapshot.
-8. Overlay the target profile's managed account-state files, synchronize its Base URL configuration, update active markers, and rebuild the profiles index.
-9. On Windows, observe the Store package again after the commit. If a package process reappeared and may have written stale state, re-quiesce it and recommit the target state within the bounded retry budget; otherwise fail with `APP_RESTART_RACE`.
-10. Record the new current-account Usage attribution only after the profile commit is stable.
-11. If any post-quiescence step fails, Windows first attempts to quiesce the Store app again. When that succeeds (or the platform does not use the Windows stability loop), restore the complete snapshot and rebuild the profiles index before returning the original error. If quiescence, snapshot restoration, or index recovery fails, return `SWITCH_RECOVERY_FAILED` without invoking the relaunch hook. A failed quiescence may mean Store processes still exist, so the error instructs the user to close Codex manually before repairing account files.
-12. After a successful commit, or after a complete rollback, invoke the relaunch hook at most once when a UI host was observed at any point in the transaction. On Windows this opens the Store app; relaunch failures are returned as warnings.
+profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Base URL。不会整棵复制
+`skills`、插件/cache/sqlite、sessions/jsonl、`AGENTS.md`、`rules`、`memories` 或其他
+全局运行态；profile 中残留这些条目也会被忽略。login/refresh runtime 可以重建，但必须
+保留上游共享的 `plugins`、`cache`、`sqlite`，自动 prune 只清理隔离状态。
 
-## File sync strategy
+## 登录、CLI 与 quota
 
-- The native Rust profile backup and root overlay steps manage only `auth.json` and `profile.json`.
-- The root copy step does not whole-tree copy a profile directory into `~/.codex`.
-- Root write-back treats `.current_profile` and `.active_profile` as hints only. The actual destination is resolved from the live `auth.json` account identity so a stale marker cannot overwrite the wrong profile.
-- Global or runtime assets such as `skills`, plugin caches, `AGENTS.md`, `rules`, `memories`, `vendor_imports`, sqlite state, and sessions/jsonl history are ignored even if they remain in an old profile directory.
-- Managed entries are validated before copy; directories, symlinks, Windows reparse points, and other non-regular files fail with `PROFILE_STATE_INVALID` instead of replacing live root files.
-- Files absent from the target profile are not automatically removed from the root state.
-- `.active_profile` and `.DS_Store` are excluded from copy operations.
-- Legacy macOS shell mode still belongs to `macOS-backup/`; the native Rust runtime is the regression target for profile switching.
+- `login_browser: "edge"` 是唯一的定向浏览器开关：通过 `codex app-server` 打开用户正常
+  Edge 状态，不传 `--user-data-dir` / `--new-window`，写入前必须比较 OAuth 身份，防止
+  浏览器当前账号覆盖已知 profile。
+- 未设置 Edge metadata 的 profile 使用普通 `codex login`，保留上游默认行为。
+- CLI resolver 按手动 override、`install_state`、PATH 和常见 Windows runtime 顺序探测，
+  每个候选都用 `codex --version` 验证；失效的缓存 shim 不会继续使用。
+- plan 来自 OAuth `id_token` claims；quota 优先走 ChatGPT Web API，必要时使用
+  app-server `account/rateLimits/read` fallback。UI 显示 provenance 和观测时间，低于阈值
+  只告警，不自动切换。
 
-## Login / refresh runtime 隔离
+## 更新检查
 
-- Login / refresh runtime home 仍会播种上游共享运行态资产：`plugins`、`cache`、`sqlite`。
-- Runtime prune 只移除可能干扰 login / refresh 行为的隔离状态：`AGENTS.md`、`rules`、`skills`、`vendor_imports`、`memories`。
-- Runtime prune 不得删除 `plugins`、`.tmp`、`cache`、`sqlite` 或 `_autosave`；插件和 connector 行为依赖这些上游共享资产继续可用。
-- `auth.json` autosave 只创建 timestamp 快照，并在 timestamp 冲突时选择唯一目录。它不执行保留策略；备份保留必须放在显式 dry-run / apply 清理工具里，不能藏进 login、refresh、switch 或 autosave 流程。
+`check_update` 只请求版本 JSON，比较语义化版本并返回 `release_url`、notes 和
+`local_patch_required`。Windows 请求默认尝试 `pwsh`、再尝试 `powershell`，可由
+`CODEX_SWITCH_POWERSHELL` 指定路径。
 
-## macOS wrapper behavior
+更新弹窗只提供“稍后”和“查看发布说明”。本地补丁版发现上游新版本时明确提示：先把上游
+tag 合并到本地源码、保留补丁并重新构建，再替换已安装文件。应用没有 updater 依赖，不
+下载公共 exe，不安装或覆盖上游二进制。
 
-- In desktop mode, the macOS compatibility installer injects a PATH hook into `~/.zshrc` so `~/.codex/bin/codex` is resolved before the existing CLI
-- In legacy mode, the macOS installer injects a `codex()` shell wrapper into `~/.zshrc`
-- Legacy `codex switch ...` routes to `~/.codex/account_backup/codex-switch.sh`
-- Legacy non-switch `codex` commands continue to use the user's existing `codex` CLI in `PATH`
+## Usage ledger
 
-## Native macOS runtime behavior
+`openai_usage.sqlite` 是可重建的本机事实表，不是不可变账单。ingestion 只冻结本机 session
+JSONL 和外部只读证据，按 source signature、schema、归属和价格版本变化重新同步。
 
-- The native macOS runtime stores its install state in `~/.codex/account_backup/macos/install_state.json`
-- The native macOS runtime copies `codex_switch_cli` into `~/.codex/account_backup/macos/`
-- The native macOS runtime writes a managed `~/.codex/bin/codex` shim that forwards into the runtime CLI
-- Native macOS CLI forwarding skips the managed shim when resolving the real `codex` binary from `PATH`
-- Native macOS app activation first probes `/Applications/Codex.app`, then `~/Applications/Codex.app`, and otherwise falls back to `open -a Codex`
-- If Codex is already running on macOS, the runtime first tries AppleScript activation before doing a fresh open
-- Native macOS app shutdown uses `pgrep -x Codex`, `pkill -TERM -x Codex`, and finally `pkill -KILL -x Codex`
-- Native macOS desktop UI now loads from `src-tauri/mac/front/` instead of the Windows shell under `src-tauri/win/front/`
-- Native macOS windows restore system decorations and native title bar behavior during startup
-- Native macOS bundle packaging is isolated in `src-tauri/tauri.macos.conf.json`, which enables `app` + `dmg` outputs without changing the default Windows/base Tauri config
-- `npm run tauri:build:macos-dmg` moves the generated `.dmg` beside the `.app` under `src-tauri/target/release/bundle/macos/` to keep macOS artifacts in one folder
-- `macOS-backup/uninstall.sh` mirrors the same compatibility split and chooses native desktop teardown when the desktop runtime is installed
+- `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据。
+- `openai_usage_facts` 投影可计量层；`openai_usage_events` 保持 strict accepted-only
+  兼容表。
+- 默认摘要、趋势和日志只读 strict proven；历史槽位归因单独显示，未归属候选用于对账，
+  都不冒充官方账单。
+- 只有可证明的官方 OpenAI `base_url` 才进入严格统计；未知模型保留 token，但费用保持未
+  定价，不显示为 `$0`。
 
-## Windows shim behavior
+## Windows 构建与远端部署
 
-The Windows installer writes `%CODEX_HOME%\bin\codex.cmd` and ensures `%CODEX_HOME%\bin` is first in the user PATH.
+本机替换安装版的主路径是：
 
-- `codex switch ...` routes to `%CODEX_HOME%\account_backup\windows\codex_switch_cli.exe shim switch ...`
-- Non-switch `codex` commands are forwarded to the previously resolved real Codex CLI path from `install_state.json` only while that path still passes `codex --version` and reports a Codex version line
-- `%CODEX_HOME%\account_backup\windows` is reserved runtime state and excluded from profile listing / active-profile scans
+```powershell
+npm run build -- --mode windows
+npm run tauri:build:windows:portable
+```
 
-## Windows desktop app actions
+构建脚本会确认 `rustc -vV` 的 host 为 `x86_64-pc-windows-msvc`。替换时必须把同一构建
+的 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 一起写入安装目录；loader 通常
+位于 `target\x86_64-pc-windows-msvc\release\build\webview2-com-sys-*\out\x64\`。
 
-- `Switch` writes current root state back to the identity-resolved profile, snapshots `auth.json`, overlays the target profile into root state, updates active markers, and relaunches Codex if needed
-- `Login` reuses the per-card login path for the current profile, so login output is checked against the target profile identity before any profile `auth.json` is replaced
-- Local Windows patched login routes only profiles whose `profile.json` explicitly sets `login_browser` to `edge` through `codex app-server`, then opens the returned `account/login/start` auth URL in Edge.
-- The patched browser-login flow no longer passes `--user-data-dir`, `--new-window`, or creates dedicated browser profile directories. Edge handles the URL with the user's normal browser state. Existing `login_browser_profiles` directories from older local builds are disposable cleanup leftovers.
-- Because normal browser state can already be logged into the wrong ChatGPT account, per-card login checks the new OAuth identity against any known identity in the target profile before replacing `auth.json`. A mismatch fails before touching the target profile or live root auth.
-- Browser path override `CODEX_SWITCH_EDGE_PATH` is still supported when common install paths do not find Edge.
-- Other profiles keep the standard `codex login` path so upstream behavior remains the default unless their profile metadata explicitly sets `login_browser` to `edge`.
-- `Open Codex` activates the Codex desktop app if already running, or launches it if not
-- `Add Profiles` creates a new profile directory and writes template `auth.json` plus `profile.json`
-- `Contact Us` opens the project GitHub repository
-
-## Plan / quota 来源与可信度
-
-- `QuotaSummary` 在 5 小时和周额度窗口之外携带 `provenance` 元数据，让前端能区分官方新鲜数据、fallback 数据和本地观测数据。
-- 来源取值为 `chat_gpt_api`、`codex_app_server`、`session_jsonl`、`unknown`；可信度取值为 `official`、`fallback`、`local_observation`、`unknown`。
-- ChatGPT Web API 路径把 quota 标记为 `official`；Codex app-server JSON-RPC 路径标记为 `fallback`；session JSONL 解析标记为 `local_observation`，并在可用时附带来源文件 mtime。
-- `last_plan_check_ms` 的 6 小时窗口只控制后台 bulk plan refresh 是否再次查询 usage；它不是授权边界，不能因为 plan 缓存过期就强制 OAuth rotation。
-- 账号页在 quota 数值旁显示来源 badge 和观测年龄。5 小时或周额度剩余百分比低于或等于 20% 时只进入警示状态；账号切换仍必须由用户显式触发。
-
-## OpenAI 使用统计账本
-
-- Usage 前端深化只改变内部责任边界：现有 Tauri Usage command 名称、参数和返回模型保持不变。`src-tauri/shared/front/usage/` 通过 workspace interface 独占查询 intent、过期响应抑制、刷新队列、分页纠偏、timer、DOM binding 与专属渲染；共享 `actions.ts` 只负责挂载、路由 context 和调用现有 dashboard adapter。
-- `src-tauri/shared/runtime/openai_usage/ingestion.rs` 通过 private adapter seam 按固定顺序采集 session JSONL、future OpenAI response 与 cc-switch evidence，并独占 source discovery、source signature 与 source priority。父 ledger 在调用 ingestion 前打开 SQLite、完成 schema/migration，并注入只接收 source signature 的窄 cache probe；ingestion 必须在任何 adapter collect 前执行 probe，cache hit 立即返回。`Connection`、schema、migration、sync state、分类、去重、priority resolution、定价和 projection 始终由 ledger 独占。该重构不改变 `openai_usage.sqlite` schema/version、重建条件、`source_locator` / `source_hash` / `evidence_id`、decision reason、证据分层或 strict/candidate 判定语义。
-- 这两个 deep modules 不删减或替换公开上游核心功能：账号快照、plan/quota、登录、刷新、增删改、Base URL、CLI 路径和账号切换的 Tauri command interface 与既有行为保持不变；provider sync 也未接入账号切换或 Usage 默认流程。
-- `openai_usage.sqlite` 是可重建的本机 usage ledger，不是不可变审计账单；source signature 或 schema / classifier / dedupe / layer / pricing 版本变化时会重建。
-- `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据；`openai_usage_facts` 只投影可计量层；`openai_usage_events` 保持 strict accepted-only 兼容表。
-- 默认摘要、趋势和日志只读 strict proven。历史槽位归因进入 `legacy_profile_attributed` 估算层，同屏展示但不合并成官方账号账单；`candidate_unattributed` 作为独立对账层展示，用于解释 cc-switch session-only 差额。candidate / excluded scope 从 `openai_usage_evidence` 投影证据行用于审计查看，但 candidate、rejected 和 superseded 不进入严格或历史费用总额。
-- 账号聚合按账号实体而不是 profile 槽位：相同的非空 `account_id` 或去除首尾空白并转为小写后相同的 email 形成传递闭包；不存在上述身份别名路径的两个已确认组件不能仅因 label 相同而合并。没有 identity 的 legacy 事件只能使用同一 profile 中严格早于事件时间的最近已确认身份；不得使用 current snapshot 或未来身份，同毫秒、候选歧义或缺少此前证据时回落到 unknown。旧 ledger 身份只有在旧版 v1 key 或 alias 能被验证时才桥接；strict proven 与 `legacy_profile_attributed` 分别统计。
-- cc-switch 只作为只读 source adapter。导入前把 DB 冻结到 `%CODEX_HOME%\usage_evidence\ccswitch\` 并记录 hash / mtime / SQL；该目录不属于 `account_backup`，必须从 profile 扫描中排除。私有 ccswitch fork 在 `proxy_request_logs` 写入 `account_identity_key`、`account_identity_source`、`profile_id`、`profile_name` 和 `effective_base_url`；Codex Switch 只有在这些字段能证明官方 OpenAI 路径和账号身份时才把 cc-switch proxy 行提升为 strict proven。`data_source='codex_session'` / `provider_id='_codex_session'` 仍只能证明 token/model/session/time，不能提升为账号证明。
-
-## 授权缓存状态
-
-- `RefreshTokenStatus` 从每个 profile 的 `auth.json` 派生，前端在账号卡片和当前账号面板显示健康状态、上次刷新时间和可观察到的 refresh token 到期时间。
-- ChatGPT / Codex OAuth 的 `refresh_token` 通常是 opaque string；项目不能从 token 本体解析固定 TTL。只有 `auth.json` 显式出现 `tokens.refresh_token_expires_at_ms` 或 `tokens.refresh_token_expires_at` 时，UI 才显示 refresh token 到期时间。
-- 官方 Codex CI/CD 文档把 `last_refresh` 超过约 8 天描述为 token bundle stale；本项目用这个规则提示“建议刷新授权缓存”。这不是 refresh token 的官方到期保证，也不能替代 401 后的 refresh-and-retry。
-- `access_token` / `id_token` 的 JWT `exp` 可用于判断短期登录缓存是否需要刷新，但不能被当作 refresh token 到期时间展示。
-- Plan / quota 刷新会先使用当前 `access_token` 请求官方 usage；只有 access token 已过期、临近过期或 usage 请求返回 401 时，才通过 `refresh_token` 换新 token。
-- 前端把状态做成单行 chip，完整解释放在 `title` / `aria-label`；可见文案避免“点刷新 / 点登录”这类看起来像额外按钮的动作提示。
-
-## Local Windows patch build
-
-- `LOCAL_PATCHES.md` is the upgrade checklist for this machine's installed local-patch build
-- When an upstream release exists, merge the upstream tag into this source tree and keep the local browser-login and update-request patches before rebuilding
-- The local update checker uses `pwsh` first and then `powershell`; hosts that require a fixed PowerShell binary must inject it with `CODEX_SWITCH_POWERSHELL`.
-- The verified local installed-app replacement path starts from `LOCAL_PATCHES.md`, runs `npm run build -- --mode windows` as the Windows frontend precheck, then uses `npm run tauri:build:windows:portable` as the main MSVC portable build command. The installed target directory is supplied by the operator, for example through `CODEX_SWITCH_INSTALL_DIR`.
-- 本地 MSVC 便携构建命令需要 Rust target `x86_64-pc-windows-msvc`、Visual Studio Build Tools C++ 工具链和 Windows SDK，产物写入 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`；`npm run tauri:build:portable` 只作为 GNU/MinGW 诊断路径，不是替换安装版的主构建路径
-- `scripts/tauri-windows-msvc-build.mjs` 只修改构建子进程内的 `PATH`：默认解析环境或系统 `rustup`，也支持 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 和 `CARGO` 注入；它会检查 `rustc -vV`，并在当前 compiler host 不是 `x86_64-pc-windows-msvc` 时中止。
-- 本地便携替换必须把 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 一起复制到安装目录；target-specific MSVC 构建里，loader 可能位于 `webview2-com-sys` build output，而不是 release 可执行文件旁边
-- 远端 Windows 桌面同步先通过参数或环境变量提供目标主机、桌面快捷方式和 evidence 根，再执行 `npm run deploy:windows:remote-desktop -- -InspectOnly`；正式部署还需提供远端 staging 根并执行 `npm run deploy:windows:remote-desktop`。脚本解析远端桌面 `.lnk` 的真实目标，上传同一份 `codex_switch.exe` 与匹配的 x64 `WebView2Loader.dll`，备份旧目标文件，只停止可执行路径等于快捷方式目标的进程，覆盖后校验 SHA-256，失败时自动回滚。设备专属配置见 `docs/environments/windows-dual-host.md`，执行时仍以 `-InspectOnly` 的实时结果为准。
-
-## Windows Codex CLI discovery
-
-Windows real-Codex resolution rejects the managed shim, Windows Apps aliases, and any existing user/cached path that cannot run `codex --version` successfully with a Codex version line. Discovery includes:
-
-1. `CODEX_EXE`
-2. `CODEX_INSTALL_DIR\codex.exe`
-3. versioned subdirectories under `CODEX_INSTALL_DIR`
-4. `%LOCALAPPDATA%\OpenAI\Codex\bin\codex.exe`
-5. versioned `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe`
-6. PATH and the existing npm/common install locations
-
-If a cached `install_state.json` path becomes stale after a Codex upgrade, the resolver falls through to discovery and persists the first runnable replacement. `install_state.json` is machine-local: account/auth state syncs should copy root/profile auth and metadata, but preserve the target host's `%CODEX_HOME%\account_backup\windows\install_state.json`.
-
-## Windows Store app lifecycle
-
-Windows desktop lifecycle is package-based rather than executable-path-based:
-
-1. Running processes are discovered from `tasklist /APPS /FO CSV /NH` rows whose package full name matches `OpenAI.Codex_*__2p2nqsd0c76g0`.
-2. A PID and image name are only discovery hints. Before either graceful close or forced termination, the process is opened and its package identity is rechecked from the handle with `GetPackageFullName`.
-3. The package's `ChatGPT.exe` process is the UI host. When present, its top-level windows receive `WM_CLOSE` and the whole package gets a grace period. If no UI host exists, or processes remain after that period, only the verified remaining handles are terminated.
-4. Stable shutdown requires consecutive empty package snapshots so delayed exits and Store relaunch races cannot overlap account-state writes.
-5. Relaunch tries to resolve the AppX entry with `Get-AppxPackage -Name OpenAI.Codex` and `Get-StartApps`, then opens `shell:AppsFolder\<AppID>` through `explorer.exe`. The known `OpenAI.Codex_2p2nqsd0c76g0!App` ID is the detection fallback; launch can still fail when the Store package is absent.
-
-`install_state.json` remains the machine-local cache for Codex CLI discovery; it is not used as proof of the desktop app's process identity or launch path.
-
-## Validation strategy
-
-- Primary regression baseline is the Rust suite under `src-tauri/`
-- Root command: `npm test`
-- Equivalent direct command: `cargo test --manifest-path src-tauri/Cargo.toml`
-- Windows MSVC regression command: `npm run test:rust:windows`
-- Windows GNU/MinGW host check: `npm run test:rust:windows-gnu`
+远端桌面入口可能是 `.lnk` 而非 exe。部署必须先以 `-InspectOnly` 解析实时 `TargetPath`
+和 `WorkingDirectory`，确认旧哈希后再把 exe + loader 上传到目标目录。正式替换只停止
+路径等于目标的 `codex_switch` 进程；复制或哈希校验失败会恢复部署前的成对备份。通用参数
+契约和回滚细节见 [`LOCAL_PATCHES.md`](../LOCAL_PATCHES.md)，设备快照见
+[`windows-dual-host.md`](environments/windows-dual-host.md)。

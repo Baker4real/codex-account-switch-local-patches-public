@@ -126,31 +126,6 @@ fn normalize_short_version(version: &str) -> Option<String> {
     ))
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-fn fetch_update_json(url: &str) -> AppResult<String> {
-    let output = Command::new("curl")
-        .args([
-            "--fail",
-            "--location",
-            "--silent",
-            "--show-error",
-            "--max-time",
-            "12",
-            "--user-agent",
-            UPDATE_USER_AGENT,
-            url,
-        ])
-        .output()
-        .map_err(|error| {
-            AppError::new(
-                "UPDATE_REQUEST_FAILED",
-                format!("Failed to start update request: {error}"),
-            )
-        })?;
-
-    parse_fetch_output(output.status.success(), &output.stdout, &output.stderr)
-}
-
 #[cfg(windows)]
 fn fetch_update_json(url: &str) -> AppResult<String> {
     use std::os::windows::process::CommandExt;

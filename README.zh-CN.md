@@ -1,252 +1,91 @@
-# Codex 账号切换工具
+# Codex 账号切换工具（Windows）
 
 <p align="center">
-  <a href="README.md">简体中文</a> |
-  <a href="README.zh-CN.md">中文（备份）</a> |
+  <a href="README.md">简体中文主说明</a> |
   <a href="CHANGELOG.md">Changelog</a> |
   <a href="https://github.com/Cmochance/Codex_Account_Switch/releases">Releases</a>
 </p>
 
-<p align="center">
-  <a href="https://github.com/Cmochance/Codex_Account_Switch/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/Cmochance/Codex_Account_Switch?style=social"></a>
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/Cmochance/Codex_Account_Switch"></a>
-  <a href="https://www.rust-lang.org/"><img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?logo=rust"></a>
-  <a href="https://v2.tauri.app/"><img alt="Tauri" src="https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri"></a>
-  <a href="https://github.com/Cmochance/Codex_Account_Switch/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/Cmochance/Codex_Account_Switch/total?label=downloads"></a>
-</p>
+Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号管理器。它为每个账号保存独立的 `auth.json` 与 `profile.json`，支持安全切换、plan/quota 查看、Codex CLI 路径检测和本机 Usage 统计。
 
-**Codex 账号切换工具**（Codex Switch）是一个面向 **OpenAI Codex CLI** 的本地桌面账号管理器。它把每个账号的 `auth.json` 与 `profile.json` 元数据保存在独立账号备份目录，一键切换"当前 Codex 账号"，并把每个账号的 plan / 5 小时额度 / 周额度直接渲染在桌面端。切换只同步这些账号态文件；`skills`、插件缓存、sessions、AGENTS.md 等全局或运行时资产不会被 profile 覆盖。
+当前产品契约只有 Windows x64。仓库中的运行时、前端入口、构建、CI 和发布流程都以 Windows MSVC 为准；不再提供其他操作系统的安装包或运行路径。
 
-跟纯账号切换脚本不同，本项目内置 **plan / quota 直读**：登录后通过 ChatGPT OAuth 的 `id_token` + ChatGPT Web API `account/rateLimits` / Codex app-server JSON-RPC fallback 拉取真实计划等级和 rate-limit 窗口剩余比例，并在 UI 标明额度来源与观测时间；只有没有实时来源时才退回本地 sessions/jsonl 观测。
+## 功能
 
-当前本地补丁版还提供 **OpenAI 官方 token 使用统计**：从 Codex 本地 session JSONL 的 `token_count` 事件重建 `account_backup/openai_usage.sqlite` 分层账本，只把有效 `base_url` 可证明为官方 OpenAI 路径且账号身份可证明的记录计入严格统计；历史上只能证明槽位归属的记录会作为“历史槽位归因估算”同屏展示，不冒充官方账单。cc-switch 等只能证明 token/model/session/time、不能证明账号身份的记录会进入“未归属候选”对账层，方便核对差额，但不会混入严格或历史费用总额。账号分类按账号实体聚合：相同的非空 `account_id` 或去除首尾空白并转为小写后相同的 email 会按传递闭包归并；缺少身份的历史事件只能推定为同一 profile 中事件时间之前最近的已确认账号，绝不借用当前或未来身份。同毫秒、候选歧义或证据不足时保持未归属，严格归属与推定归属始终分账。未知价格模型只显示未定价，不会当作 `$0`。
+- 多账号管理：账号备份位于 `%CODEX_HOME%\account_backup\<profile>\`，切换时只同步 `auth.json` 和 `profile.json`。
+- 身份路由写回：`.current_profile` 与 `.active_profile` 只是提示，实际按 live `auth.json` 的 `account_id` / email 识别归属；无法证明归属时拒绝覆盖旧槽位。
+- Windows Store 生命周期：切换前按 `OpenAI.Codex_*__2p2nqsd0c76g0` 包身份退出并确认空快照，提交失败会事务回滚，避免半切换状态。
+- plan/quota：优先读取官方 ChatGPT API，必要时使用 Codex app-server fallback；界面显示来源和观测时间，不会因为低额度自动切换账号。
+- 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
+- Codex CLI 自动检测：扫描 PATH、官方 Windows runtime 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。
+- Usage 统计：从本机 session JSONL 和冻结的只读证据重建 `%CODEX_HOME%\account_backup\openai_usage.sqlite`，严格区分官方、历史归因和未归属候选；未知模型只显示 token，不伪造 `$0` 费用。
+- Custom Base URL：每个账号可单独配置第三方 OpenAI 兼容地址；它与 ChatGPT OAuth 账号互斥。
 
-当前版本 **v1.5.12**（详见 [CHANGELOG](CHANGELOG.md) 与 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases)）。
+## 安装与使用
 
-## 能做什么
+1. 从 [Releases](https://github.com/Cmochance/Codex_Account_Switch/releases/latest) 下载 Windows x64 NSIS 安装包 `codex_switch_<版本>_x64-setup.exe` 并安装。
+2. 打开应用，在“设置”确认 Codex CLI 路径；缺失时点击“自动检测”或手动选择可运行的 `codex.exe` / `codex.cmd`。
+3. 在“账号”页添加 profile，点击“登录”完成 ChatGPT OAuth。
+4. 在目标账号卡片点击“切换”。应用会先保存当前账号，再按身份路由写回目标账号；全局 `skills`、插件缓存、sessions、`AGENTS.md`、`rules`、`memories` 等不会被 profile 覆盖。
+5. 需要查看 token 消耗时打开“使用统计”。数据只来自本机文件和已冻结的只读证据，不上传请求内容。
 
-- 同一台机器多账号管理：每个账号一个备份目录（含独立的 `auth.json` / `profile.json` 元数据），切换时把目标账号态写入 `~/.codex/`；旧账号的账号态会先按 `auth.json` 身份路由回真实所属 profile，无法识别时拒绝写回旧槽位。
-- **账号页**：每页 8 个账号条目，横向单行布局展示「账号名 + 套餐」「5 小时额度 + 刷新时间」「周额度 + 刷新时间」「删除 / 重命名 / 刷新 / 登录 / Base / 切换」按钮，并用来源 badge 区分官方 API、app-server fallback、本地观测或未知数据。
-- **授权缓存状态**：账号卡片和当前账号面板会显示 refresh token / 授权缓存健康状态、可观察到的到期时间或上次刷新时间；当官方登录缓存没有暴露 refresh token 到期时间时，只提示授权缓存建议刷新，不把它误写成固定到期时间。
-- **登录与浏览器控制**：普通账号仍使用 `codex login`；Windows 本地补丁版仅对 profile metadata 显式设置 `login_browser: "edge"` 的账号使用 `codex app-server` 打开 Edge，并复用用户当前常用浏览器状态，不再创建独立浏览器 profile。
-- **plan / quota 智能缓存**：bulk plan refresh 在 6 小时窗口内跳过已确认账号；per-card 刷新会优先用现有 `access_token` 拉官方 usage，只有 access token 过期或被 401 拒绝时才消耗 `refresh_token`。切换 / 登录 / 刷新后直接复用 backend 写回的 snapshot，不重复发 IPC。5 小时或周额度低于 20% 时只提示风险，不自动切换账号。
-- **使用统计页**：导航位于「账号」和「设置」之间，按账号实体和模型展示本机记录 token 增量、fresh input / cached input / output、缓存命中率、非官方价格估算、趋势折线图、请求日志和数据源证据；默认 30 秒刷新，手动刷新会显示进行中或排队反馈，可按今天、近 24 小时、近 7/14/30 天或自定义时间筛选。时间范围弹层使用应用内日历和分钟级文本输入，不依赖系统原生日期控件。账号分类表位于时间选择下方、摘要卡片前，账号和模型下拉候选随当前时间范围及其他筛选变化，但不会因选择自身而折叠成单项。
-- **Custom Base URL**：每个账号可独立配置 `OPENAI_BASE_URL`；配置后按钮变红警示（自定义 Base 与 ChatGPT OAuth 账号互斥）。
-- **Codex CLI 路径自检**：自动定位 `codex` 可执行（PATH / `~/.codex/bin` / Homebrew / nvm），找不到或路径错误时设置页可手动指定，结果写入 `install_state.json` 优先生效。设置页还提供「自动检测」按钮：忽略可能出错的缓存重新扫描所有常见位置，并用 `codex --version` 验证候选确实是可运行的 Codex CLI——唯一命中直接应用，多个命中时让你选。
-- **跨平台原生 Tauri**：macOS arm64 / x64 与 Windows x64 提供原生窗口、原生标题栏 / 关闭按钮，配套 5 套浅色 / 深色主题与中英文界面。
-- **本地预览模式**：没有 Tauri 运行时（直接 `vite` 跑前端）时自动使用 mock snapshot，方便单纯调样式。
-
-## 下载
-
-最新版：<https://github.com/Cmochance/Codex_Account_Switch/releases/latest>
-
-资产命名：
-
-```text
-codex_switch_<版本>_aarch64.dmg            macOS Apple Silicon DMG（拖拽到 Applications）
-codex_switch_<版本>_aarch64.pkg            macOS Apple Silicon PKG 安装包
-codex_switch_<版本>_x64.dmg                macOS Intel DMG（拖拽到 Applications）
-codex_switch_<版本>_x64.pkg                macOS Intel PKG 安装包
-codex_switch_<版本>_x64-setup.exe          Windows x64 NSIS 安装包
-codex_switch_<版本>_amd64.deb              Linux x86_64 Debian/Ubuntu 包（sudo dpkg -i 安装）
-codex_switch_<版本>_amd64.AppImage         Linux x86_64 通用便携包（chmod +x 后直接运行）
-```
-
-> GitHub Actions 生成的 macOS Release 会对 `.app` 做 Developer ID 或 ad-hoc codesign 并校验签名，但当前没有 notarization；Windows Release 仍未做 Authenticode 签名。首次启动时，macOS 可能需要在「系统设置 → 隐私与安全」放行，Windows 可在 SmartScreen 弹窗点「更多信息 → 仍要运行」。
->
-> Linux 为实验性发布（Ubuntu 22.04 / glibc 2.35 基线构建）：UI、账号切换、plan/quota 查看可用；与 Codex CLI 的部分交互（路径自检、`codex login` spawn 等）当前走 Windows 路径分支，Linux-native 体验尚未单独适配，欢迎反馈 issue。
-
-## 快速开始
-
-1. 从 Releases 下载并安装 Codex Switch，启动桌面窗口。
-2. 进入「设置」页，确认 **Codex CLI 路径** 已自动填好（默认探测 PATH / `~/.codex/bin`）；缺失时手动指定，状态变绿即可。
-3. 进入「账号」页，点「添加账号」→ 输入账号别名（落地为 `~/.codex/account_backup/<别名>/`）。
-4. 在新账号条目点「登录」→ 浏览器完成 ChatGPT OAuth → 回到应用，套餐 + 额度自动加载。Windows 本地补丁版中，只有 profile metadata 显式设置 `login_browser: "edge"` 的账号会打开 Edge；其他账号走普通登录浏览器行为。
-5. 多账号场景：在目标条目点「切换」即可一键替换当前 `~/.codex/` 的账号态文件，原账号的 `auth.json` / `profile.json` 会按账号身份写回匹配的账号备份目录；无法确认归属时不会覆盖旧槽位。Windows Store 版会在切换事务中安全退出并按需重开 Codex，具体恢复语义见下方 FAQ。
-6. 需要清空 quota cache 或重新拉计划 / 额度时，点对应账号的「刷新」。刷新会先用现有 `access_token` 查询官方 usage；只有 access token 过期或后端返回 401 时才走 OAuth refresh。
-7. 需要查看真实 token 消耗时，进入「使用统计」页。当前采集来源是本机 Codex session JSONL 与冻结后的 cc-switch 只读证据；future OpenAI response adapter 已预留但暂不产出记录。profile 元数据只用于来源门禁和账号归属。自定义第三方 Base URL、无法证明历史归属或未知官方来源的记录会进入排除计数，不会混入官方 OpenAI 消耗。
+Windows SmartScreen 可能提示未签名；确认来源后可选择“更多信息 → 仍要运行”。账号凭据和 OAuth token 只写入本机，请勿把 `auth.json` 上传到公共位置。
 
 ## 仓库结构
 
-- `src-tauri/`：Rust + Tauri 应用根目录。
-- `src-tauri/mac/front/`：macOS HTML 壳、样式、原生窗口控制。
-- `src-tauri/win/front/`：Windows HTML 壳、样式、自绘标题栏与窗口按钮。
-- `src-tauri/shared/front/`：跨平台前端 — state / render / actions / theme / i18n / Tauri bridge / mock preview；其中 `usage/` 是 Usage workspace deep module，内聚 Usage 状态、异步时序、DOM binding 与渲染。
-- `src-tauri/mac/runtime/` / `src-tauri/win/runtime/`：各自平台的 runtime adapter（profile_actions / switch / login spawn / Windows 定向浏览器登录）。
-- `src-tauri/shared/runtime/`：共享 runtime — `chatgpt_api`、`codex_app_server`、`models`、`switch_core`、`profiles_index`、`paths`、`metadata`、`process_lock`、`fs_ops`；其中 `openai_usage/ingestion.rs` 是 Usage evidence 内部 adapter seam，负责 session JSONL、cc-switch 与 future response 来源采集。
-- `src-tauri/shared/commands/`：前端可见的 Tauri command 层（dashboard / switch / profile lifecycle）。
-- `macOS-backup/`：兼容老的 shell 流程（`install.sh` / `uninstall.sh` / `codex-switch.sh`），用于 desktop 不可用的回退场景。
-- `scripts/`：version-sync、macOS 产物布局、`.pkg` 生成、CHANGELOG 校验。
-- `examples/account_backup/demo/`：`auth.json` / `profile.json` 占位模板，演示账号备份目录结构。
-- `docs/`：发布、实现笔记、安全说明、上游协议参考。
+- `src-tauri/win/`：Windows Tauri 前端壳与原生 runtime。
+- `src-tauri/shared/`：账号生命周期、身份路由、Usage ledger、ChatGPT API、app-server 和前端桥接；只保留必要的中性契约。
+- `scripts/`：版本同步、Windows MSVC 构建、发布卫生检查和远端桌面部署。
+- `examples/account_backup/demo/`：账号目录模板。
+- `docs/`：实现说明、Windows 双主机部署和研究/设计记录。
 
-构建输出（`dist/`、`src-tauri/target/`、`node_modules/`、`.app` / `.dmg` / `.pkg` / `.exe`）全部 .gitignore，不入仓。
+## 本地开发与验证
 
-## 本地开发
+在 Windows PowerShell 中执行：
 
-```bash
+```powershell
 npm install
-npm run tauri:dev                  # 起 Tauri 桌面 dev 窗口 + Vite HMR
-npm run build                      # 仅前端 production build（vite + tsc）
-npm run test:front                 # Vitest 前端单测
-npm run test                       # cargo test --manifest-path src-tauri/Cargo.toml
-npm run check:rust:windows         # cross check Windows target（macOS 本地交叉验证）
-npm run test:rust:windows          # 在 Windows runner 上跑（CI 主用）
-npm run test:rust:windows-gnu      # 在 Windows GNU/MinGW host 上验证本地链接与单测启动路径
+npm run tauri:dev
+npm run build
+npm run test:front
+npm run check:rust:windows
+npm run test:rust:windows
+npm run check:windows-release-hygiene
 ```
 
-## 桌面端打包
+前端生产构建输出到 ignored 的 `dist\web\`。Windows MSVC 便携构建使用已验证脚本：
 
-Tauri 2 没暴露 bundle 输出目录配置，macOS 打包脚本在 `tauri build` 前把 `src-tauri/target/release/bundle/macos` 与 `bundle/dmg` symlink 到 `dist/`，把最终 `.app` / `.dmg` / `.pkg` 直接落到仓库根目录的 `dist/`。
-
-本地仅打包 `.app`（用于手测，不签名）：
-
-```bash
-npm run tauri:build:macos-app
+```powershell
+npm run build -- --mode windows
+npm run tauri:build:windows:portable
 ```
 
-发布构建（`.dmg` + `.pkg`）：
+产物为 `src-tauri\target\x86_64-pc-windows-msvc\release\codex_switch.exe`。替换安装目录时必须同时复制同一构建产生的 x64 `WebView2Loader.dll`；loader 通常位于 `release\build\webview2-com-sys-*\out\x64\`，不保证在 release 根目录。
 
-```bash
-npm run tauri:build:macos-release
+GitHub Actions 只在 `windows-latest` 上执行 Windows x64 CI/release，tag release 仅附加 NSIS `.exe`。版本号源头是 `package.json`，常用命令：
+
+```powershell
+npm run version:sync
+npm run version:set -- 1.5.12
+npm run version:check
 ```
 
-发布构建的 `.app` 会作为打包输入参与 CI codesign 链路，并对 DMG 内的应用执行签名校验；当前没有 notarization。随后独立 `.app` 从 `dist/` 移除，只保留 `.dmg` / `.pkg`。旧版本产物会移动到 `dist/history/v<旧版本>/` 下归档；重复构建当前版本只替换根目录的当前文件，不会再额外备份。
+## 更新与本地补丁
 
-期望产物结构：
+更新检查只读取版本 JSON、显示 release notes 并打开发布页。它不会下载、安装或覆盖公共上游二进制。当前安装版含本地 Windows patch；发现上游新版本时，先把上游 tag 合并到源码、重新保留本地补丁并通过 Windows 验证，再构建和替换安装目录。完整流程见 [`LOCAL_PATCHES.md`](LOCAL_PATCHES.md)。
 
-```text
-dist/
-  codex_switch_<版本>_aarch64.dmg
-  codex_switch_<版本>_aarch64.pkg
-  codex_switch_<版本>_x64.dmg            （macOS Intel runner）
-  codex_switch_<版本>_x64.pkg            （macOS Intel runner）
-  codex_switch_<版本>_x64-setup.exe      （Windows runner）
-  history/
-    v<旧版本>/
-      ...
-  web/
-    ...
-```
+远端 Windows 桌面部署必须先用 `-InspectOnly` 实时解析快捷方式的 `TargetPath`，再上传并替换目标目录中的 exe + loader；不可把文件复制到 `.lnk` 路径，也不可只替换 exe。设备专属路径与传输证据见 [`docs/environments/windows-dual-host.md`](docs/environments/windows-dual-host.md)。
 
-Windows 正式发布构建走 CI 的 `tauri build --target x86_64-pc-windows-msvc`。本机替换已安装的本地补丁版时，优先使用 `LOCAL_PATCHES.md` 里的“已验证 Windows 编译路径”：先跑 `npm run build -- --mode windows` 做前端 Windows mode 预检，再跑 `npm run tauri:build:windows:portable` 生成 `src-tauri/target/x86_64-pc-windows-msvc/release/codex_switch.exe`。该 wrapper 默认使用当前环境或系统 `rustup`，也可通过 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 或 `CARGO` 指定工具链，并在构建前确认 `rustc -vV` 的 host 是 `x86_64-pc-windows-msvc`。这里检查的是当前 Rust 编译器 host；只安装同名 target 并不能把 GNU host 变成 MSVC host。
+## 数据位置与安全边界
 
-替换本机安装目录时，必须同时复制 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`；MSVC `--no-bundle` 构建的 loader 通常来自 `src-tauri/target/x86_64-pc-windows-msvc/release/build/webview2-com-sys-*/out/x64/WebView2Loader.dll`，不一定在 release 根目录。`npm run tauri:build:portable` 和 `npm run test:rust:windows-gnu` 只作为 GNU/MinGW 诊断路径，不作为本机安装版主构建路径。
+- Codex 当前账号：`%CODEX_HOME%\auth.json`、`%CODEX_HOME%\profile.json`。
+- Profile 备份：`%CODEX_HOME%\account_backup\<profile>\`。
+- Windows runtime：`%CODEX_HOME%\account_backup\windows\`（安装状态、quota cache、login/refresh runtime）。
+- Usage ledger：`%CODEX_HOME%\account_backup\openai_usage.sqlite`。
+- 外部只读证据：`%CODEX_HOME%\usage_evidence\`，不会被列为账号 profile。
 
-本地补丁版构建完成后，如需同步到远端 Windows 桌面入口，必须先显式提供 `RemoteTarget` 和 `RemoteDesktopLink` 并执行 `-InspectOnly`，确认快捷方式实时目标后再部署；正式部署还必须提供 `RemoteStageRoot`。三项既可通过同名参数传入，也可分别使用 `CODEX_SWITCH_REMOTE_TARGET`、`CODEX_SWITCH_REMOTE_DESKTOP_LINK`、`CODEX_REMOTE_STAGE_ROOT`。`EvidenceRoot` 必须来自参数、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 或 `CODEX_HOME` 派生路径。正式替换只停止可执行路径等于快捷方式目标的进程；复制或哈希校验失败时自动恢复备份，避免留下 exe/loader 混合版本。参数契约见 `LOCAL_PATCHES.md`，当前设备可直接复制的命令见 `docs/environments/windows-dual-host.md`。
-
-## 版本与发布
-
-- 版本号源头是 `package.json`，`npm run version:sync` / `npm run version:set -- <semver>` 把同一版本写到 `package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`，并在 `src-tauri/mac/front/index.html` / `win/front/index.html` 通过 Vite-injected `__CODEX_APP_VERSION__` 渲染到设置页。
-- GitHub Release tag 用完整 semver（如 `v1.5.12`）。push tag → `.github/workflows/build.yml` 按 macOS arm64、macOS x64、Windows x64、Linux x86_64 四项矩阵构建，并把 `.dmg` / `.pkg` / `.exe` / `.deb` / `.AppImage` 上传到一个 **draft release**，不会自动转 Latest。
-- 不要把补丁版本的 asset 上传到旧的两段式 tag（如 `1.5`）。
-- macOS 安装包仅作 Release asset 发布，不提交到 Git。
-
-常用命令：
-
-```bash
-npm run version:sync              # 把 package.json 当前 version 同步到 Cargo / lock
-npm run version:set -- 1.5.12     # 一次性 bump 到指定版本
-npm run version:check             # CI 用：拒绝把 semver 字面量写回 *.html
-```
-
-## 常见问题
-
-### 没有 Codex CLI 怎么办
-
-应用启动后会探测 `codex` 路径；探测失败时设置页会标红「Codex CLI 路径未找到」，可手动指定（写入 `install_state.json` 的 `user_codex_path` 优先级最高）。也可以点设置页「Codex CLI 路径」行的「自动检测」按钮强制重新扫描，并用 `codex --version` 验证候选确实是 Codex CLI——比启动时的自检更主动，适合自动定位出错或不清楚 `codex` 装在哪的情况。Windows 会同时检查 `CODEX_EXE`、`CODEX_INSTALL_DIR` 和官方 OpenAI versioned runtime 目录；缓存路径或手动路径如果不能运行 `codex --version`，或输出的版本行不像 Codex CLI，会被跳过并重新发现。未装 Codex CLI 也能用 plan / quota 查看（走 ChatGPT OAuth token 直接拉 rate-limits），但「登录」按钮和切换后启动 Codex 等动作需要 CLI 存在。
-
-### 切换账号会改动 skills / sessions / 历史吗
-
-不会。当前原生 runtime 的 profile 切换只管理 `auth.json` 和 `profile.json` 两个账号态文件，并会按 profile 元数据同步当前账号需要的 Base URL 配置。写回当前 root 状态时，`.current_profile` / `.active_profile` 只作为候选提示，实际归属要用 `auth.json` 中可识别的账号身份匹配；如果 root 已经漂移到未管理账号，应用不会把它写进旧槽位。`skills`、插件缓存、`AGENTS.md`、`rules`、`memories`、`vendor_imports`、sqlite 状态和 sessions/jsonl 历史都不会从 profile 目录覆盖到 live `~/.codex/`。如果旧 profile 目录里残留这些全局资产，它们会被切换流程忽略。
-
-### Windows 切换账号时为什么 Codex 会退出
-
-为了避免旧账号的 Store 进程与切换流程同时写盘，应用会按 `OpenAI.Codex` 包身份关闭 `ChatGPT.exe` 外壳及包内后端，确认连续空快照后再写入账号态。事务期间只要曾观察到 UI host 运行，成功提交或完整回滚后就会至多重开一次。写盘失败会尝试恢复原账号态；恢复不完整时返回 `SWITCH_RECOVERY_FAILED` 且不会自动重开。此时已有 Store 进程仍可能存在，应按错误提示手动关闭 Codex 后再修复账号文件。
-
-### 「刷新」按钮和「切换」之后会不会消耗 quota
-
-不会真发 ChatGPT 对话请求。Plan 数据来自 `id_token` claims；quota 走 ChatGPT Web API `account/rateLimits/read`（HTTP GET），或 Codex 0.130+ 的 `app-server` JSON-RPC fallback。没有 LLM 调用，不消耗用户额度。
-
-### 「使用统计」里的 token 和费用怎么算
-
-使用统计当前从本机 Codex `sessions` / `archived_sessions` JSONL 与冻结后的 cc-switch 只读副本采集证据；future OpenAI response adapter 是空实现，不会产出记录。session JSONL 的 `token_count` 按同一 session 内相邻事件做差分，避免把累计总量重复相加。账本分为 evidence、facts 和 strict accepted events：默认摘要、趋势和日志只读 strict；历史槽位归因作为估算事实单独可见；candidate / excluded scope 从 evidence ledger 展示候选、拒绝和 superseded 证据行。摘要区会把“严格证明”“历史槽位归因估算”“未归属候选”分层展示，方便和 cc-switch 对账；candidate、rejected、superseded 不进入严格或历史费用总额。账号表按账号实体聚合：相同非空 `account_id` 或规范化后相同的 email 形成同一传递归并组；缺少身份的 legacy 事件只能使用同一 profile 中严格早于事件时间的最近已确认身份，同毫秒、存在歧义或没有此前证据时回落到 unknown，绝不使用当前快照或未来身份。旧 ledger 中的历史身份只有在其旧版 v1 key 或 alias 能被验证时才桥接；严格与推定归属分别统计。费用按模型价格表拆分 fresh input、cached input 和 output 估算；未知模型保留 token，但费用显示未定价。
-
-### per-card「登录」按钮为什么有时变成「取消」
-
-普通 `codex login` 流程启动后如果 OAuth 回调没回来（用户关浏览器 / 网络异常），点同一按钮会通过持有的登录子进程句柄中止并回收该进程，释放 `.switch.lock` 全局锁；Windows 会围绕该 PID 清理对应的 shim 子进程树。Windows 本地补丁版中，profile metadata 显式设置 `login_browser: "edge"` 的 profile 会改用 `codex app-server` 取得 `account/login/start` 返回的 `authUrl`，再由应用用 Edge 的正常用户状态打开登录页，并等待 `account/login/completed` 通知。
-
-因为定向 Edge 登录复用的是 Edge 当前正常登录状态，点击登录前请确认 Edge 里的 ChatGPT 账号就是目标 profile 要保存的账号。若目标 profile 已有可识别账号，应用会在写入前校验新旧账号标识，不一致时拒绝覆盖旧 `auth.json`。
-
-### Custom Base URL 配置后能继续用 ChatGPT OAuth 吗
-
-不能。Custom Base URL（指向第三方 OpenAI 兼容反代）和 ChatGPT 官方 OAuth 是互斥的 — OAuth `id_token` 校验只对官方 endpoint 生效。配置 Base 之后该卡片的「Base」按钮会变红警示。
-
-### macOS 提示「无法打开，因为无法验证开发者」
-
-GitHub Actions 生成的 Release 会对应用做 Developer ID 或 ad-hoc codesign 并校验签名，但当前没有 notarization。第一次启动仍可能需要按住 Control 点应用图标 → 选「打开」，或在「系统设置 → 隐私与安全」放行。本地 `npm run tauri:build:macos-app` 产物则明确使用 `--no-sign`，只用于手测。
-
-### Windows SmartScreen 提示「Windows 已保护你的电脑」
-
-同上，未做 Authenticode 签名。SmartScreen 弹窗点「更多信息 → 仍要运行」即可。
-
-### 日志和账号数据存在哪里
-
-- 账号备份：`~/.codex/account_backup/<别名>/`（macOS / Linux）/ `%USERPROFILE%\.codex\account_backup\<别名>\`（Windows）
-- 应用运行时状态：Windows 为 `%CODEX_HOME%\account_backup\windows\`（`install_state.json`、`quota_cache.json`、可再生成的 login runtime / refresh runtime）；macOS 为 `~/.codex/account_backup/macos/`
-- OpenAI 使用统计 ledger：`%CODEX_HOME%\account_backup\openai_usage.sqlite` / `~/.codex/account_backup/openai_usage.sqlite`。这是可重建的本地事实表，源 session、profile 归属或价格表变化时会重新同步。
-- OpenAI 使用证据副本：`%CODEX_HOME%\usage_evidence\` / `~/.codex/usage_evidence/`。cc-switch 等外部只读来源会先冻结到这里；它不是账号 profile 目录，不能放在 `account_backup` 下。
-- Codex 当前账号状态：`~/.codex/auth.json` + `~/.codex/profile.json`；`config.toml` 中的 Base URL 可能由 profile 元数据同步
-
-## 技术栈
-
-- **后端 / runtime**：Rust 1.80+ · Tauri 2.x · tokio + reqwest（rustls-tls）· chrono · serde
-- **协议适配**：`shared/runtime/chatgpt_api.rs`（ChatGPT Web API `account/{read,rateLimits/read}`）+ `shared/runtime/codex_app_server.rs`（Codex app-server JSON-RPC，用于 quota fallback 和 Windows 定向 Edge 登录）
-- **前端**：HTML + CSS + 原生 TypeScript（`shared/front/{render,state,actions,theme,i18n,tauri}.ts`），无前端框架；Vite 7 打包
-- **跨平台 runtime**：mac / win runtime 各自实现 spawn / process control / OS-native title bar；shared runtime 处理协议、profile lifecycle、JSON-RPC、缓存、文件锁
-- **构建 / 发布**：`tauri build` 单命令出 dmg / pkg / exe；`.github/workflows/build.yml` 出 draft release，全部 asset 由 GitHub Actions 上传
-
-## 平台支持
-
-- **macOS**：原生 Tauri 桌面端（Apple Silicon + Intel），同时保留 `macOS-backup/` 下的 legacy shell 流程兼容。
-- **Windows**：原生 Tauri 桌面端（x64），通过 Release 中的 `.exe` 分发。
-- **Linux**：**实验性发布**（Ubuntu 22.04 / glibc 2.35 基线，x86_64），通过 Release 中的 `.deb` / `.AppImage` 分发。前端 UI、账号切换、plan / quota 查看与 macOS / Windows 一致；与 Codex CLI 的交互（路径自检、`codex login` spawn）当前复用 Windows runtime 分支，尚未做 Linux-native 适配，欢迎踩到具体问题后开 issue 反馈。
-
-平台专属逻辑放在 `src-tauri/mac/**` 或 `src-tauri/win/**`，跨平台逻辑都在 `src-tauri/shared/**`。
-
-## macOS 兼容脚本
-
-老的 shell 流程仍然保留，作为桌面 GUI 不可用 / SSH 终端场景的兜底：
-
-```bash
-bash macOS-backup/install.sh
-source ~/.zshrc
-```
-
-三种模式：
-
-- `auto`：优先尝试原生桌面 runtime，找不到回退到 legacy shell。
-- `desktop`：强制走原生桌面。
-- `legacy`：强制走 `codex-switch.sh`。
-
-卸载：
-
-```bash
-bash macOS-backup/uninstall.sh                  # 只移除命令接入层
-bash macOS-backup/uninstall.sh --remove-script  # 连脚本一起删
-source ~/.zshrc
-```
-
-卸载脚本不会删 `~/.codex/account_backup/`，账号目录需要时手动清理。
-
-## 免责声明
-
-本项目专注 **OpenAI Codex CLI 多账号管理**，**不是** OpenAI 官方项目，也不复用其商标 / Logo / 发布身份。
-
-所有账号凭据 / OAuth token 仅保存在本机 `~/.codex/account_backup/`（Unix 0600 + atomic write）；plan / quota 通过 HTTPS 直连 `chatgpt.com` / `api.openai.com`，不经任何第三方中转。使用统计只读本机 session JSONL、profile 元数据和本机冻结的只读证据副本，不上传请求内容。
-
-ChatGPT OAuth `id_token` / `access_token` 仅用于读取计划与 rate-limit 元数据，不会向模型发起任何对话请求，因此不会消耗用户额度。
+切换只管理账号态文件，不整棵复制 profile。更新、plan/quota 和 OAuth 流程不向第三方中转；Usage 仅读取本机证据。该项目不是 OpenAI 官方项目。
 
 ## 许可证
 
-MIT License。完整文本见 [LICENSE](LICENSE).
+MIT License，完整文本见 [`LICENSE`](LICENSE)。本地补丁说明和上游合并要求见 [`LOCAL_PATCHES.md`](LOCAL_PATCHES.md)。
