@@ -365,6 +365,10 @@ fn quota_summary_has_data(quota: &crate::models::QuotaSummary) -> bool {
         || quota.five_hour.refresh_at.is_some()
         || quota.weekly.remaining_percent.is_some()
         || quota.weekly.refresh_at.is_some()
+        || quota
+            .additional
+            .as_ref()
+            .is_some_and(|entries| !entries.is_empty())
 }
 
 fn select_current_quota(

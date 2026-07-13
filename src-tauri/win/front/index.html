@@ -54,8 +54,8 @@
                   <div class="quota-monitor-pill">
                     <span class="quota-monitor-dot" aria-hidden="true"></span>
                     <span id="quota-monitor-label">Live quota monitor</span>
-                  </div>
-                </div>
+              </div>
+             </div>
               </div>
 
               <div class="current-identity">
@@ -126,6 +126,31 @@
                     <span id="page-indicator" class="pager-pill pager-current">1 / 1</span>
                     <button id="next-page-button" class="pager-pill" type="button">Next</button>
                   </div>
+              </div>
+              </div>
+
+              <div class="profiles-filter-bar" aria-label="Profile filters">
+                <label class="profile-filter-control profile-filter-control--search">
+                  <span id="profiles-search-label" class="profile-filter-label" data-i18n-key="profilesSearchLabel">Search</span>
+                  <input
+                    id="profiles-search-input"
+                    class="profile-filter-input"
+                    type="search"
+                    autocomplete="off"
+                    data-i18n-placeholder="profilesSearchPlaceholder"
+                    placeholder="Search account, folder, or plan"
+                  />
+                </label>
+                <label class="profile-filter-control">
+                  <span id="profiles-plan-label" class="profile-filter-label" data-i18n-key="profilesPlanLabel">Plan</span>
+                  <select id="profiles-plan-filter" class="profile-filter-select" aria-labelledby="profiles-plan-label">
+                    <option value="" data-i18n-key="profilesAllPlans">All plans</option>
+                  </select>
+                </label>
+                <div class="profiles-filter-summary-wrap">
+                  <span id="profiles-filter-summary" class="profiles-filter-summary" aria-live="polite">Showing 0 / 0</span>
+                  <span id="profiles-filter-chips" class="profiles-filter-chips"></span>
+                  <button id="clear-profiles-filters-button" class="pager-pill profiles-filter-clear" type="button" data-i18n-key="profilesClearFilters">Clear</button>
                 </div>
               </div>
 
@@ -234,6 +259,26 @@
                 </button>
               </div>
             </div>
+            <label class="settings-row settings-toggle-row">
+              <span>
+                <strong data-i18n-key="settingsAdditionalQuota">Additional quota</strong>
+                <small class="settings-help" data-i18n-key="settingsAdditionalQuotaCopy">Show model-specific allowance rows on profile cards.</small>
+              </span>
+              <span class="settings-switch">
+                <input id="settings-additional-quota-toggle" type="checkbox" />
+                <span aria-hidden="true"></span>
+              </span>
+            </label>
+            <label class="settings-row settings-toggle-row">
+              <span>
+                <strong data-i18n-key="settingsSparkQuota">Spark quota noise</strong>
+                <small class="settings-help" data-i18n-key="settingsSparkQuotaCopy">Show Spark rows when the additional quota view is enabled.</small>
+              </span>
+              <span class="settings-switch">
+                <input id="settings-spark-quota-toggle" type="checkbox" />
+                <span aria-hidden="true"></span>
+              </span>
+            </label>
             <label class="settings-row settings-row--field">
               <strong data-i18n-key="settingsUpdateUrl">Update URL</strong>
               <input id="settings-update-url-input" class="settings-input" type="url" value="https://api.github.com/repos/Cmochance/Codex_Account_Switch/releases/latest" />

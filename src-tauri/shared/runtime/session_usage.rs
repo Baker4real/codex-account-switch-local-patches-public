@@ -108,6 +108,15 @@ pub fn normalize_quota_summary(
     QuotaSummary {
         five_hour: normalize_quota_window(quota.five_hour),
         weekly: normalize_quota_window(quota.weekly),
+        additional: quota.additional.map(|entries| {
+            entries
+                .into_iter()
+                .map(|mut entry| {
+                    entry.remaining_percent = entry.remaining_percent.map(|value| value.min(100));
+                    entry
+                })
+                .collect()
+        }),
         provenance: quota.provenance,
     }
 }

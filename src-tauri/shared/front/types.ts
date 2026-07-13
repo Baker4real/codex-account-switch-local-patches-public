@@ -4,6 +4,23 @@ export interface QuotaWindow {
   reset_at_timestamp: number | null;
 }
 
+export type AdditionalQuotaWindowKind = "primary" | "secondary";
+
+export interface AdditionalQuotaWindow {
+  id: string;
+  label: string;
+  limit_name: string;
+  metered_feature: string;
+  window_kind: AdditionalQuotaWindowKind;
+  remaining_percent: number | null;
+  refresh_at: string | null;
+  reset_at_timestamp: number | null;
+  window_minutes: number | null;
+  allowed: boolean | null;
+  limit_reached: boolean | null;
+  is_spark: boolean;
+}
+
 export type QuotaSource = "unknown" | "chat_gpt_api" | "codex_app_server" | "session_jsonl";
 
 export type QuotaConfidence = "unknown" | "official" | "fallback" | "local_observation";
@@ -19,6 +36,7 @@ export interface QuotaProvenance {
 export interface QuotaSummary {
   five_hour: QuotaWindow;
   weekly: QuotaWindow;
+  additional?: AdditionalQuotaWindow[] | null;
   provenance?: QuotaProvenance;
 }
 
@@ -82,6 +100,10 @@ export interface DashboardViewModel {
   profiles: ProfileCard[];
   current_card: CurrentCard | null;
   current_quota_card: QuotaSummary | null;
+  profile_counts: {
+    visible: number;
+    total: number;
+  };
 }
 
 export interface ProfilesSnapshotResponse {

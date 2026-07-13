@@ -1,6 +1,10 @@
 import { persistLocale, resolveInitialLocale, t, type Locale } from "@front-shared/i18n";
 import { state } from "@front-shared/state";
 import {
+  persistAdditionalQuotaVisibility,
+  persistSparkQuotaVisibility,
+} from "@front-shared/quota-preferences";
+import {
   applyTheme,
   getThemeOption,
   isThemeId,
@@ -57,6 +61,7 @@ import {
   elements,
   renderCurrentCard,
   renderPaging,
+  renderProfileFilters,
   renderProfiles,
   renderShellOverview,
   renderShellRoute,
@@ -77,6 +82,7 @@ function rerenderDashboard(): void {
 
   const dashboard = buildDashboardViewModel();
   if (!dashboard) {
+    renderProfileFilters(null);
     renderPaging({ has_previous: false, has_next: false, page: 1, total_pages: 1 });
     renderShellOverview(null);
     void usageWorkspace?.dispatch({
@@ -100,6 +106,7 @@ function rerenderDashboard(): void {
   );
   renderCurrentCard(dashboard);
   renderPaging(dashboard.paging);
+  renderProfileFilters(dashboard.profile_counts);
   renderShellOverview(dashboard);
   void usageWorkspace?.dispatch({
     type: "set-context",
@@ -166,6 +173,30 @@ function setLocale(locale: Locale): void {
 
   state.locale = locale;
   persistLocale(locale);
+  rerenderDashboard();
+}
+
+function setAdditionalQuotaVisibility(value: boolean): void {
+  const previous = state.showAdditionalQuota;
+  state.showAdditionalQuota = value;
+  if (!persistAdditionalQuotaVisibility(value)) {
+    state.showAdditionalQuota = previous;
+    elements.settingsAdditionalQuotaToggle.checked = previous;
+    showToast(t(state.locale, "quotaPreferencePersistFailed"), true);
+    return;
+  }
+  rerenderDashboard();
+}
+
+function setSparkQuotaVisibility(value: boolean): void {
+  const previous = state.showSparkQuota;
+  state.showSparkQuota = value;
+  if (!persistSparkQuotaVisibility(value)) {
+    state.showSparkQuota = previous;
+    elements.settingsSparkQuotaToggle.checked = previous;
+    showToast(t(state.locale, "quotaPreferencePersistFailed"), true);
+    return;
+  }
   rerenderDashboard();
 }
 
@@ -1031,6 +1062,29 @@ export function bootstrap(): void {
   });
   elements.nextPageButton.addEventListener("click", () => {
     state.page += 1;
+    rerenderDashboard();
+  });
+  elements.settingsAdditionalQuotaToggle.checked = state.showAdditionalQuota;
+  elements.settingsAdditionalQuotaToggle.addEventListener("change", () => {
+    setAdditionalQuotaVisibility(elements.settingsAdditionalQuotaToggle.checked);
+  });
+  elements.settingsSparkQuotaToggle.checked = state.showSparkQuota;
+  elements.settingsSparkQuotaToggle.addEventListener("change", () => {
+    setSparkQuotaVisibility(elements.settingsSparkQuotaToggle.checked);
+  });
+  elements.profilesSearchInput.addEventListener("input", () => {
+    state.profileFilters.query = elements.profilesSearchInput.value;
+    state.page = 1;
+    rerenderDashboard();
+  });
+  elements.profilesPlanFilter.addEventListener("change", () => {
+    state.profileFilters.plan = elements.profilesPlanFilter.value || null;
+    state.page = 1;
+    rerenderDashboard();
+  });
+  elements.clearProfilesFiltersButton.addEventListener("click", () => {
+    state.profileFilters = { query: "", plan: null };
+    state.page = 1;
     rerenderDashboard();
   });
   elements.openCurrentFolderButton.addEventListener("click", () => {

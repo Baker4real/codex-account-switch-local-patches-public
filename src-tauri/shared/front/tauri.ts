@@ -62,6 +62,7 @@ function quota(
       refresh_at: weeklyRefresh,
       reset_at_timestamp: null,
     },
+    additional: null,
     provenance: {
       source,
       confidence,

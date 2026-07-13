@@ -10,6 +10,36 @@ pub struct QuotaWindow {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum AdditionalQuotaWindowKind {
+    Primary,
+    Secondary,
+}
+
+impl Default for AdditionalQuotaWindowKind {
+    fn default() -> Self {
+        Self::Primary
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct AdditionalQuotaWindow {
+    pub id: String,
+    pub label: String,
+    pub limit_name: String,
+    pub metered_feature: String,
+    pub window_kind: AdditionalQuotaWindowKind,
+    pub remaining_percent: Option<u8>,
+    pub refresh_at: Option<String>,
+    pub reset_at_timestamp: Option<i64>,
+    pub window_minutes: Option<i64>,
+    pub allowed: Option<bool>,
+    pub limit_reached: Option<bool>,
+    pub is_spark: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum QuotaSource {
     Unknown,
     ChatGptApi,
@@ -85,6 +115,7 @@ impl QuotaProvenance {
 pub struct QuotaSummary {
     pub five_hour: QuotaWindow,
     pub weekly: QuotaWindow,
+    pub additional: Option<Vec<AdditionalQuotaWindow>>,
     pub provenance: QuotaProvenance,
 }
 
@@ -168,8 +199,13 @@ impl ProfileMetadata {
             .weekly
             .remaining_percent
             .map_or(true, |value| value <= 100);
+        let additional_ok = self.quota.additional.as_ref().is_none_or(|entries| {
+            entries
+                .iter()
+                .all(|entry| entry.remaining_percent.map_or(true, |value| value <= 100))
+        });
 
-        if five_hour_ok && weekly_ok {
+        if five_hour_ok && weekly_ok && additional_ok {
             Some(self)
         } else {
             None
@@ -573,6 +609,7 @@ mod tests {
         assert_eq!(quota.provenance.confidence, QuotaConfidence::Unknown);
         assert_eq!(quota.provenance.observed_at_ms, None);
         assert_eq!(quota.provenance.source_mtime_ms, None);
+        assert_eq!(quota.additional, None);
     }
 
     #[test]

@@ -1,3 +1,4 @@
+pub mod additional_quota;
 pub mod chatgpt_api;
 pub mod codex_app_server;
 pub mod codex_cli_path;

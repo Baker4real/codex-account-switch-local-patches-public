@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::env;
 use std::ffi::OsString;
 use std::fs;
@@ -49,6 +50,7 @@ const WINDOWS_APPS_PATH_SEGMENT: &str = r"\microsoft\windowsapps\";
 const WINDOWS_STORE_APP_ID: &str = "OpenAI.Codex_2p2nqsd0c76g0!App";
 const WINDOWS_STORE_SHELL_PREFIX: &str = r"shell:AppsFolder\";
 const WHERE_CODEX_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_VERSION_MANAGER_DIRECTORIES: usize = 32;
 const PROFILE_SWITCH_EXIT_STABILITY_ATTEMPTS: usize = 3;
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -118,6 +120,149 @@ pub(super) fn is_acceptable_real_codex_cli_path(
     }
 
     !is_windows_apps_alias_path(path)
+}
+
+fn version_directory_sort_key(path: &Path) -> Option<(u64, u64, u64)> {
+    let name = path.file_name()?.to_string_lossy();
+    let name = name.strip_prefix('v').unwrap_or(&name);
+    let mut parts = name.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.split('-').next()?.parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn collect_version_directories_newest_first(root: &Path) -> Vec<PathBuf> {
+    let mut directories = fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+
+    directories.sort_by(|left, right| {
+        match (
+            version_directory_sort_key(left),
+            version_directory_sort_key(right),
+        ) {
+            (Some(left), Some(right)) => right.cmp(&left),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => right
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .cmp(&left.to_string_lossy().to_ascii_lowercase()),
+        }
+    });
+    directories.truncate(MAX_VERSION_MANAGER_DIRECTORIES);
+    directories
+}
+
+fn push_codex_name_candidates<F>(root: &Path, push: &mut F)
+where
+    F: FnMut(PathBuf),
+{
+    for name in ["codex.cmd", "codex.exe", "codex.bat", "codex.com"] {
+        push(root.join(name));
+    }
+}
+
+fn push_versioned_install_candidates<F>(version_root: &Path, install_suffix: &Path, push: &mut F)
+where
+    F: FnMut(PathBuf),
+{
+    for version_dir in collect_version_directories_newest_first(version_root) {
+        let install_dir = if install_suffix.as_os_str().is_empty() {
+            version_dir
+        } else {
+            version_dir.join(install_suffix)
+        };
+        push_codex_name_candidates(&install_dir, push);
+        push_codex_name_candidates(&install_dir.join("node_modules").join(".bin"), push);
+    }
+}
+
+fn push_nvm_codex_candidates<F>(
+    nvm_home: Option<OsString>,
+    nvm_dir: Option<OsString>,
+    nvm_bin: Option<OsString>,
+    nvm_symlink: Option<OsString>,
+    push: &mut F,
+) where
+    F: FnMut(PathBuf),
+{
+    if let Some(nvm_bin) = nvm_bin.filter(|value| !value.is_empty()) {
+        push_codex_name_candidates(&PathBuf::from(nvm_bin), push);
+    }
+    if let Some(nvm_symlink) = nvm_symlink.filter(|value| !value.is_empty()) {
+        push_codex_name_candidates(&PathBuf::from(nvm_symlink), push);
+    }
+    if let Some(nvm_home) = nvm_home
+        .filter(|value| !value.is_empty())
+        .or_else(|| nvm_dir.filter(|value| !value.is_empty()))
+    {
+        push_versioned_install_candidates(&PathBuf::from(nvm_home), Path::new(""), push);
+    }
+}
+
+fn push_fnm_codex_candidates<F>(
+    fnm_dir: Option<OsString>,
+    fnm_multishell_path: Option<OsString>,
+    local_app_data: Option<OsString>,
+    user_profile: Option<OsString>,
+    push: &mut F,
+) where
+    F: FnMut(PathBuf),
+{
+    if let Some(fnm_multishell_path) = fnm_multishell_path.filter(|value| !value.is_empty()) {
+        push_codex_name_candidates(&PathBuf::from(fnm_multishell_path), push);
+    }
+    let root = fnm_dir
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            local_app_data
+                .filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value).join("fnm"))
+        })
+        .or_else(|| {
+            user_profile
+                .filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value).join(".fnm"))
+        });
+    if let Some(root) = root {
+        push_versioned_install_candidates(
+            &root.join("node-versions"),
+            Path::new("installation"),
+            push,
+        );
+    }
+}
+
+fn push_asdf_codex_candidates<F>(
+    asdf_data_dir: Option<OsString>,
+    user_profile: Option<OsString>,
+    push: &mut F,
+) where
+    F: FnMut(PathBuf),
+{
+    let root = asdf_data_dir
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            user_profile
+                .filter(|value| !value.is_empty())
+                .map(|value| PathBuf::from(value).join(".asdf"))
+        });
+    if let Some(root) = root {
+        push_versioned_install_candidates(
+            &root.join("installs").join("nodejs"),
+            Path::new("bin"),
+            push,
+        );
+    }
 }
 
 pub(super) fn resolve_windows_invokable_path(path: &Path) -> Option<PathBuf> {
@@ -876,7 +1021,9 @@ pub fn suggested_codex_cli_paths(codex_home: Option<&Path>) -> Vec<PathBuf> {
     let mut push = |path: PathBuf| {
         if let Some(resolved) = resolve_windows_invokable_path(&path) {
             if is_acceptable_real_codex_cli_path(&resolved, Some(&managed_shim))
-                && !suggestions.iter().any(|existing| existing == &resolved)
+                && !suggestions
+                    .iter()
+                    .any(|existing| paths_match(existing, &resolved))
             {
                 suggestions.push(resolved);
             }
@@ -911,6 +1058,23 @@ pub fn suggested_codex_cli_paths(codex_home: Option<&Path>) -> Vec<PathBuf> {
         push(base.join("codex.exe"));
         push(base.join("codex.cmd"));
     }
+
+    let user_profile = env::var_os("USERPROFILE");
+    push_nvm_codex_candidates(
+        env::var_os("NVM_HOME"),
+        env::var_os("NVM_DIR"),
+        env::var_os("NVM_BIN"),
+        env::var_os("NVM_SYMLINK"),
+        &mut push,
+    );
+    push_fnm_codex_candidates(
+        env::var_os("FNM_DIR"),
+        env::var_os("FNM_MULTISHELL_PATH"),
+        env::var_os("LOCALAPPDATA"),
+        user_profile.clone(),
+        &mut push,
+    );
+    push_asdf_codex_candidates(env::var_os("ASDF_DATA_DIR"), user_profile, &mut push);
 
     for path in where_codex_candidate_paths_with_timeout(WHERE_CODEX_TIMEOUT) {
         push(path);
@@ -1407,10 +1571,10 @@ mod tests {
         looks_like_codex_version, parse_windows_store_processes, quit_codex_app_with_ops,
         quit_codex_app_with_ops_observed, redetect_runnable_codex_cli_paths,
         resolve_login_browser_app_server_launch, resolve_real_codex_cli,
-        resolve_windows_app_target, where_codex_candidate_paths_with_timeout,
-        windows_store_shell_target, AppExitObservation, AppLaunchTarget, AppProcessOps,
-        InstallState, LoginBrowser, LoginBrowserLaunch, WindowsPlatformHooks, WindowsStoreProcess,
-        WINDOWS_STORE_APP_ID,
+        resolve_windows_app_target, suggested_codex_cli_paths,
+        where_codex_candidate_paths_with_timeout, windows_store_shell_target, AppExitObservation,
+        AppLaunchTarget, AppProcessOps, InstallState, LoginBrowser, LoginBrowserLaunch,
+        WindowsPlatformHooks, WindowsStoreProcess, WINDOWS_STORE_APP_ID,
     };
     use crate::errors::{AppError, AppResult};
     use crate::platform::hooks::PlatformHooks;
@@ -1897,6 +2061,105 @@ mod tests {
             started.elapsed() < Duration::from_secs(4),
             "redetect should be bounded by the where timeout, not the hanging process"
         );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn suggested_codex_cli_paths_scans_nvm_fnm_and_asdf_without_deep_recursion() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("version-manager-candidates");
+        let env_names = [
+            "PATH",
+            "CODEX_EXE",
+            "CODEX_INSTALL_DIR",
+            "LOCALAPPDATA",
+            "APPDATA",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "NVM_HOME",
+            "NVM_DIR",
+            "NVM_BIN",
+            "NVM_SYMLINK",
+            "FNM_DIR",
+            "FNM_MULTISHELL_PATH",
+            "ASDF_DATA_DIR",
+            "USERPROFILE",
+            "CODEX_SWITCH_TEST_WHERE_EXE",
+        ];
+        let _env = EnvVarGuard::capture(&env_names);
+        let root = codex_home.join("managers");
+        let nvm_home = root.join("nvm");
+        let fnm_dir = root.join("fnm");
+        let asdf_dir = root.join("asdf");
+
+        let nvm_old = nvm_home.join("v20.11.1");
+        let nvm_new = nvm_home.join("v22.14.0");
+        fs::create_dir_all(&nvm_old).unwrap();
+        fs::create_dir_all(&nvm_new).unwrap();
+        write_runnable_codex(&nvm_old.join("codex.cmd"), "codex-cli 0.120.0");
+        write_runnable_codex(&nvm_new.join("codex.cmd"), "codex-cli 0.122.0");
+        fs::create_dir_all(nvm_new.join("nested").join("deeper")).unwrap();
+        write_runnable_codex(
+            &nvm_new.join("nested").join("deeper").join("codex.cmd"),
+            "codex-cli 0.999.0",
+        );
+
+        let fnm_installation = fnm_dir
+            .join("node-versions")
+            .join("v21.7.0")
+            .join("installation");
+        fs::create_dir_all(&fnm_installation).unwrap();
+        write_runnable_codex(&fnm_installation.join("codex.cmd"), "codex-cli 0.121.0");
+
+        let asdf_bin = asdf_dir
+            .join("installs")
+            .join("nodejs")
+            .join("22.10.0")
+            .join("bin");
+        fs::create_dir_all(&asdf_bin).unwrap();
+        write_runnable_codex(&asdf_bin.join("codex.cmd"), "codex-cli 0.123.0");
+
+        std::env::remove_var("PATH");
+        std::env::remove_var("CODEX_EXE");
+        std::env::remove_var("CODEX_INSTALL_DIR");
+        std::env::set_var("LOCALAPPDATA", codex_home.join("local-app-data"));
+        std::env::set_var("APPDATA", codex_home.join("app-data"));
+        std::env::set_var("ProgramFiles", codex_home.join("program-files"));
+        std::env::set_var("ProgramFiles(x86)", codex_home.join("program-files-x86"));
+        std::env::set_var("NVM_HOME", &nvm_home);
+        std::env::remove_var("NVM_DIR");
+        std::env::remove_var("NVM_BIN");
+        std::env::set_var("FNM_DIR", &fnm_dir);
+        std::env::remove_var("FNM_MULTISHELL_PATH");
+        std::env::set_var("ASDF_DATA_DIR", &asdf_dir);
+        std::env::set_var("USERPROFILE", codex_home.join("user-profile"));
+        std::env::remove_var("NVM_SYMLINK");
+
+        let candidates = suggested_codex_cli_paths(Some(&codex_home));
+        let manager_candidates = candidates
+            .iter()
+            .filter(|path| path.starts_with(&root))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            manager_candidates,
+            vec![
+                nvm_new.join("codex.cmd"),
+                nvm_old.join("codex.cmd"),
+                fnm_installation.join("codex.cmd"),
+                asdf_bin.join("codex.cmd"),
+            ],
+            "version-manager candidates must be stable and version-first"
+        );
+        assert!(
+            !candidates
+                .iter()
+                .any(|path| path.ends_with("nested\\deeper\\codex.cmd")),
+            "the scan must not recurse below the version installation root"
+        );
+
         let _ = fs::remove_dir_all(&codex_home);
     }
 

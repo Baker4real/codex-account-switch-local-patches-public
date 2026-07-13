@@ -1,5 +1,6 @@
 import type {
   CurrentCard,
+  AdditionalQuotaWindow,
   DashboardViewModel,
   PagingInfo,
   ProfileCard,
@@ -16,6 +17,12 @@ import type {
 import { t, type MessageKey } from "@front-shared/i18n";
 import { state } from "@front-shared/state";
 import { getThemeOption, isThemeId } from "@front-shared/theme";
+import {
+  countActiveProfileFilters,
+  listProfilePlanOptions,
+  type ProfileFilters,
+} from "@front-shared/profile-filters";
+import { buildAdditionalQuotaPresentation } from "@front-shared/quota-view-model";
 
 const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "usage", "settings", "guide"];
 const LOW_QUOTA_THRESHOLD_PERCENT = 20;
@@ -42,6 +49,17 @@ const hasDeleteProfileUi = document.getElementById("delete-profile-dialog") inst
 export const elements = {
   profilesHeading: requiredElement<HTMLHeadingElement>("profiles-heading"),
   profilesGrid: requiredElement<HTMLDivElement>("profiles-grid"),
+  profilesSearchInput: requiredElement<HTMLInputElement>("profiles-search-input"),
+  profilesPlanFilter: requiredElement<HTMLSelectElement>("profiles-plan-filter"),
+  profilesFilterSummary: requiredElement<HTMLSpanElement>("profiles-filter-summary"),
+  profilesFilterChips: requiredElement<HTMLSpanElement>("profiles-filter-chips"),
+  clearProfilesFiltersButton: requiredElement<HTMLButtonElement>(
+    "clear-profiles-filters-button",
+  ),
+  settingsAdditionalQuotaToggle: requiredElement<HTMLInputElement>(
+    "settings-additional-quota-toggle",
+  ),
+  settingsSparkQuotaToggle: requiredElement<HTMLInputElement>("settings-spark-quota-toggle"),
   pageIndicator: requiredElement<HTMLSpanElement>("page-indicator"),
   previousPageButton: requiredElement<HTMLButtonElement>("previous-page-button"),
   nextPageButton: requiredElement<HTMLButtonElement>("next-page-button"),
@@ -650,6 +668,61 @@ function buildMetricLineMarkup(
   `;
 }
 
+function buildAdditionalQuotaMarkup(
+  quota: QuotaSummary | null | undefined,
+  unavailable: boolean,
+  layout: "profile" | "current",
+): string {
+  if (unavailable) {
+    return "";
+  }
+
+  const presentation = buildAdditionalQuotaPresentation(
+    quota,
+    state.showAdditionalQuota,
+    state.showSparkQuota,
+  );
+  if (presentation.state === "hidden") {
+    return "";
+  }
+
+  const stackClass = layout === "current" ? "current-additional-quota" : "profile-additional-quota";
+  if (presentation.state === "unknown" || presentation.state === "empty") {
+    const message =
+      presentation.state === "unknown"
+        ? t(state.locale, "additionalQuotaUnknown")
+        : t(state.locale, "additionalQuotaEmpty");
+    return `<div class="${stackClass} additional-quota-status">${escapeHtml(message)}</div>`;
+  }
+
+  const rows = presentation.windows
+    .map((entry: AdditionalQuotaWindow) => {
+      const value = formatPercent(entry.remaining_percent);
+      const refresh = formatRefresh(entry);
+      const percent = entry.remaining_percent ?? 0;
+      const noise = entry.is_spark
+        ? ` <span class="additional-quota-noise">${escapeHtml(t(state.locale, "additionalQuotaNoise"))}</span>`
+        : "";
+      const stale = presentation.stale
+        ? ` <span class="additional-quota-stale">${escapeHtml(t(state.locale, "additionalQuotaStale"))}</span>`
+        : "";
+      const title = `${entry.label}: ${value}; ${refresh}`;
+      return `
+        <section class="additional-quota-row${entry.is_spark ? " is-noise" : ""}${presentation.stale ? " is-stale" : ""}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">
+          <div class="additional-quota-line">
+            <span class="additional-quota-label">${escapeHtml(entry.label)}${noise}</span>
+            <span class="additional-quota-refresh">${escapeHtml(refresh)}${stale}</span>
+            <span class="additional-quota-value">${escapeHtml(value)}</span>
+          </div>
+          <div class="quota-track"><div class="quota-fill quota-fill--blue" style="width: ${percent}%;"></div></div>
+        </section>
+      `;
+    })
+    .join("");
+
+  return `<div class="${stackClass}">${rows}</div>`;
+}
+
 function buildProfileQuotaMarkup(profile: ProfileCard): string {
   const unavailable = isProfileUnavailable(profile);
   const quota = profile.quota;
@@ -665,6 +738,7 @@ function buildProfileQuotaMarkup(profile: ProfileCard): string {
         ${buildQuotaEvidenceMarkup(quota, "profile")}
         ${buildQuotaLowWarningMarkup(quota, unavailable, "profile")}
       </div>
+      ${buildAdditionalQuotaMarkup(quota, unavailable, "profile")}
     </div>
   `;
 }
@@ -683,6 +757,7 @@ function buildCurrentQuotaMarkup(
       ${buildMetricLineMarkup(t(state.locale, "fiveHourAllowance"), quota?.five_hour, "blue", unavailable, "current")}
       ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "current")}
       ${buildQuotaLowWarningMarkup(quota, unavailable, "current")}
+      ${buildAdditionalQuotaMarkup(quota, unavailable, "current")}
     </div>
   `;
 }
@@ -749,6 +824,53 @@ export function renderShellRoute(): void {
     tab.classList.toggle("active", isActive);
     tab.setAttribute("aria-current", isActive ? "page" : "false");
   }
+}
+
+export function renderProfileFilters(counts: { visible: number; total: number } | null): void {
+  const snapshotProfiles = state.snapshot?.profiles ?? [];
+  const filters: ProfileFilters = state.profileFilters;
+  const planOptions = listProfilePlanOptions(snapshotProfiles);
+  const selectedPlan = filters.plan?.trim() ?? "";
+  if (selectedPlan && !planOptions.some((plan) => plan === selectedPlan)) {
+    planOptions.push(selectedPlan);
+  }
+
+  elements.profilesSearchInput.value = filters.query;
+  elements.profilesPlanFilter.innerHTML = [
+    `<option value="">${escapeHtml(t(state.locale, "profilesAllPlans"))}</option>`,
+    ...planOptions.map(
+      (plan) =>
+        `<option value="${escapeHtml(plan)}"${plan === selectedPlan ? " selected" : ""}>${escapeHtml(plan)}</option>`,
+    ),
+  ].join("");
+  elements.profilesPlanFilter.value = selectedPlan;
+
+  const visible = counts?.visible ?? 0;
+  const total = counts?.total ?? snapshotProfiles.length;
+  elements.profilesFilterSummary.textContent = t(state.locale, "profilesFilterSummary", {
+    visible,
+    total,
+  });
+
+  const chips: string[] = [];
+  const query = filters.query.trim();
+  if (query) {
+    chips.push(
+      `<span class="profiles-filter-chip">${escapeHtml(
+        t(state.locale, "profilesSearchChip", { value: query }),
+      )}</span>`,
+    );
+  }
+  if (selectedPlan) {
+    chips.push(
+      `<span class="profiles-filter-chip">${escapeHtml(
+        t(state.locale, "profilesPlanChip", { value: selectedPlan }),
+      )}</span>`,
+    );
+  }
+  elements.profilesFilterChips.innerHTML = chips.join("");
+  elements.clearProfilesFiltersButton.disabled =
+    state.loading || countActiveProfileFilters(filters) === 0;
 }
 
 export function renderShellOverview(dashboard: DashboardViewModel | null): void {
@@ -1006,6 +1128,10 @@ export function applyLocale(): void {
   }
 
   elements.profilesHeading.textContent = t(state.locale, "profilesHeading");
+  elements.profilesSearchInput.placeholder = t(state.locale, "profilesSearchPlaceholder");
+  elements.profilesSearchInput.setAttribute("aria-label", t(state.locale, "profilesSearchLabel"));
+  elements.profilesPlanFilter.setAttribute("aria-label", t(state.locale, "profilesPlanLabel"));
+  elements.clearProfilesFiltersButton.textContent = t(state.locale, "profilesClearFilters");
   elements.currentSectionHeading.textContent = t(state.locale, "currentSession");
   elements.controlDeckHeading.textContent = t(state.locale, "controlDeck");
   elements.currentLoginButton.textContent = t(state.locale, "login");
@@ -1075,4 +1201,7 @@ export function applyLocale(): void {
   // `__CODEX_APP_VERSION__` is injected by Vite from `package.json` so
   // it stays in lock-step with the Cargo version automatically.
   elements.settingsVersionValue.textContent = __CODEX_APP_VERSION__;
+  elements.settingsAdditionalQuotaToggle.checked = state.showAdditionalQuota;
+  elements.settingsSparkQuotaToggle.checked = state.showSparkQuota;
+  elements.settingsSparkQuotaToggle.disabled = !state.showAdditionalQuota;
 }

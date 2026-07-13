@@ -144,6 +144,8 @@ struct RateLimitStatusPayload {
     plan_type: Option<String>,
     #[serde(default)]
     rate_limit: Option<RateLimitDetails>,
+    #[serde(default)]
+    additional_rate_limits: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -630,9 +632,11 @@ fn persist_refreshed_auth(profile_dir: &Path, auth: &ProfileAuthFile) -> AppResu
 fn quota_summary_from_payload(payload: &RateLimitStatusPayload) -> Option<QuotaSummary> {
     use super::quota_routing::{slot_from_window_minutes, QuotaSlot};
 
-    let rate_limit = payload.rate_limit.as_ref()?;
     let mut summary = QuotaSummary::default();
-    let mut any_data = false;
+    summary.additional = super::additional_quota::parse_additional_rate_limits(
+        payload.additional_rate_limits.as_ref(),
+    );
+    let mut any_data = summary.additional.is_some();
 
     // Position is just a fallback; `window_minutes` is authoritative.
     // OpenAI usually puts the 5h window in primary and weekly in
@@ -640,19 +644,21 @@ fn quota_summary_from_payload(payload: &RateLimitStatusPayload) -> Option<QuotaS
     // weekly window in the primary slot and secondary null. Routing by
     // size means a Team plan whose only enforced window is weekly
     // doesn't get its data labeled as 5h on the dashboard.
-    for (window, fallback) in [
-        (rate_limit.primary_window.as_ref(), QuotaSlot::FiveHour),
-        (rate_limit.secondary_window.as_ref(), QuotaSlot::Weekly),
-    ] {
-        let Some(window) = window else { continue };
-        let mapped = quota_window_from_rate_limit(window);
-        if mapped.remaining_percent.is_none() && mapped.refresh_at.is_none() {
-            continue;
-        }
-        any_data = true;
-        match slot_from_window_minutes(window.window_minutes, fallback) {
-            QuotaSlot::FiveHour => summary.five_hour = mapped,
-            QuotaSlot::Weekly => summary.weekly = mapped,
+    if let Some(rate_limit) = payload.rate_limit.as_ref() {
+        for (window, fallback) in [
+            (rate_limit.primary_window.as_ref(), QuotaSlot::FiveHour),
+            (rate_limit.secondary_window.as_ref(), QuotaSlot::Weekly),
+        ] {
+            let Some(window) = window else { continue };
+            let mapped = quota_window_from_rate_limit(window);
+            if mapped.remaining_percent.is_none() && mapped.refresh_at.is_none() {
+                continue;
+            }
+            any_data = true;
+            match slot_from_window_minutes(window.window_minutes, fallback) {
+                QuotaSlot::FiveHour => summary.five_hour = mapped,
+                QuotaSlot::Weekly => summary.weekly = mapped,
+            }
         }
     }
 
@@ -858,6 +864,46 @@ mod tests {
 
         assert_eq!(quota.weekly.remaining_percent, Some(88));
         assert_eq!(quota.five_hour.remaining_percent, Some(70));
+    }
+
+    #[test]
+    fn quota_summary_preserves_additional_rate_limits_without_raw_credentials() {
+        let payload: RateLimitStatusPayload = serde_json::from_value(serde_json::json!({
+            "plan_type": "pro",
+            "rate_limit": { "primary_window": null, "secondary_window": null },
+            "additional_rate_limits": [{
+                "limit_name": "gpt-5.4-codex",
+                "metered_feature": "codex",
+                "rate_limit": {
+                    "allowed": true,
+                    "limit_reached": false,
+                    "primary_window": {
+                        "used_percent": 14,
+                        "limit_window_seconds": 300,
+                        "reset_at": 1_800_000_000_i64
+                    }
+                }
+            }]
+        }))
+        .unwrap();
+
+        let quota = quota_summary_from_payload(&payload).expect("additional quota");
+        let additional = quota.additional.expect("additional entries");
+        assert_eq!(additional.len(), 1);
+        assert_eq!(additional[0].remaining_percent, Some(86));
+        assert_eq!(additional[0].window_minutes, Some(5));
+        assert!(!additional[0].is_spark);
+    }
+
+    #[test]
+    fn quota_summary_keeps_additional_when_the_legacy_rate_limit_is_absent() {
+        let payload: RateLimitStatusPayload = serde_json::from_value(serde_json::json!({
+            "additional_rate_limits": []
+        }))
+        .unwrap();
+
+        let quota = quota_summary_from_payload(&payload).expect("explicit empty additional quota");
+        assert_eq!(quota.additional, Some(Vec::new()));
     }
 
     #[test]

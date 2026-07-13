@@ -508,9 +508,24 @@ fn read_rate_limits(session: &mut Session) -> AppResult<Option<QuotaSummary>> {
 }
 
 fn parse_rate_limits_response(value: &Value) -> Option<QuotaSummary> {
-    let rate_limits = value.get("rateLimits").filter(|v| !v.is_null())?;
+    let rate_limits = value.get("rateLimits").filter(|v| !v.is_null());
+    let additional_value = rate_limits
+        .and_then(|value| {
+            value
+                .get("additionalRateLimits")
+                .or_else(|| value.get("additional_rate_limits"))
+        })
+        .or_else(|| {
+            value
+                .get("additionalRateLimits")
+                .or_else(|| value.get("additional_rate_limits"))
+        });
+    if rate_limits.is_none() && additional_value.is_none() {
+        return None;
+    }
     let mut summary = QuotaSummary::default();
-    let mut any_data = false;
+    summary.additional = super::additional_quota::parse_additional_rate_limits(additional_value);
+    let mut any_data = summary.additional.is_some();
 
     // Position is fallback only — `windowDurationMins` is authoritative,
     // mirrors the JSONL routing in `session_usage` and the HTTP path's
@@ -519,6 +534,9 @@ fn parse_rate_limits_response(value: &Value) -> Option<QuotaSummary> {
         ("primary", QuotaSlot::FiveHour),
         ("secondary", QuotaSlot::Weekly),
     ] {
+        let Some(rate_limits) = rate_limits else {
+            break;
+        };
         let Some(window) = rate_limits.get(window_key).filter(|v| !v.is_null()) else {
             continue;
         };
@@ -665,6 +683,47 @@ mod tests {
         assert!(parse_rate_limits_response(&payload).is_none());
         let payload = json!({ "rateLimits": { "primary": null, "secondary": null } });
         assert!(parse_rate_limits_response(&payload).is_none());
+    }
+
+    #[test]
+    fn parse_rate_limits_reads_allowlisted_additional_windows_when_present() {
+        let payload = json!({
+            "rateLimits": {
+                "primary": null,
+                "secondary": null,
+                "additionalRateLimits": [{
+                    "limitName": "gpt-5.4-codex",
+                    "meteredFeature": "codex",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 40,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1_800_000_000_i64
+                        }
+                    }
+                }]
+            }
+        });
+
+        let quota = parse_rate_limits_response(&payload).expect("additional quota");
+        let additional = quota.additional.expect("additional entries");
+        assert_eq!(additional.len(), 1);
+        assert_eq!(additional[0].remaining_percent, Some(60));
+        assert_eq!(additional[0].window_minutes, Some(300));
+    }
+
+    #[test]
+    fn parse_rate_limits_keeps_explicit_empty_additional_array() {
+        let payload = json!({
+            "rateLimits": {
+                "primary": null,
+                "secondary": null,
+                "additionalRateLimits": []
+            }
+        });
+
+        let quota = parse_rate_limits_response(&payload).expect("explicit empty additional quota");
+        assert_eq!(quota.additional, Some(Vec::new()));
     }
 
     #[test]

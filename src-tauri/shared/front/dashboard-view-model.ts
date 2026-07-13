@@ -5,6 +5,7 @@ import type {
   PagingInfo,
   ProfilesSnapshotResponse,
 } from "@front-shared/types";
+import { buildProfileCounts, filterProfiles } from "@front-shared/profile-filters";
 
 export function buildPaging(totalProfiles: number, pageSize: number, page: number): PagingInfo {
   const totalPages = Math.max(1, Math.ceil(totalProfiles / pageSize));
@@ -25,16 +26,18 @@ export function buildDashboardViewModel(): DashboardViewModel | null {
     return null;
   }
 
-  const paging = buildPaging(state.snapshot.profiles.length, state.pageSize, state.page);
+  const filteredProfiles = filterProfiles(state.snapshot.profiles, state.profileFilters);
+  const paging = buildPaging(filteredProfiles.length, state.pageSize, state.page);
   const start = (paging.page - 1) * paging.page_size;
   const end = start + paging.page_size;
   state.page = paging.page;
 
   return {
     paging,
-    profiles: state.snapshot.profiles.slice(start, end),
+    profiles: filteredProfiles.slice(start, end),
     current_card: state.snapshot.current_card,
     current_quota_card: state.currentQuota ?? state.snapshot.current_quota_card,
+    profile_counts: buildProfileCounts(state.snapshot.profiles, state.profileFilters),
   };
 }
 
@@ -43,7 +46,11 @@ export function applySnapshot(snapshot: ProfilesSnapshotResponse): void {
   state.pageSize = snapshot.page_size;
   state.currentProfile = snapshot.current_card?.folder_name ?? null;
   state.currentQuota = snapshot.current_quota_card;
-  state.page = buildPaging(snapshot.profiles.length, snapshot.page_size, state.page).page;
+  state.page = buildPaging(
+    filterProfiles(snapshot.profiles, state.profileFilters).length,
+    snapshot.page_size,
+    state.page,
+  ).page;
 }
 
 export function applyCurrentQuota(response: CurrentQuotaResponse): void {
