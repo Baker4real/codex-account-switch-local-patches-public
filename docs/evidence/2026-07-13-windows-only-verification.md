@@ -118,17 +118,45 @@ Index is up to date
 - `WorkingDirectory`：`D:\Codex\apps\codex_switch`。
 - 当前目标进程存在，且 `ExecutablePath` 精确等于上述 `TargetPath`；本次只读探针未停止该进程。
 
-实时目标文件哈希：
+部署前实时目标文件哈希：
 
 | 文件 | 旧大小 | 旧 SHA-256 |
 | --- | ---: | --- |
 | `codex_switch.exe` | 25,399,808 bytes | `2E4E20F4E36D45B5EBB393C9456AB28A8787BE2E944C3E3AF941C4D3314FC0BE` |
 | `WebView2Loader.dll` | 160,320 bytes | `8427B1FC58EC707813E5C0A51EB5D69397BB333250A7B891BE4D3B123F1E0F1C` |
 
-与本地产物比较：loader 哈希一致；exe 为新构建哈希 `60E10EED61023082548D5E3B3F163A72165F227B47DD41EA3AF05CDA3024B4CA`，因此远端仍是旧 exe。
+与本地产物比较：loader 哈希一致；exe 为新构建哈希
+`60E10EED61023082548D5E3B3F163A72165F227B47DD41EA3AF05CDA3024B4CA`，因此部署前远端仍是旧 exe。
 
 SSH `-InspectOnly` 也已尝试，但本机没有可用的远端认证，返回 `Permission denied (publickey,password,keyboard-interactive)`；该失败不覆盖 UU 的实时结果。
 
-## 7. 部署边界
+## 7. 远端 Windows 部署与独立复核
 
-本次**未执行实际部署**：主代理要求在覆盖前完成最终对抗审查；且实时目标进程仍在运行。没有上传、覆盖、备份、回滚或启动远端文件，因此不存在“部署成功”声明，也没有可记录的部署后哈希/启动验证。待主代理批准后，下一步应使用已解析的快捷方式目标目录，成对备份并替换 exe + x64 loader，只停止完整路径匹配的进程，再校验两文件哈希并从快捷方式启动复核。
+对抗审查的六个部署门槛均已满足：重新锁定主机/用户/快捷方式和旧哈希；只停止完整路径等于目标的进程；成对备份；staging 文件逐个按长度和 SHA-256 校验后原子替换；失败路径保留成对回滚；部署后再用独立 UU 探针复核。
+
+本次运行标识：`remote-deploy-20260713-165126`。本机证据目录为：
+`D:\Codex\.codex\run-evidence\codex-account-switch\remote-deploy-20260713-165126`；远端 staging 目录为：
+`D:\Codex\.codex\run-evidence\replicator\manual-artifacts\codex-account-switch\remote-deploy-20260713-165126`。
+
+传输使用 `codex-gsd-codex-c-skill` 的 UU wrapper：本机临时只读 HTTP `http://<jia-li-tailscale-ip>:21300` 仅提供 exe、loader 和临时脚本；远端 PowerShell 下载到 staging 后逐文件校验。HTTP 服务 PID `21872` 已停止，端口 `21300` 已确认不再监听。临时脚本仍是工作区既有未跟踪文件，没有提交。
+
+部署前探针：`uu-probe-predeploy.json`，退出码 0；旧目标进程 PID `5224`，路径精确为目标 `TargetPath`，窗口响应正常。
+
+部署脚本：`uu-deploy.json`，退出码 0，结果 `ok`。它停止的唯一目标进程为 PID `5224`，并创建了成对备份：
+
+| 文件 | 备份路径 | 备份 SHA-256 |
+| --- | --- | --- |
+| `codex_switch.exe` | `D:\Codex\.codex\run-evidence\replicator\manual-artifacts\codex-account-switch\remote-deploy-20260713-165126\backup-codex_switch.exe` | `2E4E20F4E36D45B5EBB393C9456AB28A8787BE2E944C3E3AF941C4D3314FC0BE` |
+| `WebView2Loader.dll` | `D:\Codex\.codex\run-evidence\replicator\manual-artifacts\codex-account-switch\remote-deploy-20260713-165126\backup-WebView2Loader.dll` | `8427B1FC58EC707813E5C0A51EB5D69397BB333250A7B891BE4D3B123F1E0F1C` |
+
+部署后独立探针：`uu-post-probe-3.json`，退出码 0，结果如下：
+
+- 主机/用户/架构仍为 `BAKER` / `14224` / `AMD64`。
+- 快捷方式 `TargetPath` 和 `WorkingDirectory` 未漂移。
+- 远端 `codex_switch.exe`：25,432,576 bytes，SHA-256
+  `60E10EED61023082548D5E3B3F163A72165F227B47DD41EA3AF05CDA3024B4CA`。
+- 远端 x64 `WebView2Loader.dll`：160,320 bytes，SHA-256
+  `8427B1FC58EC707813E5C0A51EB5D69397BB333250A7B891BE4D3B123F1E0F1C`。
+- 进程 PID `39492` 的 `Path` 精确匹配目标，`MainWindowHandle` 非零（`262504`），`Responding=True`，窗口标题为 `com.cmochance.codexswitch-siw`。
+
+因此，本次本地产物与远端安装目录已按成对文件达到一致；远端 staging 和备份仍保留，便于必要时回滚。SSH 检查仍仅作为旁路失败（无可用认证），不影响 UU 部署结论。
