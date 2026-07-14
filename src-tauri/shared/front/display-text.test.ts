@@ -71,8 +71,10 @@ describe("account display text", () => {
     const controls = windowsMarkup.match(/<div class="control-stack control-stack--grid">([\s\S]*?)<\/div>/)?.[1] ?? "";
     expect(controls.indexOf('id="restart-codex-button"')).toBeGreaterThanOrEqual(0);
     expect(controls.indexOf('id="restart-codex-button"')).toBeLessThan(controls.indexOf('id="open-codex-button"'));
-    expect(controls).toMatch(/id="restart-codex-button" class="[^"]*control-button--primary[^"]*control-button--wide/);
-    expect(windowsStyles).toMatch(/\.control-button--wide\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/s);
-    expect(windowsStyles).toMatch(/\.control-button--primary\s*\{[^}]*height:\s*46px/s);
+    expect(controls).toMatch(/id="restart-codex-button" class="[^"]*control-button--restart/);
+    const restartRules = windowsStyles.match(/\.control-button--restart\s*\{([^}]*)\}/s)?.[1] ?? "";
+    expect(restartRules).toMatch(/color:\s*var\(--text-strong\)/);
+    expect(restartRules).not.toMatch(/height:/);
+    expect(restartRules).not.toMatch(/grid-column:/);
   });
 });

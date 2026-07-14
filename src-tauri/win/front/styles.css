@@ -771,25 +771,18 @@ button.pager-pill:disabled {
   height: 38px;
 }
 
-.control-button--wide {
-  grid-column: 1 / -1;
+.control-button--restart {
+  border-color: rgba(173, 180, 205, 0.98);
+  background: rgba(239, 237, 244, 0.98);
+  color: var(--text-strong);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 rgba(162, 170, 196, 0.98);
 }
 
-.control-button--primary {
-  justify-content: center;
-  height: 46px;
+.control-button--restart:hover:not(:disabled) {
   border-color: rgba(162, 170, 196, 0.98);
-  background: rgba(173, 180, 205, 0.96);
-  color: var(--text-inverse);
-  font-size: 0.9rem;
-  font-weight: 650;
-  box-shadow: 0 10px 20px rgba(166, 170, 191, 0.2);
-}
-
-.control-button--primary:hover:not(:disabled) {
-  border-color: rgba(151, 160, 190, 0.98);
-  background: rgba(162, 170, 196, 0.98);
-  color: var(--text-inverse);
+  background: rgba(246, 243, 249, 0.98);
+  color: var(--text-strong);
 }
 
 .empty-state {
