@@ -760,10 +760,36 @@ button.pager-pill:disabled {
   gap: 10px;
 }
 
+.control-stack--grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .control-button {
   justify-content: flex-start;
   padding-inline: 16px;
   height: 38px;
+}
+
+.control-button--wide {
+  grid-column: 1 / -1;
+}
+
+.control-button--primary {
+  justify-content: center;
+  height: 46px;
+  border-color: rgba(162, 170, 196, 0.98);
+  background: rgba(173, 180, 205, 0.96);
+  color: var(--text-inverse);
+  font-size: 0.9rem;
+  font-weight: 650;
+  box-shadow: 0 10px 20px rgba(166, 170, 191, 0.2);
+}
+
+.control-button--primary:hover:not(:disabled) {
+  border-color: rgba(151, 160, 190, 0.98);
+  background: rgba(162, 170, 196, 0.98);
+  color: var(--text-inverse);
 }
 
 .empty-state {
