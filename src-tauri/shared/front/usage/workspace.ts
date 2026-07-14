@@ -267,27 +267,7 @@ export function createUsageWorkspace(
       throw error;
     }
     if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
-    const pageSize = Math.max(1, dashboard.logs.page_size);
-    const totalPages = Math.max(1, Math.ceil(dashboard.logs.total / pageSize));
-    if (dashboard.logs.page > totalPages) {
-      state.logsPage = totalPages;
-      attempt.intentKey = currentIntentKey();
-      let correctedDashboard: OpenAiUsageDashboard;
-      try {
-        correctedDashboard = await dependencies.loadDashboard(
-          attempt.query,
-          state.logsPage,
-          state.logsPageSize,
-        );
-      } catch (error) {
-        if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
-        throw error;
-      }
-      if (isStaleLoad(attempt.serial, attempt.intentKey)) return;
-      applyDashboard(correctedDashboard);
-    } else {
-      applyDashboard(dashboard);
-    }
+    applyDashboard(dashboard);
     state.loaded = true;
     state.loadError = null;
     state.logsLoading = false;

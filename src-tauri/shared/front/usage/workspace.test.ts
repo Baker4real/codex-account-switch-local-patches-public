@@ -563,34 +563,15 @@ describe("UsageWorkspace", () => {
     expect(failingWorkspace.snapshot().logsLoading).toBe(false);
   });
 
-  it("日志页越界时纠偏并只重载一次", async () => {
+  it("日志页越界由后端在同一次 dashboard 请求中纠偏", async () => {
     const loadDashboard = vi.fn()
-      .mockResolvedValueOnce(dashboardWithPage({ page: 9, pageSize: 20, total: 25 }))
       .mockResolvedValueOnce(dashboardWithPage({ page: 2, pageSize: 20, total: 25 }));
     const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
     await workspace.dispatch({ type: "set-page", page: 9 });
     await workspace.dispatch({ type: "refresh", mode: "manual" });
 
-    expect(loadDashboard.mock.calls.map((call) => call[1])).toEqual([9, 2]);
+    expect(loadDashboard.mock.calls.map((call) => call[1])).toEqual([9]);
     expect(workspace.snapshot().logsPage).toBe(2);
-  });
-
-  it("分页纠偏二次请求失败时按最终 intent 收敛错误状态", async () => {
-    const correctedError = new Error("纠偏后的第 2 页加载失败");
-    const onError = vi.fn();
-    const loadDashboard = vi.fn()
-      .mockResolvedValueOnce(dashboardWithPage({ page: 9, pageSize: 20, total: 25 }))
-      .mockRejectedValueOnce(correctedError);
-    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard, onError }));
-    await workspace.dispatch({ type: "set-page", page: 9 });
-
-    await workspace.dispatch({ type: "refresh", mode: "manual" });
-
-    expect(workspace.snapshot().logsPage).toBe(2);
-    expect(workspace.snapshot().logsLoading).toBe(false);
-    expect(workspace.snapshot().loadError).toBe(correctedError.message);
-    expect(onError).toHaveBeenCalledOnce();
-    expect(onError).toHaveBeenCalledWith(correctedError);
   });
 
   it("dispose 后忽略完成响应并停止 timer", async () => {

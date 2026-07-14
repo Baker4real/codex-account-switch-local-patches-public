@@ -1183,7 +1183,8 @@ fn build_request_log_page(
     });
     let total = u32::try_from(logs.len()).unwrap_or(u32::MAX);
     let page_size = page_size.clamp(1, 200);
-    let page = page.max(1);
+    let total_pages = total.saturating_add(page_size - 1) / page_size;
+    let page = page.max(1).min(total_pages.max(1));
     let start = usize::try_from((page - 1).saturating_mul(page_size)).unwrap_or(usize::MAX);
     let end = start.saturating_add(usize::try_from(page_size).unwrap_or(usize::MAX));
     let data = if start >= logs.len() {
@@ -10038,6 +10039,26 @@ mod tests {
             filtered.status,
             OpenAiUsageReconciliationStatus::NotApplicableFiltered
         );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_clamps_log_page_without_second_sync() {
+        let codex_home = temp_codex_home("dashboard-clamps-log-page");
+        seed_usage_fact_fixture(&codex_home, "clamp-page", &[(10, 1)]);
+        let dashboard = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                scope: Some(SCOPE_COMBINED_ATTRIBUTED.to_string()),
+                ..Default::default()
+            }),
+            99,
+            1,
+        )
+        .unwrap();
+        assert_eq!(dashboard.logs.total, 1);
+        assert_eq!(dashboard.logs.page, 1);
+        assert_eq!(dashboard.logs.data.len(), 1);
         let _ = fs::remove_dir_all(&codex_home);
     }
 
