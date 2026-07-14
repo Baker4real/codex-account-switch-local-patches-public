@@ -149,9 +149,17 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   strict proven；历史槽位归因只能进入 `legacy_profile_attributed` 估算层；
   `candidate_unattributed` 必须作为单独对账层可见，方便核对 cc-switch
   session-only 差额，但 candidate / rejected / superseded 不得进入费用总额。source signature 必须覆盖
-  session JSONL、归属记录、profile metadata、active marker、schema/layer/backfill
-  和价格版本，确保历史归属或价格表变化后能重新同步。未知模型 token 可以展示，
-  但费用必须保持未定价，不得显示为 `$0`。
+  session JSONL、归属记录、profile metadata、active marker 和 schema/layer/backfill，
+  确保历史归属变化后能重新同步。模型价格使用独立、版本化的官方目录；价格变化必须在
+  单个 SQLite 事务中只重算费用与 pricing metadata，不得重新解析 session 或改变 token。
+  未知模型 token 可以展示，但费用必须保持未定价，不得显示为 `$0`；无法验证长上下文
+  档位时必须标记 `unpriced_long_context`，不得套用短上下文价格。
+- Usage 热路径必须保留 session 文件 offset/parser checkpoint 和 cc-switch 内容 checkpoint；
+  只有追加且边界可证明安全时才走增量事务，更新、删除、VACUUM、schema 漂移或同时变化时
+  回退全量重建。前端相同意图的刷新必须合并，后台页不得重复读取。
+- 手动“重启 Codex”必须复用账号切换的 Windows Store 包作用域生命周期锁：先验证并稳定
+  退出受管包进程，再且仅再启动一次；不得退化为按镜像名 `taskkill`。执行期间前端按钮必须
+  禁用并设置 busy 状态，成功或失败后恢复。
 - 使用统计账号/模型 facet 必须按当前时间范围重算：账号候选清除账号自身筛选
   但保留时间、模型和状态筛选；模型候选清除模型自身筛选但保留时间、账号和
   状态筛选。账号分类表应位于时间选择下方、摘要卡片前，选择一个账号后不能

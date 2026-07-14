@@ -31,4 +31,6 @@ profile 切换有同样的身份边界：`.current_profile` 和 `.active_profile
 
 profile 切换使用的 Windows Store 桌面生命周期也有独立的身份边界。镜像名或 PID 只能作为发现提示：发送 `WM_CLOSE` 或终止 Store 应用进程前，应用必须打开进程，并用 `GetPackageFullName` 验证句柄仍属于 `OpenAI.Codex_*__2p2nqsd0c76g0`。`taskkill /IM Codex.exe`、`taskkill /IM ChatGPT.exe` 这类按镜像名的命令，以及未验证的 Store 应用进程树终止，都不符合这条边界。登录取消是独立流程：可以清理已由应用持有的 live `Child` 句柄 PID 所根的 shim 进程树。
 
+手动“重启 Codex”同样受这条边界约束，并与账号切换共用生命周期锁。它必须在稳定确认受管包进程全部退出后只启动一次，并等待受管进程重新出现；不能用按镜像名终止、并发重启或未验证启动成功来替代。
+
 桌面应用静默后，账号切换按事务处理。失败时必须在重新启动 hook 前恢复根账号/配置文件、按身份路由的源 profile、活动标记、profiles index 和 Usage 归属。恢复不完整时返回 `SWITCH_RECOVERY_FAILED`，不自动重启 Codex。静默失败可能留下存活的 Store 进程；此时用户应按错误提示手动关闭 Codex，再修复账号文件。

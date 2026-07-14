@@ -99,8 +99,10 @@ tag 合并到本地源码、保留补丁并重新构建，再替换已安装文�
 
 ## Usage ledger
 
-`openai_usage.sqlite` 是可重建的本机事实表，不是不可变账单。ingestion 只冻结本机 session
-JSONL 和外部只读证据，按 source signature、schema、归属和价格版本变化重新同步。
+`openai_usage.sqlite` 是可重建的本机事实表，不是不可变账单。ingestion 冻结本机 session
+JSONL 和外部只读证据，并以持久化 checkpoint 对可证明安全的追加变化执行增量事务；检测到
+更新、删除、VACUUM、schema 漂移或不安全边界时回退全量重建。官方价格目录独立刷新，
+价格变化只在 SQLite 事务中重算费用与 pricing metadata，不重新解析 session。
 
 - `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据。
 - `openai_usage_facts` 投影可计量层；`openai_usage_events` 保持 strict accepted-only
@@ -109,6 +111,16 @@ JSONL 和外部只读证据，按 source signature、schema、归属和价格版
   都不冒充官方账单。
 - 只有可证明的官方 OpenAI `base_url` 才进入严格统计；未知模型保留 token，但费用保持未
   定价，不显示为 `$0`。
+- token 摘要使用万/亿等紧凑单位；同一刷新意图在前端合并，非活动页面不触发重复读取。
+- 价格目录后台读取 OpenAI 官方 Pricing、Models 目录和必需详情页；候选目录全量验证成功后
+  才原子发布，失败继续使用最后一次验证成功的目录。无法确认的 GPT-5.6 长上下文记录保持
+  `unpriced_long_context`。
+
+## Codex 手动重启
+
+控制区的“重启 Codex”与账号切换共用 Windows Store 包作用域生命周期锁。后端先验证并退出
+受管包进程，确认稳定空快照后只启动一次，并等待受管进程重新出现；任一步失败都返回明确错误。
+前端执行期间禁用按钮并设置 busy 状态，防止重复点击。
 
 ## Windows 构建与远端部署
 
