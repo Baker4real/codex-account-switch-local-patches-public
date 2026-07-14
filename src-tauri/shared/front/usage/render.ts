@@ -29,6 +29,27 @@ function formatInteger(locale: UsageWorkspaceView["locale"], value: number): str
   return new Intl.NumberFormat(locale).format(value);
 }
 
+function formatUsageTokenText(locale: UsageWorkspaceView["locale"], value: number): string {
+  if (!Number.isFinite(value)) return "--";
+  const exact = formatInteger(locale, value);
+  if (locale !== "zh-CN") return exact;
+  const magnitude = Math.abs(value);
+  if (magnitude >= 99_999_500) return `${(value / 100_000_000).toFixed(2)} 亿`;
+  if (magnitude >= 10_000) return `${(value / 10_000).toFixed(1)} 万`;
+  return exact;
+}
+
+function formatUsageTokenMarkup(locale: UsageWorkspaceView["locale"], value: number): string {
+  const exact = Number.isFinite(value) ? formatInteger(locale, value) : "--";
+  return `<span class="usage-token-value" title="${escapeHtml(exact)}" aria-label="${escapeHtml(exact)}">${escapeHtml(formatUsageTokenText(locale, value))}</span>`;
+}
+
+function formatUsageTokenDetailedText(locale: UsageWorkspaceView["locale"], value: number): string {
+  const compact = formatUsageTokenText(locale, value);
+  const exact = Number.isFinite(value) ? formatInteger(locale, value) : "--";
+  return compact === exact ? exact : `${compact} (${exact})`;
+}
+
 function formatCostMicros(locale: UsageWorkspaceView["locale"], value: number): string {
   return new Intl.NumberFormat(locale, {
     style: "currency",
@@ -182,7 +203,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
     <div class="usage-hero-grid">
       <article class="usage-hero-card usage-hero-card--wide">
         <span>${t(context.view.locale, "usageLocalTokens")}</span>
-        <strong>${formatInteger(context.view.locale, summary.tokens.real_total_tokens)}</strong>
+        <strong>${formatUsageTokenMarkup(context.view.locale, summary.tokens.real_total_tokens)}</strong>
         <small>${t(context.view.locale, "usageAttributionSince")}: ${formatDateTimeMs(summary.attribution_since_ms, context.view.locale)}</small>
       </article>
       <article class="usage-hero-card">
@@ -198,7 +219,7 @@ export function renderUsage(elements: UsageElements, view: UsageWorkspaceView): 
       <article class="usage-hero-card">
         <span>${t(context.view.locale, "usageCacheHitRate")}</span>
         <strong>${formatRate(context.view.locale, summary.cache_hit_rate)}</strong>
-        <small>${t(context.view.locale, "usageCachedInput")}: ${formatInteger(context.view.locale, summary.tokens.cached_input_tokens)}</small>
+        <small>${t(context.view.locale, "usageCachedInput")}: ${formatUsageTokenMarkup(context.view.locale, summary.tokens.cached_input_tokens)}</small>
       </article>
     </div>
 
@@ -580,7 +601,7 @@ function buildUsageLayerCard(view: UsageWorkspaceView, labelKey: MessageKey, lay
   return `
     <article class="usage-hero-card">
       <span>${t(view.locale, labelKey)}</span>
-      <strong>${formatInteger(view.locale, layer.tokens.real_total_tokens)}</strong>
+      <strong>${formatUsageTokenMarkup(view.locale, layer.tokens.real_total_tokens)}</strong>
       <small>${formatInteger(view.locale, layer.request_count)} ${t(view.locale, "usageRequests")} · ${formatUsageCost(layer.cost, view.locale)}</small>
     </article>
   `;
@@ -624,7 +645,7 @@ function buildUsageTokenMetric(view: UsageWorkspaceView, labelKey: MessageKey, v
   return `
     <article class="usage-token-card">
       <span>${t(view.locale, labelKey)}</span>
-      <strong>${formatInteger(view.locale, value)}</strong>
+      <strong>${formatUsageTokenMarkup(view.locale, value)}</strong>
     </article>
   `;
 }
@@ -651,7 +672,7 @@ function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly Ope
         return `
           <span class="usage-attribution-badge usage-attribution-badge--${modifier}">
             <span>${escapeHtml(label)}</span>
-            <small>${formatInteger(view.locale, layer.request_count)} ${t(view.locale, "usageRequests")} · ${formatInteger(view.locale, layer.tokens.real_total_tokens)} ${t(view.locale, "usageTokens")}</small>
+            <small>${formatInteger(view.locale, layer.request_count)} ${t(view.locale, "usageRequests")} · ${formatUsageTokenMarkup(view.locale, layer.tokens.real_total_tokens)} ${t(view.locale, "usageTokens")}</small>
           </span>
         `;
       })
@@ -662,7 +683,7 @@ function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly Ope
       <td><div class="usage-attribution-breakdown">${attributionBreakdown || "--"}</div></td>
       <td>${escapeHtml(account.official_source)}</td>
       <td>${formatInteger(view.locale, account.request_count)}</td>
-      <td>${formatInteger(view.locale, account.tokens.real_total_tokens)}</td>
+      <td>${formatUsageTokenMarkup(view.locale, account.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(account.cost, view.locale, usageUnpricedModelNames(account.models))}</td>
     </tr>
   `;
@@ -704,9 +725,9 @@ function buildUsageModelTable(view: UsageWorkspaceView, summary: OpenAiUsageSumm
       <td class="usage-table-cell--model">${buildUsageModelSummaryCell(view, model)}</td>
       <td class="usage-table-cell--evidence">${buildUsageModelSummaryEvidenceCell(view, model)}</td>
       <td>${formatInteger(view.locale, model.request_count)}</td>
-      <td>${formatInteger(view.locale, model.tokens.input_tokens)}</td>
-      <td>${formatInteger(view.locale, model.tokens.cached_input_tokens)}</td>
-      <td>${formatInteger(view.locale, model.tokens.output_tokens)}</td>
+      <td>${formatUsageTokenMarkup(view.locale, model.tokens.input_tokens)}</td>
+      <td>${formatUsageTokenMarkup(view.locale, model.tokens.cached_input_tokens)}</td>
+      <td>${formatUsageTokenMarkup(view.locale, model.tokens.output_tokens)}</td>
       <td>${formatUsageCost(model.cost, view.locale, usageUnpricedModelNames([model]))}</td>
       <td>${escapeHtml(formatUsagePricingCell(view, model.priced, model.pricing_tier, model.pricing_source_url))}</td>
     </tr>
@@ -1027,10 +1048,10 @@ function buildUsageTrendTooltipRows(view: UsageWorkspaceView, point: UsageTrendP
   return [
     formatTrendLabel(view, point.bucket_start_ms, isHourly),
     `${t(view.locale, "usageRequests")}: ${formatInteger(view.locale, point.request_count)}`,
-    `${t(view.locale, "usageInput")}: ${formatInteger(view.locale, point.tokens.input_tokens)}`,
-    `${t(view.locale, "usageCachedInput")}: ${formatInteger(view.locale, point.tokens.cached_input_tokens)}`,
-    `${t(view.locale, "usageOutput")}: ${formatInteger(view.locale, point.tokens.output_tokens)}`,
-    `${t(view.locale, "usageReasoning")}: ${formatInteger(view.locale, point.tokens.reasoning_output_tokens)}`,
+    `${t(view.locale, "usageInput")}: ${formatUsageTokenDetailedText(view.locale, point.tokens.input_tokens)}`,
+    `${t(view.locale, "usageCachedInput")}: ${formatUsageTokenDetailedText(view.locale, point.tokens.cached_input_tokens)}`,
+    `${t(view.locale, "usageOutput")}: ${formatUsageTokenDetailedText(view.locale, point.tokens.output_tokens)}`,
+    `${t(view.locale, "usageReasoning")}: ${formatUsageTokenDetailedText(view.locale, point.tokens.reasoning_output_tokens)}`,
     `${t(view.locale, "usageCost")}: ${formatUsageCostText(point.cost, view.locale)}`,
   ];
 }
@@ -1043,10 +1064,7 @@ function usageTrendRangeDurationMs(view: UsageWorkspaceView): number {
 }
 
 function formatCompactAxisValue(view: UsageWorkspaceView, value: number): string {
-  if (value >= 1000) {
-    return `${Math.round(value / 1000)}k`;
-  }
-  return formatInteger(view.locale, value);
+  return formatUsageTokenText(view.locale, value);
 }
 
 function formatTrendLabel(view: UsageWorkspaceView, value: number, isHourly = true): string {
@@ -1079,7 +1097,7 @@ function buildUsageLogsTable(view: UsageWorkspaceView): string {
       <td>${escapeHtml(formatUsageLayerLabel(view, log.ledger_layer))}</td>
       <td class="usage-table-cell--model">${buildUsageModelEvidenceCell(view, log)}</td>
       <td class="usage-table-cell--evidence">${buildUsageRequestEvidenceCell(view, log)}</td>
-      <td>${formatInteger(view.locale, log.tokens.real_total_tokens)}</td>
+      <td>${formatUsageTokenMarkup(view.locale, log.tokens.real_total_tokens)}</td>
       <td>${formatUsageCost(log.cost, view.locale, !log.priced || log.cost.unpriced_tokens > 0 ? [log.model] : [])}</td>
       <td>${escapeHtml(formatUsagePricingCell(view, log.priced, log.pricing_tier, log.pricing_source_url))}</td>
       <td>${escapeHtml(log.data_source)}</td>

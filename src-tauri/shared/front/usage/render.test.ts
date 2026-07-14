@@ -67,15 +67,21 @@ function fakeElements(): {
   elements: UsageElements;
   refresh: FakeElement;
   account: FakeElement;
+  summary: FakeElement;
+  trend: FakeElement;
   detail: FakeElement;
 } {
   const refresh = new FakeElement();
   const account = new FakeElement();
+  const summary = new FakeElement();
+  const trend = new FakeElement();
   const detail = new FakeElement();
   const element = () => new FakeElement();
   return {
     refresh,
     account,
+    summary,
+    trend,
     detail,
     elements: {
       refreshButton: refresh as unknown as HTMLButtonElement,
@@ -87,12 +93,80 @@ function fakeElements(): {
       modelFilter: element() as unknown as HTMLSelectElement,
       refreshIntervalSelect: element() as unknown as HTMLSelectElement,
       accountPanel: account as unknown as HTMLDivElement,
-      summaryPanel: new FakeElement() as unknown as HTMLDivElement,
-      trendPanel: new FakeElement() as unknown as HTMLDivElement,
+      summaryPanel: summary as unknown as HTMLDivElement,
+      trendPanel: trend as unknown as HTMLDivElement,
       detailPanel: detail as unknown as HTMLDivElement,
     },
   };
 }
+
+describe("renderUsage token presentation", () => {
+  it.each([
+    [9_999, "9,999"],
+    [10_000, "1.0 万"],
+    [28_805_000, "2880.5 万"],
+    [99_999_499, "9999.9 万"],
+    [99_999_500, "1.00 亿"],
+    [100_000_000, "1.00 亿"],
+    [1_630_000_000, "16.30 亿"],
+  ] as const)("中文 token %i 显示为 %s 并保留精确值", (tokens, compact) => {
+    const value = account();
+    value.tokens = { ...value.tokens, real_total_tokens: tokens };
+    const { elements, summary } = fakeElements();
+
+    renderUsage(elements, viewFor(value));
+
+    expect(summary.innerHTML).toContain(`>${compact}</span>`);
+    expect(summary.innerHTML).toContain(`title="${new Intl.NumberFormat("zh-CN").format(tokens)}"`);
+    expect(summary.innerHTML).toContain(`aria-label="${new Intl.NumberFormat("zh-CN").format(tokens)}"`);
+  });
+
+  it("非中文 locale 保留精确整数，且请求数不使用万单位", () => {
+    const value = account();
+    value.request_count = 28_805_000;
+    value.tokens = { ...value.tokens, real_total_tokens: 28_805_000 };
+    const view = { ...viewFor(value), locale: "en" as const };
+    const { elements, summary } = fakeElements();
+
+    renderUsage(elements, view);
+
+    expect(summary.innerHTML).toContain('title="28,805,000" aria-label="28,805,000">28,805,000</span>');
+    expect(summary.innerHTML).toContain("<strong>28,805,000</strong>");
+    expect(summary.innerHTML).not.toContain("2880.5 万 请求数");
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY])("无效 token %s 显示占位符", (tokens) => {
+    const value = account();
+    value.tokens = { ...value.tokens, real_total_tokens: tokens };
+    const { elements, summary } = fakeElements();
+
+    renderUsage(elements, viewFor(value));
+
+    expect(summary.innerHTML).toContain('title="--" aria-label="--">--</span>');
+  });
+
+  it("趋势轴和 tooltip 复用中文单位，英文 tooltip 不重复精确值", () => {
+    const value = account();
+    const trend = {
+      date: "2026-07-15",
+      bucket_start_ms: 0,
+      request_count: 1,
+      tokens: { ...zeroTokens, input_tokens: 100_000_000, real_total_tokens: 100_000_000 },
+      cost: zeroCost,
+    };
+    const zhView = { ...viewFor(value), trends: [trend] };
+    const zhElements = fakeElements();
+    renderUsage(zhElements.elements, zhView);
+    expect(zhElements.trend.innerHTML).toContain("1.00 亿 TOKENS");
+    expect(zhElements.trend.innerHTML).toContain("输入: 1.00 亿 (100,000,000)");
+
+    const enView = { ...zhView, locale: "en" as const };
+    const enElements = fakeElements();
+    renderUsage(enElements.elements, enView);
+    expect(enElements.trend.innerHTML).toContain("Input: 100,000,000");
+    expect(enElements.trend.innerHTML).not.toContain("100,000,000 (100,000,000)");
+  });
+});
 
 function usageSummary(account: OpenAiUsageAccountSummary): OpenAiUsageSummary {
   return {
@@ -234,8 +308,8 @@ describe("renderUsage account presentation", () => {
     expect(accountPanel.innerHTML).toContain("严格");
     expect(accountPanel.innerHTML).toContain("推定");
     expect(accountPanel.innerHTML).toContain("120");
-    expect(accountPanel.innerHTML).toMatch(/严格<\/span>\s*<small>1 请求数 · 60 TOKENS<\/small>/);
-    expect(accountPanel.innerHTML).toMatch(/推定<\/span>\s*<small>1 请求数 · 60 TOKENS<\/small>/);
+    expect(accountPanel.innerHTML).toMatch(/严格<\/span>\s*<small>1 请求数 · <span class="usage-token-value" title="60" aria-label="60">60<\/span> TOKENS<\/small>/);
+    expect(accountPanel.innerHTML).toMatch(/推定<\/span>\s*<small>1 请求数 · <span class="usage-token-value" title="60" aria-label="60">60<\/span> TOKENS<\/small>/);
     expect(accountPanel.innerHTML.match(/class="usage-attribution-badge /g)).toHaveLength(2);
     expect(value.attribution_breakdown
       .reduce((total, layer) => total + layer.tokens.real_total_tokens, 0))
