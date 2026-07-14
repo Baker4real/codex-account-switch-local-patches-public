@@ -2,6 +2,7 @@ import type {
   OpenAiUsageAccountSummary,
   OpenAiUsageDataSourceSummary,
   OpenAiUsageModelSummary,
+  OpenAiUsageReconciliation,
   OpenAiUsageRangePreset,
   OpenAiUsageRequestLogPage,
   OpenAiUsageScope,
@@ -17,6 +18,7 @@ export interface UsageWorkspaceView {
   readonly trends: readonly OpenAiUsageTrendPoint[];
   readonly logs: OpenAiUsageRequestLogPage | null;
   readonly dataSources: readonly OpenAiUsageDataSourceSummary[];
+  readonly reconciliation: OpenAiUsageReconciliation | null;
   readonly rangePreset: OpenAiUsageRangePreset;
   readonly scope: OpenAiUsageScope;
   readonly customStartMs: number | null;

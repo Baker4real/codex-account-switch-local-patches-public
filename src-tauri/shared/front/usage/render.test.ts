@@ -255,6 +255,7 @@ function viewFor(accountSummary: OpenAiUsageAccountSummary): UsageWorkspaceView 
     trends: [],
     logs: { data: [], total: 0, page: 1, page_size: 20 },
     dataSources: [],
+    reconciliation: null,
     rangePreset: "1d",
     scope: "combined_attributed",
     customStartMs: null,
@@ -285,6 +286,42 @@ function viewFor(accountSummary: OpenAiUsageAccountSummary): UsageWorkspaceView 
 }
 
 describe("renderUsage account presentation", () => {
+  it("展示 cc-switch 对账状态和按来源原因拆分的未归属候选", () => {
+    const view = {
+      ...viewFor(account()),
+      reconciliation: {
+        cutoff_ms: 3_000,
+        source_signature: "signature-0123456789abcdef",
+        source_tokens: { ...zeroTokens, input_tokens: 180, cached_input_tokens: 36, output_tokens: 18, real_total_tokens: 198 },
+        source_rows: 3,
+        classified_rows: 3,
+        accepted_tokens: { ...zeroTokens, input_tokens: 100, cached_input_tokens: 20, output_tokens: 10, real_total_tokens: 110 },
+        candidate_tokens: { ...zeroTokens, input_tokens: 50, cached_input_tokens: 10, output_tokens: 5, real_total_tokens: 55 },
+        superseded_tokens: { ...zeroTokens, input_tokens: 30, cached_input_tokens: 6, output_tokens: 3, real_total_tokens: 33 },
+        status: "reconciled" as const,
+        rejected_tokens: { ...zeroTokens },
+        unknown_decision_tokens: { ...zeroTokens },
+        ledger_minus_source: { ...zeroTokens },
+        mismatch_reason: null,
+        candidate_reasons: [{
+          source_type: "ccswitch_codex_session",
+          reason_code: "missing_account_identity",
+          request_count: 1,
+          tokens: { ...zeroTokens, input_tokens: 50, cached_input_tokens: 10, output_tokens: 5, real_total_tokens: 55 },
+        }],
+      },
+    };
+    const { elements, detail } = fakeElements();
+
+    renderUsage(elements, view);
+
+    expect(detail.innerHTML).toContain("cc-switch 对账 · 已对账");
+    expect(detail.innerHTML).toContain("cc-switch Codex 会话 · 缺少账号身份");
+    expect(detail.innerHTML).toContain("来源签名: signature-012345");
+    expect(detail.innerHTML).toContain("输入: 180 · 缓存命中: 36 · 输出: 18");
+    expect(detail.innerHTML).toContain("未知决策");
+  });
+
   it("折叠账号标签中的换行和连续空白", () => {
     const value = account();
     value.account_label = "  same@example.com\r\n  extra  ";

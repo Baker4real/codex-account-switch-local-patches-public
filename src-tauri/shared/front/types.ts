@@ -285,6 +285,36 @@ export interface OpenAiUsageDataSourceSummary {
   cost: OpenAiUsageCostBreakdown;
 }
 
+export interface OpenAiUsageCandidateReasonSummary {
+  source_type: string;
+  reason_code: string;
+  request_count: number;
+  tokens: OpenAiUsageTokenTotals;
+}
+
+export interface OpenAiUsageReconciliation {
+  status: "reconciled" | "mismatch" | "unavailable" | "not_applicable_filtered";
+  cutoff_ms: number | null;
+  source_signature: string;
+  source_tokens: OpenAiUsageTokenTotals;
+  source_rows: number;
+  classified_rows: number;
+  accepted_tokens: OpenAiUsageTokenTotals;
+  candidate_tokens: OpenAiUsageTokenTotals;
+  superseded_tokens: OpenAiUsageTokenTotals;
+  rejected_tokens: OpenAiUsageTokenTotals;
+  unknown_decision_tokens: OpenAiUsageTokenTotals;
+  ledger_minus_source: {
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
+    reasoning_output_tokens: number;
+    real_total_tokens: number;
+  };
+  mismatch_reason: string | null;
+  candidate_reasons: OpenAiUsageCandidateReasonSummary[];
+}
+
 export interface OpenAiUsageDashboard {
   summary: OpenAiUsageSummary;
   account_summary: OpenAiUsageAccountSummary[];
@@ -292,6 +322,7 @@ export interface OpenAiUsageDashboard {
   trends: OpenAiUsageTrendPoint[];
   logs: OpenAiUsageRequestLogPage;
   data_sources: OpenAiUsageDataSourceSummary[];
+  reconciliation: OpenAiUsageReconciliation;
 }
 
 export interface SwitchResponse {

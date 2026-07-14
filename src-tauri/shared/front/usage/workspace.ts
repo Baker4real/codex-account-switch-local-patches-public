@@ -28,6 +28,7 @@ interface WorkspaceState {
   trends: OpenAiUsageDashboard["trends"];
   logs: UsageWorkspaceView["logs"];
   dataSources: OpenAiUsageDashboard["data_sources"];
+  reconciliation: OpenAiUsageDashboard["reconciliation"] | null;
   rangePreset: UsageWorkspaceView["rangePreset"];
   scope: UsageWorkspaceView["scope"];
   customStartMs: number | null;
@@ -131,6 +132,7 @@ export function createUsageWorkspace(
     trends: [],
     logs: null,
     dataSources: [],
+    reconciliation: null,
     rangePreset: "1d",
     scope: "strict",
     customStartMs: null,
@@ -247,6 +249,7 @@ export function createUsageWorkspace(
     state.trends = copied.trends;
     state.logs = copied.logs;
     state.dataSources = copied.data_sources;
+    state.reconciliation = copied.reconciliation;
     state.logsPage = copied.logs.page;
     state.logsPageSize = copied.logs.page_size;
   }

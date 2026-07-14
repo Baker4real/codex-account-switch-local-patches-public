@@ -73,6 +73,22 @@ function emptyDashboard(): OpenAiUsageDashboard {
     trends: [],
     logs: { data: [], total: 0, page: 1, page_size: 20 },
     data_sources: [],
+    reconciliation: {
+      cutoff_ms: null,
+      source_signature: "",
+      source_tokens: { ...zeroTokens },
+      source_rows: 0,
+      classified_rows: 0,
+      accepted_tokens: { ...zeroTokens },
+      candidate_tokens: { ...zeroTokens },
+      superseded_tokens: { ...zeroTokens },
+      status: "reconciled",
+      rejected_tokens: { ...zeroTokens },
+      unknown_decision_tokens: { ...zeroTokens },
+      ledger_minus_source: { ...zeroTokens },
+      mismatch_reason: null,
+      candidate_reasons: [],
+    },
   };
 }
 

@@ -6,16 +6,18 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::errors::{AppError, AppResult};
 use crate::models::{
-    OpenAiUsageAccountSummary, OpenAiUsageCostBreakdown, OpenAiUsageDashboard,
-    OpenAiUsageDataSourceSummary, OpenAiUsageExclusions, OpenAiUsageLayerSummary,
-    OpenAiUsageModelSummary, OpenAiUsageQuery, OpenAiUsageRequestLog, OpenAiUsageRequestLogPage,
-    OpenAiUsageSummary, OpenAiUsageTokenTotals, OpenAiUsageTrendPoint, ProfileIndexEntry,
+    OpenAiUsageAccountSummary, OpenAiUsageCandidateReasonSummary, OpenAiUsageCostBreakdown,
+    OpenAiUsageDashboard, OpenAiUsageDataSourceSummary, OpenAiUsageExclusions,
+    OpenAiUsageLayerSummary, OpenAiUsageModelSummary, OpenAiUsageQuery, OpenAiUsageReconciliation,
+    OpenAiUsageReconciliationStatus, OpenAiUsageRequestLog, OpenAiUsageRequestLogPage,
+    OpenAiUsageSignedTokenTotals, OpenAiUsageSummary, OpenAiUsageTokenTotals,
+    OpenAiUsageTrendPoint, ProfileIndexEntry,
 };
 
 use super::metadata::{load_account_identity_from_path, AccountIdentity};
@@ -281,6 +283,7 @@ struct UsageEvidence {
     status_code: Option<u16>,
     decision: String,
     decision_reason: Option<String>,
+    decision_reason_code: Option<String>,
     superseded_by: Option<String>,
     ledger_layer: String,
     layer_reason: Option<String>,
@@ -288,6 +291,16 @@ struct UsageEvidence {
     attribution_window_id: Option<String>,
     legacy_account_key: Option<String>,
     created_at_ms: u64,
+}
+
+#[derive(Clone, Default)]
+struct CcSwitchImportManifest {
+    status: String,
+    error_code: Option<String>,
+    source_signature: String,
+    cutoff_ms: Option<u64>,
+    source_tokens: OpenAiUsageTokenTotals,
+    source_rows: u64,
 }
 
 struct EvidenceDecision {
@@ -483,6 +496,7 @@ struct UsageLoadResult {
     facts: Vec<UsageFact>,
     evidence: Vec<UsageEvidence>,
     decisions: EvidenceDecisionCounts,
+    ccswitch_manifest: Option<CcSwitchImportManifest>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -642,6 +656,7 @@ pub fn load_openai_usage_dashboard(
         &resolved.preferred_account_labels,
     );
     let data_sources = build_data_source_summaries(facts);
+    let reconciliation = load_ccswitch_reconciliation(&conn, &query)?;
     Ok(OpenAiUsageDashboard {
         summary,
         account_summary,
@@ -649,7 +664,213 @@ pub fn load_openai_usage_dashboard(
         trends,
         logs,
         data_sources,
+        reconciliation,
     })
+}
+
+fn load_ccswitch_reconciliation(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+) -> AppResult<OpenAiUsageReconciliation> {
+    if query.model.is_some()
+        || query.profile.is_some()
+        || query.account_group_key.is_some()
+        || query.account_label.is_some()
+        || query.status_code.is_some()
+        || query
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope != SCOPE_STRICT)
+    {
+        return Ok(OpenAiUsageReconciliation {
+            status: OpenAiUsageReconciliationStatus::NotApplicableFiltered,
+            mismatch_reason: Some(
+                "reconciliation is only available for unfiltered usage".to_string(),
+            ),
+            ..OpenAiUsageReconciliation::default()
+        });
+    }
+    let manifest = conn.query_row(
+        "SELECT status, error_code, source_signature, cutoff_ms, source_rows, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, real_total_tokens FROM openai_usage_ccswitch_manifest WHERE id = 1",
+        [],
+        |row| Ok(CcSwitchImportManifest {
+            status: row.get(0)?, error_code: row.get(1)?, source_signature: row.get(2)?,
+            cutoff_ms: row.get::<_, Option<i64>>(3)?.map(u64_from_i64), source_rows: u64_from_i64(row.get(4)?),
+            source_tokens: OpenAiUsageTokenTotals { input_tokens: u64_from_i64(row.get(5)?), cached_input_tokens: u64_from_i64(row.get(6)?), output_tokens: u64_from_i64(row.get(7)?), reasoning_output_tokens: u64_from_i64(row.get(8)?), real_total_tokens: u64_from_i64(row.get(9)?) },
+        }),
+    ).optional().map_err(|error| AppError::new("OPENAI_USAGE_CCSWITCH_MANIFEST_QUERY_FAILED", format!("Failed to read cc-switch import manifest: {error}")))?;
+    let Some(manifest) = manifest else {
+        return Ok(OpenAiUsageReconciliation {
+            status: OpenAiUsageReconciliationStatus::Unavailable,
+            mismatch_reason: Some("cc-switch import manifest is unavailable".to_string()),
+            ..Default::default()
+        });
+    };
+    if manifest.status != "available" {
+        return Ok(OpenAiUsageReconciliation {
+            status: OpenAiUsageReconciliationStatus::Unavailable,
+            source_signature: manifest.source_signature,
+            cutoff_ms: manifest.cutoff_ms,
+            source_tokens: manifest.source_tokens,
+            mismatch_reason: manifest.error_code,
+            ..Default::default()
+        });
+    }
+    let mut statement = conn
+        .prepare(
+            r#"
+        SELECT source_type, decision, COALESCE(decision_reason_code, 'unattributed'), COUNT(*),
+               COALESCE(SUM(input_tokens), 0),
+               COALESCE(SUM(cached_input_tokens), 0),
+               COALESCE(SUM(output_tokens), 0),
+               COALESCE(SUM(reasoning_output_tokens), 0),
+               MAX(COALESCE(event_completed_at_ms, observed_at_ms, created_at_ms))
+        FROM openai_usage_evidence
+        WHERE source_type IN ('ccswitch_proxy', 'ccswitch_codex_session')
+        GROUP BY source_type, decision, COALESCE(decision_reason_code, 'unattributed')
+        ORDER BY source_type, decision, COALESCE(decision_reason_code, 'unattributed')
+        "#,
+        )
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_RECONCILIATION_PREPARE_FAILED",
+                format!("Failed to prepare cc-switch reconciliation query: {error}"),
+            )
+        })?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                u64_from_i64(row.get::<_, i64>(3)?),
+                OpenAiUsageTokenTotals {
+                    input_tokens: u64_from_i64(row.get::<_, i64>(4)?),
+                    cached_input_tokens: u64_from_i64(row.get::<_, i64>(5)?),
+                    output_tokens: u64_from_i64(row.get::<_, i64>(6)?),
+                    reasoning_output_tokens: u64_from_i64(row.get::<_, i64>(7)?),
+                    real_total_tokens: u64_from_i64(row.get::<_, i64>(4)?)
+                        .saturating_add(u64_from_i64(row.get::<_, i64>(6)?)),
+                },
+                row.get::<_, Option<i64>>(8)?.map(u64_from_i64),
+            ))
+        })
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_RECONCILIATION_QUERY_FAILED",
+                format!("Failed to query cc-switch reconciliation: {error}"),
+            )
+        })?;
+    let mut result = OpenAiUsageReconciliation {
+        source_signature: manifest.source_signature,
+        cutoff_ms: manifest.cutoff_ms,
+        source_tokens: manifest.source_tokens,
+        source_rows: manifest.source_rows,
+        ..Default::default()
+    };
+    for row in rows {
+        let (source_type, decision, reason_code, request_count, tokens, _cutoff_ms) =
+            row.map_err(|error| {
+                AppError::new(
+                    "OPENAI_USAGE_RECONCILIATION_ROW_FAILED",
+                    format!("Failed to read cc-switch reconciliation row: {error}"),
+                )
+            })?;
+        result.classified_rows = result.classified_rows.saturating_add(request_count);
+        match decision.as_str() {
+            DECISION_ACCEPTED => add_token_totals(&mut result.accepted_tokens, &tokens),
+            DECISION_CANDIDATE => {
+                add_token_totals(&mut result.candidate_tokens, &tokens);
+                if let Some(existing) = result.candidate_reasons.iter_mut().find(|entry| {
+                    entry.source_type == source_type && entry.reason_code == reason_code
+                }) {
+                    existing.request_count = existing.request_count.saturating_add(request_count);
+                    add_token_totals(&mut existing.tokens, &tokens);
+                } else {
+                    result
+                        .candidate_reasons
+                        .push(OpenAiUsageCandidateReasonSummary {
+                            source_type,
+                            reason_code,
+                            request_count,
+                            tokens,
+                        });
+                }
+            }
+            DECISION_SUPERSEDED => add_token_totals(&mut result.superseded_tokens, &tokens),
+            DECISION_REJECTED => add_token_totals(&mut result.rejected_tokens, &tokens),
+            _ => add_token_totals(&mut result.unknown_decision_tokens, &tokens),
+        }
+    }
+    let classified = summed_token_totals(&[
+        &result.accepted_tokens,
+        &result.candidate_tokens,
+        &result.superseded_tokens,
+        &result.rejected_tokens,
+        &result.unknown_decision_tokens,
+    ]);
+    result.ledger_minus_source = signed_token_difference(&classified, &result.source_tokens);
+    let reconciled = token_totals_equal(&result.source_tokens, &classified)
+        && result.source_rows == result.classified_rows
+        && result.unknown_decision_tokens.real_total_tokens == 0;
+    result.status = if reconciled {
+        OpenAiUsageReconciliationStatus::Reconciled
+    } else {
+        OpenAiUsageReconciliationStatus::Mismatch
+    };
+    if !reconciled && result.mismatch_reason.is_none() {
+        result.mismatch_reason = Some(
+            "cc-switch source totals differ from imported evidence decision buckets".to_string(),
+        );
+    }
+    Ok(result)
+}
+fn signed_token_difference(
+    left: &OpenAiUsageTokenTotals,
+    right: &OpenAiUsageTokenTotals,
+) -> OpenAiUsageSignedTokenTotals {
+    let delta = |left: u64, right: u64| {
+        i128::from(left)
+            .saturating_sub(i128::from(right))
+            .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+    };
+    OpenAiUsageSignedTokenTotals {
+        input_tokens: delta(left.input_tokens, right.input_tokens),
+        cached_input_tokens: delta(left.cached_input_tokens, right.cached_input_tokens),
+        output_tokens: delta(left.output_tokens, right.output_tokens),
+        reasoning_output_tokens: delta(left.reasoning_output_tokens, right.reasoning_output_tokens),
+        real_total_tokens: delta(left.real_total_tokens, right.real_total_tokens),
+    }
+}
+
+fn add_token_totals(target: &mut OpenAiUsageTokenTotals, source: &OpenAiUsageTokenTotals) {
+    target.input_tokens = target.input_tokens.saturating_add(source.input_tokens);
+    target.cached_input_tokens = target
+        .cached_input_tokens
+        .saturating_add(source.cached_input_tokens);
+    target.output_tokens = target.output_tokens.saturating_add(source.output_tokens);
+    target.reasoning_output_tokens = target
+        .reasoning_output_tokens
+        .saturating_add(source.reasoning_output_tokens);
+    target.real_total_tokens = target
+        .real_total_tokens
+        .saturating_add(source.real_total_tokens);
+}
+
+fn summed_token_totals(values: &[&OpenAiUsageTokenTotals]) -> OpenAiUsageTokenTotals {
+    let mut total = OpenAiUsageTokenTotals::default();
+    for value in values {
+        add_token_totals(&mut total, value);
+    }
+    total
+}
+
+fn token_totals_equal(left: &OpenAiUsageTokenTotals, right: &OpenAiUsageTokenTotals) -> bool {
+    left.input_tokens == right.input_tokens
+        && left.cached_input_tokens == right.cached_input_tokens
+        && left.output_tokens == right.output_tokens
+        && left.reasoning_output_tokens == right.reasoning_output_tokens
+        && left.real_total_tokens == right.real_total_tokens
 }
 
 fn new_usage_summary(query: &OpenAiUsageQuery) -> OpenAiUsageSummary {
@@ -1075,6 +1296,7 @@ fn finalize_usage_load(
         facts,
         evidence,
         decisions,
+        ccswitch_manifest: None,
     }
 }
 
@@ -1297,6 +1519,7 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             status_code INTEGER,
             decision TEXT NOT NULL,
             decision_reason TEXT,
+            decision_reason_code TEXT,
             superseded_by TEXT,
             ledger_layer TEXT NOT NULL DEFAULT 'rejected_invalid',
             layer_reason TEXT,
@@ -1386,6 +1609,19 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             missing_model INTEGER NOT NULL DEFAULT 0,
             invalid_delta INTEGER NOT NULL DEFAULT 0,
             malformed_lines INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS openai_usage_ccswitch_manifest (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            status TEXT NOT NULL,
+            error_code TEXT,
+            source_signature TEXT NOT NULL,
+            cutoff_ms INTEGER,
+            source_rows INTEGER NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            cached_input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            reasoning_output_tokens INTEGER NOT NULL,
+            real_total_tokens INTEGER NOT NULL
         );
         "#,
     )
@@ -1566,6 +1802,7 @@ fn ensure_usage_evidence_columns(conn: &Connection) -> AppResult<()> {
         ("model_verbosity", "model_verbosity TEXT"),
         ("pricing_tier", "pricing_tier TEXT"),
         ("pricing_source_url", "pricing_source_url TEXT"),
+        ("decision_reason_code", "decision_reason_code TEXT"),
     ] {
         if !columns.contains(name) {
             conn.execute(
@@ -1918,14 +2155,65 @@ fn rebuild_usage_events(
     conn: &mut Connection,
     usage: &UsageLoadResult,
     source_signature: &str,
-    summary: &OpenAiUsageSummary,
+    summary: &mut OpenAiUsageSummary,
 ) -> AppResult<()> {
+    let ccswitch_retry_required = usage.ccswitch_manifest.as_ref().is_some_and(|manifest| {
+        matches!(
+            manifest.error_code.as_deref(),
+            Some("snapshot_failed" | "snapshot_open_failed")
+        )
+    });
+    let persisted_source_signature = if ccswitch_retry_required {
+        format!("{source_signature}:ccswitch-retry-required")
+    } else {
+        source_signature.to_string()
+    };
     let tx = conn.transaction().map_err(|error| {
         AppError::new(
             "OPENAI_USAGE_LEDGER_TRANSACTION_FAILED",
             format!("Failed to start usage ledger transaction: {error}"),
         )
     })?;
+    let has_ccswitch_lkg = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM openai_usage_ccswitch_manifest WHERE id = 1 AND status = 'available')",
+        [],
+        |row| row.get::<_, bool>(0),
+    ).map_err(|error| AppError::new("OPENAI_USAGE_CCSWITCH_LKG_QUERY_FAILED", format!("Failed to inspect cc-switch last-known-good manifest: {error}")))?;
+    let preserve_ccswitch_lkg = ccswitch_retry_required && has_ccswitch_lkg;
+    if preserve_ccswitch_lkg {
+        let previous_signature = tx
+            .query_row(
+                "SELECT source_signature FROM openai_usage_sync_state WHERE id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|error| {
+                AppError::new(
+                    "OPENAI_USAGE_CCSWITCH_LKG_STATE_QUERY_FAILED",
+                    format!("Failed to read the last-known-good usage state: {error}"),
+                )
+            })?;
+        if !apply_cached_usage_sync_state(&tx, &previous_signature, summary)? {
+            return Err(AppError::new(
+                "OPENAI_USAGE_CCSWITCH_LKG_STATE_INVALID",
+                "The last-known-good usage summary is incompatible",
+            ));
+        }
+        tx.execute(
+            "UPDATE openai_usage_sync_state SET source_signature = ?1, synced_at_ms = ?2 WHERE id = 1",
+            params![persisted_source_signature, i64_from_u64(current_time_ms())],
+        ).map_err(|error| AppError::new(
+            "OPENAI_USAGE_CCSWITCH_LKG_RETRY_STATE_FAILED",
+            format!("Failed to mark cc-switch LKG for retry: {error}"),
+        ))?;
+        tx.commit().map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_CCSWITCH_LKG_COMMIT_FAILED",
+                format!("Failed to preserve the last-known-good usage ledger: {error}"),
+            )
+        })?;
+        return Ok(());
+    }
     tx.execute("DELETE FROM openai_usage_events", [])
         .map_err(|error| {
             AppError::new(
@@ -1947,8 +2235,21 @@ fn rebuild_usage_events(
                 format!("Failed to clear usage facts projection: {error}"),
             )
         })?;
+    tx.execute("DELETE FROM openai_usage_ccswitch_manifest", [])
+        .map_err(|error| {
+            AppError::new(
+                "OPENAI_USAGE_CCSWITCH_MANIFEST_CLEAR_FAILED",
+                format!("Failed to clear cc-switch import manifest: {error}"),
+            )
+        })?;
     insert_usage_evidence(&tx, &usage.evidence)?;
     insert_usage_facts(&tx, &usage.facts)?;
+    if let Some(manifest) = usage.ccswitch_manifest.as_ref() {
+        tx.execute(
+            "INSERT INTO openai_usage_ccswitch_manifest (id, status, error_code, source_signature, cutoff_ms, source_rows, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, real_total_tokens) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![manifest.status, manifest.error_code, manifest.source_signature, manifest.cutoff_ms.map(i64_from_u64), i64_from_u64(manifest.source_rows), i64_from_u64(manifest.source_tokens.input_tokens), i64_from_u64(manifest.source_tokens.cached_input_tokens), i64_from_u64(manifest.source_tokens.output_tokens), i64_from_u64(manifest.source_tokens.reasoning_output_tokens), i64_from_u64(manifest.source_tokens.real_total_tokens)],
+        ).map_err(|error| AppError::new("OPENAI_USAGE_CCSWITCH_MANIFEST_INSERT_FAILED", format!("Failed to persist cc-switch import manifest: {error}")))?;
+    }
     {
         let mut stmt = tx
             .prepare(
@@ -2078,7 +2379,7 @@ fn rebuild_usage_events(
             malformed_lines = excluded.malformed_lines
         "#,
         params![
-            source_signature,
+            persisted_source_signature,
             EVIDENCE_PARSER_VERSION,
             EVIDENCE_CLASSIFIER_VERSION,
             EVIDENCE_DEDUPE_VERSION,
@@ -2138,13 +2439,13 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
                 effective_base_url, official_source, official_confidence,
                 status_code, decision, decision_reason, superseded_by, ledger_layer,
                 layer_reason, attribution_kind, attribution_window_id, legacy_account_key,
-                account_id_alias, email_alias, created_at_ms
+                account_id_alias, email_alias, created_at_ms, decision_reason_code
             ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                 ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
                 ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
                 ?36, ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46,
-                ?47, ?48, ?49, ?50
+                ?47, ?48, ?49, ?50, ?51
             )
             "#,
         )
@@ -2212,6 +2513,7 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
             account_id_alias.as_deref(),
             email_alias.as_deref(),
             i64_from_u64(entry.created_at_ms),
+            entry.decision_reason_code.as_deref(),
         ])
         .map_err(|error| {
             AppError::new(
@@ -9570,6 +9872,171 @@ mod tests {
                 .find(|layer| layer.ledger_layer == "future_layer")
                 .map(|layer| layer.request_count),
             Some(1)
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn dashboard_reconciles_ccswitch_tokens_by_final_bucket_and_candidate_reason() {
+        let codex_home = temp_codex_home("ccswitch-dashboard-reconciliation");
+        fs::create_dir_all(&codex_home).unwrap();
+        load_openai_usage_summary(Some(&codex_home), None).unwrap();
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        for (id, source, decision, reason, layer, input, cached, output, completed) in [
+            (
+                "proxy-accepted",
+                SOURCE_CCSWITCH_PROXY,
+                DECISION_ACCEPTED,
+                "stable account identity and official source proven",
+                LEDGER_LAYER_STRICT_PROVEN,
+                100_i64,
+                20_i64,
+                10_i64,
+                1_000_i64,
+            ),
+            (
+                "session-candidate",
+                SOURCE_CCSWITCH_CODEX_SESSION,
+                DECISION_CANDIDATE,
+                "cc-switch codex_session row has no stable account identity",
+                LEDGER_LAYER_CANDIDATE_UNATTRIBUTED,
+                50,
+                10,
+                5,
+                2_000,
+            ),
+            (
+                "session-superseded",
+                SOURCE_CCSWITCH_CODEX_SESSION,
+                DECISION_SUPERSEDED,
+                "superseded by higher-priority evidence source",
+                LEDGER_LAYER_SUPERSEDED,
+                30,
+                6,
+                3,
+                3_000,
+            ),
+        ] {
+            conn.execute(
+                r#"
+                INSERT INTO openai_usage_evidence (
+                    evidence_id, source_type, source_priority, source_locator, source_hash,
+                    parser_version, event_completed_at_ms, model, usage_shape, usage_confidence,
+                    input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens,
+                    account_confidence, official_confidence, decision, decision_reason,
+                    ledger_layer, layer_reason, attribution_kind, created_at_ms
+                ) VALUES (?1, ?2, 10, ?1, ?1, 'test-parser', ?9, 'gpt-5.3-codex',
+                          'total_token_usage', 'high', ?6, ?7, ?8, 0, 'unproven',
+                          'proven', ?3, ?4, ?5, ?4, 'unattributed', ?9)
+                "#,
+                params![id, source, decision, reason, layer, input, cached, output, completed],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "UPDATE openai_usage_evidence SET decision_reason_code = 'missing_account_identity' WHERE decision = 'candidate'",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO openai_usage_ccswitch_manifest (id, status, error_code, source_signature, cutoff_ms, source_rows, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, real_total_tokens) VALUES (1, 'available', NULL, 'raw-generation-1', 3000, 3, 180, 36, 18, 0, 198)",
+            [],
+        ).unwrap();
+        drop(conn);
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let reconciliation = dashboard.reconciliation;
+        assert_eq!(reconciliation.cutoff_ms, Some(3_000));
+        assert_eq!(reconciliation.source_signature, "raw-generation-1");
+        assert_eq!(
+            reconciliation.status,
+            OpenAiUsageReconciliationStatus::Reconciled
+        );
+        assert_eq!(reconciliation.source_tokens.input_tokens, 180);
+        assert_eq!(reconciliation.source_tokens.cached_input_tokens, 36);
+        assert_eq!(reconciliation.source_tokens.output_tokens, 18);
+        assert_eq!(reconciliation.accepted_tokens.input_tokens, 100);
+        assert_eq!(reconciliation.candidate_tokens.input_tokens, 50);
+        assert_eq!(reconciliation.superseded_tokens.input_tokens, 30);
+        assert_eq!(reconciliation.ledger_minus_source.input_tokens, 0);
+        assert_eq!(reconciliation.ledger_minus_source.cached_input_tokens, 0);
+        assert_eq!(reconciliation.ledger_minus_source.output_tokens, 0);
+        assert_eq!(reconciliation.mismatch_reason, None);
+        assert_eq!(reconciliation.candidate_reasons.len(), 1);
+        let candidate = &reconciliation.candidate_reasons[0];
+        assert_eq!(candidate.source_type, SOURCE_CCSWITCH_CODEX_SESSION);
+        assert_eq!(candidate.reason_code, "missing_account_identity");
+        assert_eq!(candidate.request_count, 1);
+        assert_eq!(candidate.tokens.input_tokens, 50);
+        assert_eq!(candidate.tokens.cached_input_tokens, 10);
+        assert_eq!(candidate.tokens.output_tokens, 5);
+
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        conn.execute(
+            "UPDATE openai_usage_ccswitch_manifest SET input_tokens = 187, real_total_tokens = 205 WHERE id = 1",
+            [],
+        ).unwrap();
+        drop(conn);
+        let mismatch = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20)
+            .unwrap()
+            .reconciliation;
+        assert_eq!(mismatch.status, OpenAiUsageReconciliationStatus::Mismatch);
+        assert_eq!(mismatch.ledger_minus_source.input_tokens, -7);
+        assert_eq!(mismatch.ledger_minus_source.real_total_tokens, -7);
+
+        let mut conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let failed_refresh = UsageLoadResult {
+            source_signature: "retry-source".to_string(),
+            cache_hit: false,
+            events: Vec::new(),
+            facts: Vec::new(),
+            evidence: Vec::new(),
+            decisions: EvidenceDecisionCounts::default(),
+            ccswitch_manifest: Some(CcSwitchImportManifest {
+                status: "unavailable".to_string(),
+                error_code: Some("snapshot_failed".to_string()),
+                ..Default::default()
+            }),
+        };
+        let mut failed_summary = OpenAiUsageSummary::default();
+        rebuild_usage_events(
+            &mut conn,
+            &failed_refresh,
+            "retry-source",
+            &mut failed_summary,
+        )
+        .unwrap();
+        assert_eq!(failed_summary.exclusions.accepted_events, 0);
+        assert_eq!(failed_summary.exclusions.candidate_events, 0);
+        let preserved_rows: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM openai_usage_evidence WHERE source_type IN ('ccswitch_proxy', 'ccswitch_codex_session')",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        let retry_signature: String = conn
+            .query_row(
+                "SELECT source_signature FROM openai_usage_sync_state WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved_rows, 3);
+        assert_eq!(retry_signature, "retry-source:ccswitch-retry-required");
+        drop(conn);
+
+        let filtered = load_openai_usage_dashboard(
+            Some(&codex_home),
+            Some(OpenAiUsageQuery {
+                model: Some("gpt-5.3-codex".to_string()),
+                ..OpenAiUsageQuery::default()
+            }),
+            1,
+            20,
+        )
+        .unwrap()
+        .reconciliation;
+        assert_eq!(
+            filtered.status,
+            OpenAiUsageReconciliationStatus::NotApplicableFiltered
         );
         let _ = fs::remove_dir_all(&codex_home);
     }

@@ -445,6 +445,16 @@ function previewOpenAiUsageDataSources(): OpenAiUsageDataSourceSummary[] {
   }];
 }
 
+function zeroUsageTokens() {
+  return {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    real_total_tokens: 0,
+  };
+}
+
 function previewOpenAiUsageDashboard(page = 1, pageSize = 20): OpenAiUsageDashboard {
   const summary = previewOpenAiUsageSummary();
   return {
@@ -454,6 +464,22 @@ function previewOpenAiUsageDashboard(page = 1, pageSize = 20): OpenAiUsageDashbo
     trends: previewOpenAiUsageTrends(),
     logs: previewOpenAiUsageLogs(page, pageSize),
     data_sources: previewOpenAiUsageDataSources(),
+    reconciliation: {
+      cutoff_ms: Date.now(),
+      source_signature: "preview-ccswitch-source",
+      source_tokens: summary.tokens,
+      source_rows: 0,
+      classified_rows: 0,
+      accepted_tokens: summary.tokens,
+      candidate_tokens: zeroUsageTokens(),
+      superseded_tokens: zeroUsageTokens(),
+      status: "unavailable",
+      rejected_tokens: zeroUsageTokens(),
+      unknown_decision_tokens: zeroUsageTokens(),
+      ledger_minus_source: { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0, real_total_tokens: 0 },
+      mismatch_reason: null,
+      candidate_reasons: [],
+    },
   };
 }
 

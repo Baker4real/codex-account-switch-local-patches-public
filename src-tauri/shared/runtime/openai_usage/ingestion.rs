@@ -162,53 +162,134 @@ struct SessionLine {
 fn freeze_ccswitch_db(codex_home: &Path, db_path: &Path) -> Option<PathBuf> {
     let snapshot_dir = codex_home.join(USAGE_EVIDENCE_DIRNAME).join("ccswitch");
     fs::create_dir_all(&snapshot_dir).ok()?;
-    let snapshot = snapshot_dir.join("cc-switch-latest.db");
-    fs::copy(db_path, &snapshot).ok()?;
-    for extension in ["db-wal", "db-shm"] {
-        let source = db_path.with_extension(extension);
-        let target = snapshot.with_extension(extension);
-        if source.is_file() {
-            let _ = fs::copy(source, target);
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let snapshot = snapshot_dir.join(format!(
+        "cc-switch-snapshot-{}-{unique}.db",
+        std::process::id()
+    ));
+    let source = Connection::open_with_flags(
+        db_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    if source
+        .execute("VACUUM INTO ?1", [snapshot.to_string_lossy().as_ref()])
+        .is_err()
+    {
+        let _ = fs::remove_file(&snapshot);
+        return None;
+    }
+    let validation = match Connection::open_with_flags(
+        &snapshot,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) {
+        Ok(connection) => connection,
+        Err(_) => {
+            let _ = fs::remove_file(&snapshot);
+            return None;
         }
+    };
+    let valid = validation
+        .query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0))
+        .is_ok_and(|value| value == "ok");
+    drop(validation);
+    if !valid {
+        let _ = fs::remove_file(&snapshot);
+        return None;
+    }
+    for extension in ["db-wal", "db-shm"] {
+        let _ = fs::remove_file(snapshot.with_extension(extension));
     }
     Some(snapshot)
 }
 
-fn collect_ccswitch_evidence(codex_home: &Path) -> AppResult<Vec<UsageEvidence>> {
+fn collect_ccswitch_evidence(codex_home: &Path) -> (Vec<UsageEvidence>, CcSwitchImportManifest) {
     let Some(live_db) = live_ccswitch_db_path(codex_home) else {
-        return Ok(Vec::new());
+        return (
+            Vec::new(),
+            CcSwitchImportManifest {
+                status: "unavailable".to_string(),
+                error_code: Some("source_missing".to_string()),
+                ..Default::default()
+            },
+        );
     };
     let Some(snapshot) = freeze_ccswitch_db(codex_home, &live_db) else {
-        return Ok(Vec::new());
+        return (
+            Vec::new(),
+            CcSwitchImportManifest {
+                status: "unavailable".to_string(),
+                error_code: Some("snapshot_failed".to_string()),
+                ..Default::default()
+            },
+        );
     };
-    let conn = Connection::open_with_flags(
+    let conn = match Connection::open_with_flags(
         &snapshot,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| {
-        AppError::new(
-            "CCSWITCH_USAGE_OPEN_FAILED",
-            format!(
-                "Failed to open cc-switch usage snapshot {}: {error}",
-                snapshot.display()
-            ),
-        )
-    })?;
+    ) {
+        Ok(conn) => conn,
+        Err(_) => {
+            let _ = fs::remove_file(&snapshot);
+            return (
+                Vec::new(),
+                CcSwitchImportManifest {
+                    status: "unavailable".to_string(),
+                    error_code: Some("snapshot_open_failed".to_string()),
+                    ..Default::default()
+                },
+            );
+        }
+    };
     let mut evidence = Vec::new();
-    collect_ccswitch_proxy_request_evidence(&conn, &snapshot, &mut evidence)?;
-    collect_ccswitch_rollup_evidence(&conn, &snapshot, &mut evidence)?;
-    Ok(evidence)
+    let mut manifest = CcSwitchImportManifest {
+        status: "available".to_string(),
+        ..Default::default()
+    };
+    if collect_ccswitch_proxy_request_evidence(&conn, &snapshot, &mut evidence, &mut manifest)
+        .is_err()
+    {
+        drop(conn);
+        let _ = fs::remove_file(&snapshot);
+        return (
+            Vec::new(),
+            CcSwitchImportManifest {
+                status: "unavailable".to_string(),
+                error_code: Some("schema_or_row_incompatible".to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    let _ = collect_ccswitch_rollup_evidence(&conn, &snapshot, &mut evidence);
+    drop(conn);
+    let _ = fs::remove_file(&snapshot);
+    (evidence, manifest)
 }
 
 fn collect_ccswitch_proxy_request_evidence(
     conn: &Connection,
     snapshot: &Path,
     evidence: &mut Vec<UsageEvidence>,
+    manifest: &mut CcSwitchImportManifest,
 ) -> AppResult<()> {
-    let columns = match table_columns(conn, "proxy_request_logs") {
-        Ok(columns) => columns,
-        Err(_) => return Ok(()),
-    };
+    let columns = table_columns(conn, "proxy_request_logs").map_err(|error| {
+        AppError::new(
+            "CCSWITCH_PROXY_SCHEMA_UNAVAILABLE",
+            format!(
+                "Failed to inspect cc-switch proxy_request_logs: {}",
+                error.message
+            ),
+        )
+    })?;
+    if columns.is_empty() {
+        return Err(AppError::new(
+            "CCSWITCH_PROXY_TABLE_MISSING",
+            "cc-switch proxy_request_logs table is missing",
+        ));
+    }
     let optional_column = |name: &str| {
         if columns.contains(name) {
             name.to_string()
@@ -224,6 +305,7 @@ fn collect_ccswitch_proxy_request_evidence(
                {}, {}, {}, {}, {}
         FROM proxy_request_logs
         WHERE app_type = 'codex'
+        ORDER BY request_id
         "#,
         optional_column("account_identity_key"),
         optional_column("account_identity_source"),
@@ -231,10 +313,12 @@ fn collect_ccswitch_proxy_request_evidence(
         optional_column("profile_name"),
         optional_column("effective_base_url"),
     );
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(stmt) => stmt,
-        Err(_) => return Ok(()),
-    };
+    let mut stmt = conn.prepare(&sql).map_err(|error| {
+        AppError::new(
+            "CCSWITCH_PROXY_SCHEMA_INCOMPATIBLE",
+            format!("cc-switch proxy_request_logs schema is incompatible: {error}"),
+        )
+    })?;
     let rows = stmt
         .query_map([], |row| {
             Ok((
@@ -319,6 +403,24 @@ fn collect_ccswitch_proxy_request_evidence(
             output_tokens,
             reasoning_output_tokens: 0,
         };
+        manifest.source_rows = manifest.source_rows.saturating_add(1);
+        manifest.cutoff_ms = manifest.cutoff_ms.max(Some(created_at_ms));
+        manifest.source_tokens.input_tokens = manifest
+            .source_tokens
+            .input_tokens
+            .saturating_add(delta.input_tokens);
+        manifest.source_tokens.cached_input_tokens = manifest
+            .source_tokens
+            .cached_input_tokens
+            .saturating_add(delta.cached_input_tokens);
+        manifest.source_tokens.output_tokens = manifest
+            .source_tokens
+            .output_tokens
+            .saturating_add(delta.output_tokens);
+        manifest.source_tokens.real_total_tokens = manifest
+            .source_tokens
+            .real_total_tokens
+            .saturating_add(delta.input_tokens.saturating_add(delta.output_tokens));
         let fingerprint = if let (Some(account_key), Some(model)) =
             (normalized_account_identity_key.as_deref(), model.as_deref())
         {
@@ -341,6 +443,31 @@ fn collect_ccswitch_proxy_request_evidence(
         } else {
             "cc-switch codex_session row has no account proof"
         };
+        let reason_code = if has_strict_account_proof {
+            "accepted_stable_identity"
+        } else if source_type == SOURCE_CCSWITCH_PROXY {
+            "missing_account_mapping"
+        } else {
+            "missing_account_identity"
+        };
+        manifest.source_signature = stable_hash(&[
+            &manifest.source_signature,
+            &request_id,
+            &provider_id,
+            model.as_deref().unwrap_or_default(),
+            &data_source,
+            normalized_account_identity_key
+                .as_deref()
+                .unwrap_or_default(),
+            account_identity_source.as_deref().unwrap_or_default(),
+            profile_id.as_deref().unwrap_or_default(),
+            profile_name.as_deref().unwrap_or_default(),
+            effective_base_url.as_deref().unwrap_or_default(),
+            &created_at_sec.to_string(),
+            &input_tokens.to_string(),
+            &output_tokens.to_string(),
+            &cached_input_tokens.to_string(),
+        ]);
         evidence.push(UsageEvidence {
             evidence_id: format!("{source_type}:{request_id}"),
             request_id: Some(request_id.clone()),
@@ -410,6 +537,7 @@ fn collect_ccswitch_proxy_request_evidence(
                 DECISION_CANDIDATE.to_string()
             },
             decision_reason: Some(reason.to_string()),
+            decision_reason_code: Some(reason_code.to_string()),
             superseded_by: None,
             ledger_layer: if has_strict_account_proof {
                 LEDGER_LAYER_STRICT_PROVEN.to_string()
@@ -568,6 +696,7 @@ fn collect_ccswitch_rollup_evidence(
                 "cc-switch rollup is aggregate evidence and cannot prove request account"
                     .to_string(),
             ),
+            decision_reason_code: Some("aggregate_without_request_identity".to_string()),
             superseded_by: None,
             ledger_layer: LEDGER_LAYER_CANDIDATE_UNATTRIBUTED.to_string(),
             layer_reason: Some(
@@ -689,6 +818,7 @@ fn session_usage_evidence(input: SessionEvidenceInput<'_>) -> UsageEvidence {
         status_code: Some(200),
         decision: input.decision.to_string(),
         decision_reason: input.decision_reason.map(ToString::to_string),
+        decision_reason_code: None,
         superseded_by: input.superseded_by.map(ToString::to_string),
         ledger_layer,
         layer_reason,
@@ -1188,9 +1318,11 @@ impl UsageEvidenceAdapter for CcSwitchAdapter {
     fn collect(
         &self,
         codex_home: &Path,
-        _context: &mut IngestionContext<'_>,
+        context: &mut IngestionContext<'_>,
     ) -> AppResult<Vec<UsageEvidence>> {
-        collect_ccswitch_evidence(codex_home)
+        let (evidence, manifest) = collect_ccswitch_evidence(codex_home);
+        context.ccswitch_manifest = Some(manifest);
+        Ok(evidence)
     }
 }
 
@@ -1203,6 +1335,7 @@ struct IngestionContext<'a> {
     evidence: Vec<UsageEvidence>,
     decisions: EvidenceDecisionCounts,
     summary: &'a mut OpenAiUsageSummary,
+    ccswitch_manifest: Option<CcSwitchImportManifest>,
 }
 
 fn collect_from_adapters(
@@ -1256,6 +1389,7 @@ where
             facts: Vec::new(),
             evidence: Vec::new(),
             decisions: EvidenceDecisionCounts::default(),
+            ccswitch_manifest: None,
         });
     }
 
@@ -1281,6 +1415,7 @@ where
         evidence: Vec::new(),
         decisions: EvidenceDecisionCounts::default(),
         summary,
+        ccswitch_manifest: None,
     };
     collect_from_adapters(adapters, codex_home, &mut context)?;
     let mut usage = finalize_usage_load(
@@ -1291,6 +1426,7 @@ where
         context.summary,
     );
     usage.source_signature = source_signature;
+    usage.ccswitch_manifest = context.ccswitch_manifest;
     Ok(usage)
 }
 
@@ -1353,6 +1489,7 @@ mod tests {
             evidence: Vec::new(),
             decisions: EvidenceDecisionCounts::default(),
             summary,
+            ccswitch_manifest: None,
         }
     }
 
@@ -1424,6 +1561,7 @@ mod tests {
             status_code: Some(200),
             decision: DECISION_ACCEPTED.to_string(),
             decision_reason: Some("test accepted evidence".to_string()),
+            decision_reason_code: Some("test_accepted".to_string()),
             superseded_by: None,
             ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
             layer_reason: Some("test strict proof".to_string()),
@@ -1525,10 +1663,15 @@ mod tests {
         .unwrap();
 
         let mut evidence = Vec::new();
-        collect_ccswitch_proxy_request_evidence(&conn, &db_path, &mut evidence).unwrap();
+        let mut manifest = CcSwitchImportManifest::default();
+        collect_ccswitch_proxy_request_evidence(&conn, &db_path, &mut evidence, &mut manifest)
+            .unwrap();
         collect_ccswitch_rollup_evidence(&conn, &db_path, &mut evidence).unwrap();
 
         assert_eq!(evidence.len(), 3);
+        assert_eq!(manifest.source_rows, 2);
+        assert_eq!(manifest.source_tokens.real_total_tokens, 35);
+        assert!(!manifest.source_signature.is_empty());
         assert!(evidence
             .iter()
             .all(|entry| entry.decision == DECISION_CANDIDATE));
@@ -1584,9 +1727,13 @@ mod tests {
         .unwrap();
 
         let mut evidence = Vec::new();
-        collect_ccswitch_proxy_request_evidence(&conn, &db_path, &mut evidence).unwrap();
+        let mut manifest = CcSwitchImportManifest::default();
+        collect_ccswitch_proxy_request_evidence(&conn, &db_path, &mut evidence, &mut manifest)
+            .unwrap();
 
         assert_eq!(evidence.len(), 1);
+        assert_eq!(manifest.source_rows, 1);
+        assert_eq!(manifest.source_tokens.real_total_tokens, 12);
         let entry = &evidence[0];
         let expected_key = account_identity_key(&AccountIdentity {
             account_id: Some("acct_ccswitch".to_string()),
@@ -1608,7 +1755,47 @@ mod tests {
     }
 
     #[test]
-    fn freeze_ccswitch_db_preserves_wal_state_in_read_only_snapshot() {
+    fn ccswitch_compatible_empty_table_is_distinct_from_missing_table() {
+        let temp = temp_codex_home("ccswitch-compatible-empty");
+        fs::create_dir_all(&temp).unwrap();
+        let db_path = temp.join("cc-switch.db");
+        let conn = Connection::open(&db_path).unwrap();
+        let mut evidence = Vec::new();
+        let mut manifest = CcSwitchImportManifest::default();
+        assert!(collect_ccswitch_proxy_request_evidence(
+            &conn,
+            &db_path,
+            &mut evidence,
+            &mut manifest,
+        )
+        .is_err());
+
+        conn.execute_batch(
+            r#"
+            CREATE TABLE proxy_request_logs (
+                request_id TEXT NOT NULL, provider_id TEXT NOT NULL, app_type TEXT NOT NULL,
+                model TEXT, request_model TEXT, pricing_model TEXT,
+                input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
+                cache_read_tokens INTEGER NOT NULL, status_code INTEGER,
+                session_id TEXT, data_source TEXT, created_at INTEGER NOT NULL
+            );
+            "#,
+        )
+        .unwrap();
+        assert!(collect_ccswitch_proxy_request_evidence(
+            &conn,
+            &db_path,
+            &mut evidence,
+            &mut manifest,
+        )
+        .is_ok());
+        assert_eq!(manifest.source_rows, 0);
+        assert!(evidence.is_empty());
+        let _ = fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn freeze_ccswitch_db_creates_consistent_single_file_snapshot() {
         let codex_home = temp_codex_home("ccswitch-freeze-wal");
         let live_dir = codex_home.join("live-ccswitch");
         fs::create_dir_all(&live_dir).unwrap();
@@ -1639,14 +1826,21 @@ mod tests {
 
         let snapshot = freeze_ccswitch_db(&codex_home, &live_db).unwrap();
         assert_eq!(
-            snapshot,
-            codex_home
-                .join(USAGE_EVIDENCE_DIRNAME)
-                .join("ccswitch")
-                .join("cc-switch-latest.db")
+            snapshot.parent(),
+            Some(
+                codex_home
+                    .join(USAGE_EVIDENCE_DIRNAME)
+                    .join("ccswitch")
+                    .as_path()
+            )
         );
-        assert!(snapshot.with_extension("db-wal").is_file());
-        assert!(snapshot.with_extension("db-shm").is_file());
+        assert!(snapshot
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("cc-switch-snapshot-"));
+        assert!(!snapshot.with_extension("db-wal").is_file());
+        assert!(!snapshot.with_extension("db-shm").is_file());
 
         let snapshot_conn = Connection::open_with_flags(
             &snapshot,

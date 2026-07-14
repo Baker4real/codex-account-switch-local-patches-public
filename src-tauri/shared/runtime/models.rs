@@ -493,6 +493,54 @@ pub struct OpenAiUsageDataSourceSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
+pub struct OpenAiUsageCandidateReasonSummary {
+    pub source_type: String,
+    pub reason_code: String,
+    pub request_count: u64,
+    pub tokens: OpenAiUsageTokenTotals,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageReconciliation {
+    pub status: OpenAiUsageReconciliationStatus,
+    pub cutoff_ms: Option<u64>,
+    pub source_signature: String,
+    pub source_tokens: OpenAiUsageTokenTotals,
+    pub source_rows: u64,
+    pub classified_rows: u64,
+    pub accepted_tokens: OpenAiUsageTokenTotals,
+    pub candidate_tokens: OpenAiUsageTokenTotals,
+    pub superseded_tokens: OpenAiUsageTokenTotals,
+    pub rejected_tokens: OpenAiUsageTokenTotals,
+    pub unknown_decision_tokens: OpenAiUsageTokenTotals,
+    pub ledger_minus_source: OpenAiUsageSignedTokenTotals,
+    pub mismatch_reason: Option<String>,
+    pub candidate_reasons: Vec<OpenAiUsageCandidateReasonSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiUsageReconciliationStatus {
+    Reconciled,
+    Mismatch,
+    #[default]
+    Unavailable,
+    NotApplicableFiltered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct OpenAiUsageSignedTokenTotals {
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub reasoning_output_tokens: i64,
+    pub real_total_tokens: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct OpenAiUsageDashboard {
     pub summary: OpenAiUsageSummary,
     pub account_summary: Vec<OpenAiUsageAccountSummary>,
@@ -500,6 +548,7 @@ pub struct OpenAiUsageDashboard {
     pub trends: Vec<OpenAiUsageTrendPoint>,
     pub logs: OpenAiUsageRequestLogPage,
     pub data_sources: Vec<OpenAiUsageDataSourceSummary>,
+    pub reconciliation: OpenAiUsageReconciliation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

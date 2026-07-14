@@ -1223,7 +1223,7 @@ function buildUsageEvidenceMarkup(view: UsageWorkspaceView, summary: OpenAiUsage
     ["usageInvalidDelta", exclusions.invalid_delta],
     ["usageMalformedLines", exclusions.malformed_lines],
   ];
-  return `
+  return `${buildUsageReconciliationMarkup(view)}
     <article class="usage-evidence-card">
       <h3>${t(view.locale, "usageDataQuality")}</h3>
       <div class="usage-evidence-grid">
@@ -1234,6 +1234,83 @@ function buildUsageEvidenceMarkup(view: UsageWorkspaceView, summary: OpenAiUsage
           </span>
         `).join("")}
       </div>
+    </article>
+  `;
+}
+
+function buildUsageReconciliationMarkup(view: UsageWorkspaceView): string {
+  const reconciliation = view.reconciliation;
+  if (!reconciliation) {
+    return "";
+  }
+  const tokenDetails = (tokens: OpenAiUsageSummary["tokens"]) => [
+    `${t(view.locale, "usageInput")}: ${formatUsageTokenDetailedText(view.locale, tokens.input_tokens)}`,
+    `${t(view.locale, "usageCachedInput")}: ${formatUsageTokenDetailedText(view.locale, tokens.cached_input_tokens)}`,
+    `${t(view.locale, "usageOutput")}: ${formatUsageTokenDetailedText(view.locale, tokens.output_tokens)}`,
+  ].join(" · ");
+  const reasonLabel = (reasonCode: string): string => {
+    if (reasonCode === "missing_account_identity") return t(view.locale, "usageMissingAccountIdentity");
+    if (reasonCode === "missing_account_mapping") return t(view.locale, "usageMissingAccountMapping");
+    return t(view.locale, "usageUnattributed");
+  };
+  const sourceLabel = (sourceType: string): string => {
+    if (sourceType === "ccswitch_proxy") return t(view.locale, "usageCcSwitchProxy");
+    if (sourceType === "ccswitch_codex_session") return t(view.locale, "usageCcSwitchSession");
+    return t(view.locale, "usageUnknownSource");
+  };
+  const buckets = [
+    [t(view.locale, "usageReconciliationSource"), reconciliation.source_tokens],
+    [t(view.locale, "usageAcceptedEvents"), reconciliation.accepted_tokens],
+    [t(view.locale, "usageCandidateEvents"), reconciliation.candidate_tokens],
+    [t(view.locale, "usageSupersededEvents"), reconciliation.superseded_tokens],
+    [t(view.locale, "usageRejectedEvents"), reconciliation.rejected_tokens],
+    [t(view.locale, "usageUnknownDecision"), reconciliation.unknown_decision_tokens],
+  ] as const;
+  const candidateReasons = reconciliation.candidate_reasons.map((reason) => `
+    <span>
+      <em>${escapeHtml(sourceLabel(reason.source_type))} · ${escapeHtml(reasonLabel(reason.reason_code))}</em>
+      <strong>${formatInteger(view.locale, reason.request_count)}</strong>
+      <small>${escapeHtml(tokenDetails(reason.tokens))}</small>
+    </span>
+  `).join("");
+  const mismatchCopy = reconciliation.status === "unavailable"
+    ? t(view.locale, "usageReconciliationUnavailable")
+    : reconciliation.status === "not_applicable_filtered"
+      ? t(view.locale, "usageReconciliationFiltered")
+      : reconciliation.status === "mismatch"
+        ? t(view.locale, "usageReconciliationMismatch")
+        : "";
+  const statusLabel = reconciliation.status === "reconciled"
+    ? t(view.locale, "usageReconciled")
+    : reconciliation.status === "mismatch"
+      ? t(view.locale, "usageNotReconciled")
+      : reconciliation.status === "unavailable"
+        ? t(view.locale, "usageReconciliationUnavailableStatus")
+        : t(view.locale, "usageReconciliationFilteredStatus");
+  const signedDelta = reconciliation.ledger_minus_source;
+  const deltaDetails = [
+    `${t(view.locale, "usageInput")}: ${signedDelta.input_tokens >= 0 ? "+" : ""}${formatInteger(view.locale, signedDelta.input_tokens)}`,
+    `${t(view.locale, "usageCachedInput")}: ${signedDelta.cached_input_tokens >= 0 ? "+" : ""}${formatInteger(view.locale, signedDelta.cached_input_tokens)}`,
+    `${t(view.locale, "usageOutput")}: ${signedDelta.output_tokens >= 0 ? "+" : ""}${formatInteger(view.locale, signedDelta.output_tokens)}`,
+  ].join(" · ");
+  return `
+    <article class="usage-evidence-card usage-reconciliation-card">
+      <h3>${t(view.locale, "usageReconciliation")} · ${statusLabel}</h3>
+      <p>${t(view.locale, "usageReconciliationCutoff")}: ${formatDateTimeMs(reconciliation.cutoff_ms, view.locale)}</p>
+      <details><summary>${t(view.locale, "usageReconciliationSignature")}: ${escapeHtml(reconciliation.source_signature.slice(0, 16) || "--")}</summary><code>${escapeHtml(reconciliation.source_signature || "--")}</code></details>
+      <p>${t(view.locale, "usageReconciliationRows")}: ${formatInteger(view.locale, reconciliation.classified_rows)} / ${formatInteger(view.locale, reconciliation.source_rows)}</p>
+      <p>${t(view.locale, "usageLedgerMinusSource")}: ${escapeHtml(deltaDetails)}</p>
+      <div class="usage-evidence-grid">
+        ${buckets.map(([label, tokens]) => `
+          <span>
+            <em>${label}</em>
+            <strong>${formatUsageTokenMarkup(view.locale, tokens.real_total_tokens)}</strong>
+            <small>${escapeHtml(tokenDetails(tokens))}</small>
+          </span>
+        `).join("")}
+        ${candidateReasons}
+      </div>
+      ${mismatchCopy ? `<p>${escapeHtml(mismatchCopy)}</p>` : ""}
     </article>
   `;
 }
