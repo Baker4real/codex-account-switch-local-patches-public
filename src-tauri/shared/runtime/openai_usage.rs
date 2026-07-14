@@ -1,3 +1,4 @@
+use std::cell::{Cell, RefCell};
 use std::collections::{hash_map::DefaultHasher, BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -30,18 +31,24 @@ use super::session_files::{collect_jsonl_files, file_modified_ms};
 
 mod identity;
 mod ingestion;
+mod pricing;
+mod query;
+
+#[cfg(test)]
+static FAIL_NEXT_INCREMENTAL_COMMIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 const PRICING_SOURCE: &str = "OpenAI API pricing";
 const PRICING_SOURCE_URL: &str = "https://developers.openai.com/api/docs/pricing";
-const PRICING_CHECKED_AT: &str = "2026-07-08";
-const PRICING_TIER_STANDARD_SHORT_CONTEXT: &str = "standard_short_context";
+const PRICING_TIER_STANDARD_SHORT_CONTEXT: &str = pricing::STANDARD_SHORT_CONTEXT;
+const PRICING_TIER_UNPRICED_LONG_CONTEXT: &str = "unpriced_long_context";
 const EVIDENCE_PARSER_VERSION: &str = "openai-usage-evidence-v2-parser-2";
 const EVIDENCE_CLASSIFIER_VERSION: &str = "openai-usage-evidence-v2-classifier-3";
 const EVIDENCE_DEDUPE_VERSION: &str = "openai-usage-evidence-v2-dedupe-3";
 const LEDGER_SCHEMA_VERSION: &str = "openai-usage-ledger-schema-4";
 const LAYER_CLASSIFIER_VERSION: &str = "openai-usage-layer-classifier-1";
 const ATTRIBUTION_BACKFILL_VERSION: &str = "openai-usage-attribution-backfill-1";
-const PRICING_VERSION: &str = PRICING_CHECKED_AT;
+const CANONICAL_MAP_VERSION: &str = "openai-usage-canonical-map-1";
 const SOURCE_OPENAI_RESPONSE_USAGE: &str = "openai_response_usage";
 const SOURCE_CCSWITCH_PROXY: &str = "ccswitch_proxy";
 const SOURCE_CODEX_SESSION_JSONL: &str = "codex_session_jsonl";
@@ -75,38 +82,38 @@ const USAGE_SHAPE_LAST_TOKEN_USAGE: &str = "last_token_usage";
 const USAGE_SHAPE_PROXY_REQUEST: &str = "proxy_request";
 const USAGE_SHAPE_DAILY_ROLLUP: &str = "daily_rollup";
 
-#[derive(Clone, Copy)]
-struct ModelPricing {
-    model: &'static str,
-    input_micros_per_million: u64,
-    cached_input_micros_per_million: u64,
-    output_micros_per_million: u64,
-    source_url: &'static str,
-    checked_at: &'static str,
+thread_local! {
+    static ACTIVE_PRICING: RefCell<pricing::CatalogSnapshot> =
+        RefCell::new(pricing::CatalogSnapshot {
+            catalog: pricing::bundled_seed(), stale: true, bundled_seed: true, load_error: None,
+        });
 }
 
-const MODEL_PRICES: &[ModelPricing] = &[
-    price("gpt-5.5", 5_000_000, 500_000, 30_000_000),
-    price("gpt-5.4", 2_500_000, 250_000, 15_000_000),
-    price("gpt-5.4-mini", 750_000, 75_000, 4_500_000),
-    price("gpt-5.4-nano", 200_000, 20_000, 1_250_000),
-    price("gpt-5.3-codex", 1_750_000, 175_000, 14_000_000),
-];
+thread_local! {
+    /// Deterministic diagnostic for dashboard regressions. It counts complete
+    /// `UsageFact` rows materialized by the current thread, so tests and local
+    /// diagnostics can distinguish bounded SQL reads from history-sized work.
+    static DASHBOARD_MATERIALIZED_FACT_ROWS: Cell<u64> = const { Cell::new(0) };
+}
 
-const fn price(
-    model: &'static str,
-    input_micros_per_million: u64,
-    cached_input_micros_per_million: u64,
-    output_micros_per_million: u64,
-) -> ModelPricing {
-    ModelPricing {
-        model,
-        input_micros_per_million,
-        cached_input_micros_per_million,
-        output_micros_per_million,
-        source_url: PRICING_SOURCE_URL,
-        checked_at: PRICING_CHECKED_AT,
-    }
+pub fn reset_openai_usage_dashboard_work_counter() {
+    DASHBOARD_MATERIALIZED_FACT_ROWS.with(|counter| counter.set(0));
+}
+
+pub fn openai_usage_dashboard_materialized_fact_rows() -> u64 {
+    DASHBOARD_MATERIALIZED_FACT_ROWS.with(Cell::get)
+}
+
+fn with_active_pricing<T>(read: impl FnOnce(&pricing::CatalogSnapshot) -> T) -> T {
+    ACTIVE_PRICING.with(|catalog| read(&catalog.borrow()))
+}
+
+fn current_pricing_version() -> String {
+    with_active_pricing(|snapshot| snapshot.catalog.catalog_hash.clone())
+}
+
+fn pricing_checked_at() -> String {
+    with_active_pricing(|snapshot| snapshot.catalog.published_at.clone())
 }
 
 #[derive(Default)]
@@ -146,7 +153,7 @@ struct AccountAggregate {
     attribution_breakdown: BTreeMap<String, Aggregate>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
 struct UsageCounts {
     input_tokens: u64,
     cached_input_tokens: u64,
@@ -301,6 +308,16 @@ struct CcSwitchImportManifest {
     cutoff_ms: Option<u64>,
     source_tokens: OpenAiUsageTokenTotals,
     source_rows: u64,
+    checkpoint: Option<CcSwitchCheckpoint>,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+struct CcSwitchCheckpoint {
+    schema_hash: String,
+    row_count: u64,
+    max_rowid: i64,
+    prefix_hash: String,
+    max_created_at_sec: i64,
 }
 
 struct EvidenceDecision {
@@ -346,37 +363,37 @@ impl EvidenceClassifier {
                     Some(delta),
                     Some(status_code),
                     Some(created_at_ms),
-                ) => Some(UsageEvent {
-                    evidence_id: evidence.evidence_id.clone(),
-                    request_id,
-                    fingerprint,
-                    session_id,
-                    profile,
-                    account_label: evidence.account_label.clone(),
-                    account_identity_key,
-                    official_source,
-                    model: model.clone(),
-                    requested_model: evidence.request_model.clone(),
-                    model_reasoning_effort: evidence.model_reasoning_effort.clone(),
-                    model_verbosity: evidence.model_verbosity.clone(),
-                    delta,
-                    cost,
-                    status_code,
-                    created_at_ms,
-                    data_source: official_data_source().to_string(),
-                    source_type: evidence.source_type.clone(),
-                    source_priority: evidence.source_priority,
-                    usage_confidence: evidence.usage_confidence.clone(),
-                    pricing_model: evidence.pricing_model.clone().unwrap_or(model),
-                    pricing_tier: evidence
-                        .pricing_tier
-                        .clone()
-                        .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
-                    pricing_source_url: evidence
-                        .pricing_source_url
-                        .clone()
-                        .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
-                }),
+                ) => {
+                    let pricing_tier = resolved_pricing_tier(&evidence, &model, delta, &cost);
+                    Some(UsageEvent {
+                        evidence_id: evidence.evidence_id.clone(),
+                        request_id,
+                        fingerprint,
+                        session_id,
+                        profile,
+                        account_label: evidence.account_label.clone(),
+                        account_identity_key,
+                        official_source,
+                        model: model.clone(),
+                        requested_model: evidence.request_model.clone(),
+                        model_reasoning_effort: evidence.model_reasoning_effort.clone(),
+                        model_verbosity: evidence.model_verbosity.clone(),
+                        delta,
+                        cost,
+                        status_code,
+                        created_at_ms,
+                        data_source: official_data_source().to_string(),
+                        source_type: evidence.source_type.clone(),
+                        source_priority: evidence.source_priority,
+                        usage_confidence: evidence.usage_confidence.clone(),
+                        pricing_model: evidence.pricing_model.clone().unwrap_or(model),
+                        pricing_tier,
+                        pricing_source_url: evidence
+                            .pricing_source_url
+                            .clone()
+                            .unwrap_or_else(|| PRICING_SOURCE_URL.to_string()),
+                    })
+                }
                 _ => None,
             }
         } else {
@@ -400,6 +417,7 @@ fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> O
     let delta = evidence.delta?;
     let status_code = evidence.status_code?;
     let created_at_ms = evidence.event_completed_at_ms?;
+    let pricing_tier = resolved_pricing_tier(evidence, &model, delta, &cost);
     Some(UsageFact {
         evidence_id: evidence.evidence_id.clone(),
         request_id,
@@ -431,10 +449,7 @@ fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> O
         source_priority: evidence.source_priority,
         usage_confidence: evidence.usage_confidence.clone(),
         pricing_model: evidence.pricing_model.clone().unwrap_or(model),
-        pricing_tier: evidence
-            .pricing_tier
-            .clone()
-            .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string()),
+        pricing_tier,
         pricing_source_url: evidence
             .pricing_source_url
             .clone()
@@ -442,7 +457,26 @@ fn usage_fact_from_evidence(evidence: &UsageEvidence, cost: CalculatedCost) -> O
     })
 }
 
-#[derive(Default)]
+fn resolved_pricing_tier(
+    evidence: &UsageEvidence,
+    model: &str,
+    delta: UsageCounts,
+    cost: &CalculatedCost,
+) -> String {
+    if !cost.priced
+        && normalize_model(model).starts_with("gpt-5.6")
+        && delta.input_tokens >= 272_000
+    {
+        PRICING_TIER_UNPRICED_LONG_CONTEXT.to_string()
+    } else {
+        evidence
+            .pricing_tier
+            .clone()
+            .unwrap_or_else(|| PRICING_TIER_STANDARD_SHORT_CONTEXT.to_string())
+    }
+}
+
+#[derive(Clone, Default)]
 struct EvidenceDecisionCounts {
     accepted: u64,
     candidate: u64,
@@ -489,6 +523,7 @@ impl Default for UsageDedupeEngine {
     }
 }
 
+#[derive(Clone)]
 struct UsageLoadResult {
     source_signature: String,
     cache_hit: bool,
@@ -497,6 +532,30 @@ struct UsageLoadResult {
     evidence: Vec<UsageEvidence>,
     decisions: EvidenceDecisionCounts,
     ccswitch_manifest: Option<CcSwitchImportManifest>,
+    session_checkpoints: Vec<SessionCheckpointRecord>,
+    incremental: bool,
+    fallback_reason: Option<String>,
+    work_lines: u64,
+}
+
+#[derive(Clone)]
+struct SessionCheckpointRecord {
+    path: String,
+    committed_offset: u64,
+    line_count: u64,
+    boundary_hash: String,
+    parser_state_json: String,
+    global_signature: String,
+}
+
+#[derive(Clone, Default)]
+struct IncrementalSyncState {
+    checkpoints: Vec<SessionCheckpointRecord>,
+    request_ids: HashMap<String, String>,
+    fingerprints: HashMap<String, String>,
+    exclusions: OpenAiUsageExclusions,
+    attribution_since_ms: Option<u64>,
+    ccswitch_checkpoint: Option<CcSwitchCheckpoint>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -600,7 +659,42 @@ pub fn load_openai_usage_summary(
         &resolved.resolver,
         &resolved.preferred_account_labels,
     );
+    let summary = apply_sql_summary_totals(&conn, &query, summary)?;
     attach_layer_summaries(&conn, &query, summary, &resolved.resolver)
+}
+
+/// Publishes a catalog produced by the official-document adapter. This is deliberately
+/// separate from dashboard reads: callers perform network I/O and HTML parsing off the
+/// Usage critical path, then hand this function one complete candidate for validation.
+pub fn publish_openai_pricing_catalog(
+    codex_home: Option<&Path>,
+    candidate_json: &[u8],
+) -> AppResult<String> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let candidate: pricing::PricingCatalog =
+        serde_json::from_slice(candidate_json).map_err(|error| {
+            AppError::new(
+                "PRICING_CATALOG_PARSE_FAILED",
+                format!("Failed to parse pricing catalog: {error}"),
+            )
+        })?;
+    let version = candidate.catalog_hash.clone();
+    pricing::publish_validated(&get_backup_root(Some(&codex_home)), &candidate)?;
+    Ok(version)
+}
+
+/// Refreshes the LKG pricing catalog from OpenAI's official pricing page.
+/// Callers must run this off the dashboard read path.
+pub fn refresh_openai_pricing_catalog(
+    codex_home: Option<&Path>,
+) -> AppResult<(String, usize, bool)> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let result = pricing::update_from_official(&get_backup_root(Some(&codex_home)))?;
+    Ok((
+        result.catalog_hash,
+        result.model_count,
+        result.status == pricing::UpdateStatus::NotModified,
+    ))
 }
 
 pub fn load_openai_usage_dashboard(
@@ -613,11 +707,48 @@ pub fn load_openai_usage_dashboard(
     let query = query.unwrap_or_default();
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
+    if matches!(
+        normalized_usage_scope(&query),
+        SCOPE_STRICT | SCOPE_LEGACY | SCOPE_COMBINED_ATTRIBUTED
+    ) && query
+        .account_group_key
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        let account_query = without_account_group_filter(&query);
+        let model_query = without_model_filter(&query);
+        if let (Some(account_groups), Some(model_groups), Some(summary_groups), Some(logs)) = (
+            query::canonical_groups(&conn, &account_query)?,
+            query::canonical_groups(&conn, &model_query)?,
+            query::canonical_groups(&conn, &query)?,
+            query::canonical_log_page(&conn, &query, page, page_size)?,
+        ) {
+            let account_summary =
+                build_summary_from_sql_groups(new_usage_summary(&account_query), account_groups)
+                    .accounts;
+            let model_options =
+                build_summary_from_sql_groups(new_usage_summary(&model_query), model_groups).models;
+            let summary = build_summary_from_sql_groups(summary, summary_groups);
+            let summary = attach_layer_summaries_sql(&conn, &query, summary)?;
+            let trends = build_trends_sql(&conn, &query, &[])?;
+            let data_sources = build_data_source_summaries_sql(&conn, &query, &[])?;
+            let reconciliation = load_ccswitch_reconciliation(&conn, &query)?;
+            return Ok(OpenAiUsageDashboard {
+                summary,
+                account_summary,
+                model_options,
+                trends,
+                logs,
+                data_sources,
+                reconciliation,
+            });
+        }
+    }
     let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
     let facts = &resolved.facts;
     let account_query = without_account_group_filter(&query);
     let account_facts = load_usage_facts_with_resolver(&conn, &account_query, &resolved.resolver)?;
-    let account_summary = build_summary_from_facts_with_resolver(
+    let mut account_summary = build_summary_from_facts_with_resolver(
         new_usage_summary(&account_query),
         &account_facts,
         &account_query,
@@ -625,9 +756,13 @@ pub fn load_openai_usage_dashboard(
         &resolved.preferred_account_labels,
     )
     .accounts;
+    if let Some(groups) = query::canonical_groups(&conn, &account_query)? {
+        account_summary =
+            build_summary_from_sql_groups(new_usage_summary(&account_query), groups).accounts;
+    }
     let model_query = without_model_filter(&query);
     let model_facts = load_usage_facts_with_resolver(&conn, &model_query, &resolved.resolver)?;
-    let model_options = build_summary_from_facts_with_resolver(
+    let mut model_options = build_summary_from_facts_with_resolver(
         new_usage_summary(&model_query),
         &model_facts,
         &model_query,
@@ -635,27 +770,33 @@ pub fn load_openai_usage_dashboard(
         &resolved.preferred_account_labels,
     )
     .models;
-    let summary = attach_layer_summaries(
+    if let Some(groups) = query::canonical_groups(&conn, &model_query)? {
+        model_options =
+            build_summary_from_sql_groups(new_usage_summary(&model_query), groups).models;
+    }
+    let mut summary = build_summary_from_facts_with_resolver(
+        summary,
+        facts,
+        &query,
+        &resolved.resolver,
+        &resolved.preferred_account_labels,
+    );
+    if let Some(groups) = query::canonical_groups(&conn, &query)? {
+        summary = build_summary_from_sql_groups(new_usage_summary(&query), groups);
+    }
+    let summary = apply_sql_summary_totals(&conn, &query, summary)?;
+    let summary = attach_layer_summaries(&conn, &query, summary, &resolved.resolver)?;
+    let trends = build_trends_sql(&conn, &query, facts)?;
+    let logs = build_request_log_page_sql(
         &conn,
         &query,
-        build_summary_from_facts_with_resolver(
-            summary,
-            facts,
-            &query,
-            &resolved.resolver,
-            &resolved.preferred_account_labels,
-        ),
-        &resolved.resolver,
-    )?;
-    let trends = build_trends(facts, &query);
-    let logs = build_request_log_page(
         facts,
         page,
         page_size,
         &resolved.resolver,
         &resolved.preferred_account_labels,
-    );
-    let data_sources = build_data_source_summaries(facts);
+    )?;
+    let data_sources = build_data_source_summaries_sql(&conn, &query, facts)?;
     let reconciliation = load_ccswitch_reconciliation(&conn, &query)?;
     Ok(OpenAiUsageDashboard {
         summary,
@@ -697,6 +838,7 @@ fn load_ccswitch_reconciliation(
             status: row.get(0)?, error_code: row.get(1)?, source_signature: row.get(2)?,
             cutoff_ms: row.get::<_, Option<i64>>(3)?.map(u64_from_i64), source_rows: u64_from_i64(row.get(4)?),
             source_tokens: OpenAiUsageTokenTotals { input_tokens: u64_from_i64(row.get(5)?), cached_input_tokens: u64_from_i64(row.get(6)?), output_tokens: u64_from_i64(row.get(7)?), reasoning_output_tokens: u64_from_i64(row.get(8)?), real_total_tokens: u64_from_i64(row.get(9)?) },
+            checkpoint: None,
         }),
     ).optional().map_err(|error| AppError::new("OPENAI_USAGE_CCSWITCH_MANIFEST_QUERY_FAILED", format!("Failed to read cc-switch import manifest: {error}")))?;
     let Some(manifest) = manifest else {
@@ -878,7 +1020,7 @@ fn new_usage_summary(query: &OpenAiUsageQuery) -> OpenAiUsageSummary {
         generated_at_ms: current_time_ms(),
         pricing_source: PRICING_SOURCE.to_string(),
         pricing_source_url: PRICING_SOURCE_URL.to_string(),
-        pricing_checked_at: PRICING_CHECKED_AT.to_string(),
+        pricing_checked_at: pricing_checked_at(),
         scope: normalized_usage_scope(query).to_string(),
         range_start_ms: query.start_date.and_then(seconds_to_ms),
         range_end_ms: query.end_date.and_then(end_seconds_to_ms),
@@ -1104,6 +1246,170 @@ fn build_summary_from_facts_with_resolver(
     summary
 }
 
+fn apply_sql_summary_totals(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    mut summary: OpenAiUsageSummary,
+) -> AppResult<OpenAiUsageSummary> {
+    if query
+        .account_group_key
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || matches!(
+            normalized_usage_scope(query),
+            SCOPE_CANDIDATE | SCOPE_EXCLUDED
+        )
+    {
+        return Ok(summary);
+    }
+    let aggregate = query::aggregate(conn, query)?;
+    summary.total_requests = aggregate.requests;
+    summary.tokens = aggregate.tokens;
+    summary.cost = aggregate.cost;
+    summary.cache_hit_rate = cache_hit_rate(&summary.tokens);
+    Ok(summary)
+}
+
+fn build_summary_from_sql_groups(
+    mut summary: OpenAiUsageSummary,
+    groups: Vec<query::SqlCanonicalGroup>,
+) -> OpenAiUsageSummary {
+    let mut accounts = BTreeMap::<String, AccountAggregate>::new();
+    let mut global_models = BTreeMap::<String, ModelAggregate>::new();
+    for row in groups {
+        let account = accounts
+            .entry(row.canonical_key.clone())
+            .or_insert_with(|| AccountAggregate {
+                profile: row.profile.clone(),
+                account_group_key: row.canonical_key.clone(),
+                account_identity_key: row.account_identity_key.clone(),
+                legacy_account_key: row.legacy_account_key.clone(),
+                account_label: row.preferred_label.clone(),
+                official_source: row.official_source.clone(),
+                ledger_layer: row.ledger_layer.clone(),
+                attribution_kind: row.attribution_kind.clone(),
+                attribution_window_id: row.attribution_window_id.clone(),
+                ..AccountAggregate::default()
+            });
+        account.profiles.insert(row.profile.clone());
+        if account.official_source != row.official_source {
+            account.official_source = "Multiple OpenAI sources".into();
+        }
+        if account.ledger_layer != row.ledger_layer {
+            account.ledger_layer = LEDGER_LAYER_MIXED_ATTRIBUTED.into();
+        }
+        if account.attribution_kind != row.attribution_kind {
+            account.attribution_kind = ATTRIBUTION_KIND_MIXED_ACCOUNT.into();
+        }
+        if account.attribution_window_id != row.attribution_window_id {
+            account.attribution_window_id = None;
+        }
+        add_aggregate(&mut account.aggregate, &sql_aggregate(&row.aggregate));
+        add_aggregate(
+            account
+                .attribution_breakdown
+                .entry(row.ledger_layer.clone())
+                .or_default(),
+            &sql_aggregate(&row.aggregate),
+        );
+        fold_sql_model(account.models.entry(row.model.clone()).or_default(), &row);
+        fold_sql_model(global_models.entry(row.model.clone()).or_default(), &row);
+    }
+    let total = total_account_aggregate(&accounts);
+    summary.total_requests = total.requests;
+    summary.tokens = total.tokens;
+    summary.cost = total.cost;
+    summary.cache_hit_rate = cache_hit_rate(&summary.tokens);
+    summary.accounts = accounts.into_values().map(account_to_summary).collect();
+    summary.models = models_to_summary(global_models);
+    summary
+}
+
+fn sql_aggregate(value: &query::SqlAggregate) -> Aggregate {
+    Aggregate {
+        requests: value.requests,
+        tokens: value.tokens.clone(),
+        cost: value.cost.clone(),
+    }
+}
+
+fn fold_sql_model(model: &mut ModelAggregate, row: &query::SqlCanonicalGroup) {
+    add_aggregate(&mut model.aggregate, &sql_aggregate(&row.aggregate));
+    insert_optional_value(&mut model.requested_models, row.requested_model.as_ref());
+    insert_optional_value(&mut model.pricing_models, row.pricing_model.as_ref());
+    insert_optional_value(&mut model.reasoning_efforts, row.reasoning_effort.as_ref());
+    insert_optional_value(&mut model.verbosities, row.verbosity.as_ref());
+    insert_optional_value(&mut model.pricing_tiers, row.pricing_tier.as_ref());
+    insert_optional_value(
+        &mut model.pricing_source_urls,
+        row.pricing_source_url.as_ref(),
+    );
+    model.priced |= row.priced;
+    if row.pricing_note.is_some() {
+        model.pricing_note = row.pricing_note.clone();
+    }
+}
+
+fn build_trends_sql(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    fallback: &[UsageFact],
+) -> AppResult<Vec<OpenAiUsageTrendPoint>> {
+    if matches!(
+        normalized_usage_scope(query),
+        SCOPE_CANDIDATE | SCOPE_EXCLUDED
+    ) {
+        return Ok(build_trends(fallback, query));
+    }
+    let now_sec = i64::try_from(current_time_ms() / 1000).unwrap_or_default();
+    if query.start_date.is_none() && query.end_date.is_none() {
+        let bucket_start_ms = local_hour_bucket_ms(current_time_ms());
+        let aggregate = query::aggregate(conn, query)?;
+        return Ok(vec![OpenAiUsageTrendPoint {
+            date: format_bucket_date(bucket_start_ms, true),
+            bucket_start_ms,
+            request_count: aggregate.requests,
+            tokens: aggregate.tokens,
+            cost: aggregate.cost,
+        }]);
+    }
+    let end_sec = query.end_date.unwrap_or(now_sec);
+    let start_sec = query
+        .start_date
+        .unwrap_or(end_sec.saturating_sub(24 * 60 * 60));
+    let (Some(start_ms), Some(end_ms)) = (seconds_to_ms(start_sec), end_seconds_to_ms(end_sec))
+    else {
+        return Ok(Vec::new());
+    };
+    if start_ms > end_ms {
+        return Ok(Vec::new());
+    }
+    let hourly = end_sec.saturating_sub(start_sec) <= 24 * 60 * 60;
+    let starts = trend_bucket_starts(start_ms, end_ms, hourly);
+    let mut result = Vec::with_capacity(starts.len());
+    for (index, bucket_start_ms) in starts.iter().copied().enumerate() {
+        let bucket_end = starts
+            .get(index + 1)
+            .copied()
+            .unwrap_or(end_ms.saturating_add(1))
+            .saturating_sub(1)
+            .min(end_ms);
+        let Some(aggregate) =
+            query::aggregate_between(conn, query, bucket_start_ms.max(start_ms), bucket_end)?
+        else {
+            return Ok(build_trends(fallback, query));
+        };
+        result.push(OpenAiUsageTrendPoint {
+            date: format_bucket_date(bucket_start_ms, hourly),
+            bucket_start_ms,
+            request_count: aggregate.requests,
+            tokens: aggregate.tokens,
+            cost: aggregate.cost,
+        });
+    }
+    Ok(result)
+}
+
 pub fn load_openai_usage_trends(
     codex_home: Option<&Path>,
     query: Option<OpenAiUsageQuery>,
@@ -1113,7 +1419,7 @@ pub fn load_openai_usage_trends(
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
     let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
-    Ok(build_trends(&resolved.facts, &query))
+    build_trends_sql(&conn, &query, &resolved.facts)
 }
 
 pub fn load_openai_usage_request_logs(
@@ -1127,13 +1433,15 @@ pub fn load_openai_usage_request_logs(
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
     let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
-    Ok(build_request_log_page(
+    build_request_log_page_sql(
+        &conn,
+        &query,
         &resolved.facts,
         page,
         page_size,
         &resolved.resolver,
         &resolved.preferred_account_labels,
-    ))
+    )
 }
 
 pub fn load_openai_usage_request_detail(
@@ -1161,7 +1469,7 @@ pub fn load_openai_usage_data_sources(
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
     let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
-    Ok(build_data_source_summaries(&resolved.facts))
+    build_data_source_summaries_sql(&conn, &query, &resolved.facts)
 }
 
 fn build_request_log_page(
@@ -1200,6 +1508,48 @@ fn build_request_log_page(
     }
 }
 
+fn build_request_log_page_sql(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    facts: &[UsageFact],
+    page: u32,
+    page_size: u32,
+    resolver: &identity::CanonicalAccountResolver,
+    preferred_account_labels: &BTreeMap<String, String>,
+) -> AppResult<OpenAiUsageRequestLogPage> {
+    let Some(key_page) = query::log_key_page(conn, query, page, page_size)? else {
+        return Ok(build_request_log_page(
+            facts,
+            page,
+            page_size,
+            resolver,
+            preferred_account_labels,
+        ));
+    };
+    let facts_by_evidence = facts
+        .iter()
+        .map(|fact| (fact.evidence_id.as_str(), fact))
+        .collect::<HashMap<_, _>>();
+    let data = key_page
+        .evidence_ids
+        .iter()
+        .filter_map(|evidence_id| facts_by_evidence.get(evidence_id.as_str()))
+        .map(|fact| fact_to_log(fact, resolver, preferred_account_labels))
+        .collect::<Vec<_>>();
+    if data.len() != key_page.evidence_ids.len() {
+        return Err(AppError::new(
+            "OPENAI_USAGE_SQL_PAGE_DIVERGED",
+            "Bounded SQL log page did not match the resolved usage fact set",
+        ));
+    }
+    Ok(OpenAiUsageRequestLogPage {
+        data,
+        total: key_page.total,
+        page: key_page.page,
+        page_size: key_page.page_size,
+    })
+}
+
 fn build_data_source_summaries(facts: &[UsageFact]) -> Vec<OpenAiUsageDataSourceSummary> {
     let mut sources: BTreeMap<String, Aggregate> = BTreeMap::new();
     for fact in facts {
@@ -1217,6 +1567,34 @@ fn build_data_source_summaries(facts: &[UsageFact]) -> Vec<OpenAiUsageDataSource
             cost: aggregate.cost,
         })
         .collect()
+}
+
+fn build_data_source_summaries_sql(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    facts: &[UsageFact],
+) -> AppResult<Vec<OpenAiUsageDataSourceSummary>> {
+    if query
+        .account_group_key
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        || matches!(
+            normalized_usage_scope(query),
+            SCOPE_CANDIDATE | SCOPE_EXCLUDED
+        )
+    {
+        return Ok(build_data_source_summaries(facts));
+    }
+    query::group_by_data_source(conn, query).map(|groups| {
+        groups
+            .into_iter()
+            .map(|group| OpenAiUsageDataSourceSummary {
+                data_source: group.key,
+                request_count: group.aggregate.requests,
+                cost: group.aggregate.cost,
+            })
+            .collect()
+    })
 }
 
 fn finalize_usage_load(
@@ -1298,6 +1676,10 @@ fn finalize_usage_load(
         evidence,
         decisions,
         ccswitch_manifest: None,
+        session_checkpoints: Vec::new(),
+        incremental: false,
+        fallback_reason: None,
+        work_lines: 0,
     }
 }
 
@@ -1389,16 +1771,334 @@ fn sync_openai_usage_ledger(
     codex_home: &Path,
     summary: &mut OpenAiUsageSummary,
 ) -> AppResult<Connection> {
+    let snapshot = pricing::load_snapshot(&get_backup_root(Some(codex_home)), current_time_ms());
+    ACTIVE_PRICING.with(|active| *active.borrow_mut() = snapshot);
+    summary.pricing_checked_at = pricing_checked_at();
     let mut conn = open_usage_ledger(codex_home)?;
     ensure_usage_ledger_schema(&conn)?;
-    let usage = ingestion::ingest_usage(codex_home, summary, |source_signature, summary| {
-        apply_cached_usage_sync_state(&conn, source_signature, summary)
-    })?;
+    reprice_usage_ledger_if_needed(&mut conn)?;
+    let incremental_state = load_incremental_sync_state(&conn)?;
+    let usage = ingestion::ingest_usage(
+        codex_home,
+        summary,
+        incremental_state,
+        |source_signature, summary| apply_cached_usage_sync_state(&conn, source_signature, summary),
+    )?;
     if usage.cache_hit {
+        ensure_canonical_map_current(&mut conn, codex_home)?;
         return Ok(conn);
     }
-    rebuild_usage_events(&mut conn, &usage, &usage.source_signature, summary)?;
+    if usage.incremental {
+        if let Err(error) = append_usage_delta(&mut conn, &usage, summary) {
+            ingestion::discard_hot_cache(codex_home);
+            return Err(error);
+        }
+        ingestion::commit_hot_cache_after_append(codex_home, &usage, summary);
+    } else {
+        rebuild_usage_events(&mut conn, &usage, &usage.source_signature, summary)?;
+    }
+    rebuild_canonical_map(&mut conn, codex_home)?;
     Ok(conn)
+}
+
+fn reprice_usage_ledger_if_needed(conn: &mut Connection) -> AppResult<bool> {
+    let state: Option<(Option<String>, String)> = conn
+        .query_row(
+            "SELECT pricing_version, pricing_checked_at FROM openai_usage_sync_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_STATE_FAILED", error.to_string()))?;
+    let Some((stored_version, stored_checked_at)) = state else {
+        return Ok(false);
+    };
+    let version = current_pricing_version();
+    let checked_at = pricing_checked_at();
+    if stored_version.as_deref() == Some(version.as_str()) && stored_checked_at == checked_at {
+        return Ok(false);
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_TX_FAILED", error.to_string()))?;
+    if stored_version.as_deref() != Some(version.as_str()) {
+        reprice_cost_table(&tx, "openai_usage_events", "request_id")?;
+        reprice_cost_table(&tx, "openai_usage_facts", "evidence_id")?;
+        reprice_evidence_metadata(&tx)?;
+    } else {
+        for table in ["openai_usage_events", "openai_usage_facts"] {
+            tx.execute(
+                &format!("UPDATE {table} SET pricing_checked_at=?1 WHERE pricing_version=?2"),
+                params![checked_at, version],
+            )
+            .map_err(|error| {
+                AppError::new("OPENAI_USAGE_REPRICE_METADATA_FAILED", error.to_string())
+            })?;
+        }
+    }
+    tx.execute(
+        "UPDATE openai_usage_sync_state SET pricing_version=?1, pricing_checked_at=?2 WHERE id=1",
+        params![version, checked_at],
+    )
+    .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_STATE_FAILED", error.to_string()))?;
+    tx.execute(
+        "UPDATE openai_usage_canonical_map_state SET pricing_version=?1 WHERE id=1",
+        params![version],
+    )
+    .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_CANONICAL_FAILED", error.to_string()))?;
+    tx.commit()
+        .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_COMMIT_FAILED", error.to_string()))?;
+    Ok(true)
+}
+
+fn reprice_cost_table(tx: &Transaction<'_>, table: &str, key: &str) -> AppResult<()> {
+    let sql = format!(
+        "SELECT {key}, model, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens FROM {table}"
+    );
+    let rows = {
+        let mut stmt = tx.prepare(&sql).map_err(|error| {
+            AppError::new("OPENAI_USAGE_REPRICE_QUERY_FAILED", error.to_string())
+        })?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    u64_from_i64(row.get::<_, i64>(2)?),
+                    u64_from_i64(row.get::<_, i64>(3)?),
+                    u64_from_i64(row.get::<_, i64>(4)?),
+                    u64_from_i64(row.get::<_, i64>(5)?),
+                ))
+            })
+            .map_err(|error| {
+                AppError::new("OPENAI_USAGE_REPRICE_QUERY_FAILED", error.to_string())
+            })?;
+        mapped
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_ROW_FAILED", error.to_string()))?
+    };
+    let update = format!(
+        "UPDATE {table} SET input_cost_micros=?1,cached_input_cost_micros=?2,output_cost_micros=?3,total_cost_micros=?4,unpriced_tokens=?5,priced=?6,pricing_note=?7,pricing_source=?8,pricing_checked_at=?9,pricing_model=?10,pricing_tier=?11,pricing_source_url=?12,pricing_version=?13 WHERE {key}=?14"
+    );
+    let mut stmt = tx
+        .prepare(&update)
+        .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_PREPARE_FAILED", error.to_string()))?;
+    for (row_key, model, input, cached, output, reasoning) in rows {
+        let delta = UsageCounts {
+            input_tokens: input,
+            cached_input_tokens: cached,
+            output_tokens: output,
+            reasoning_output_tokens: reasoning,
+        };
+        let cost = calculate_cost(&model, delta);
+        let rate = pricing_for_model(&model);
+        let long_unpriced = rate
+            .as_ref()
+            .is_some_and(|rate| rate.canonical_id.starts_with("gpt-5.6-") && input >= 272_000);
+        stmt.execute(params![
+            i64_from_u64(cost.breakdown.input_cost_micros),
+            i64_from_u64(cost.breakdown.cached_input_cost_micros),
+            i64_from_u64(cost.breakdown.output_cost_micros),
+            i64_from_u64(cost.breakdown.total_cost_micros),
+            i64_from_u64(cost.breakdown.unpriced_tokens),
+            if cost.priced { 1_i64 } else { 0_i64 },
+            cost.pricing_note,
+            PRICING_SOURCE,
+            pricing_checked_at(),
+            rate.as_ref()
+                .map(|rate| rate.canonical_id.as_str())
+                .unwrap_or(&model),
+            if long_unpriced {
+                PRICING_TIER_UNPRICED_LONG_CONTEXT
+            } else {
+                PRICING_TIER_STANDARD_SHORT_CONTEXT
+            },
+            rate.as_ref().map(|_| PRICING_SOURCE_URL),
+            current_pricing_version(),
+            row_key,
+        ])
+        .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_UPDATE_FAILED", error.to_string()))?;
+    }
+    Ok(())
+}
+
+fn reprice_evidence_metadata(tx: &Transaction<'_>) -> AppResult<()> {
+    let rows = {
+        let mut stmt = tx
+            .prepare("SELECT evidence_id, COALESCE(model, request_model), COALESCE(input_tokens,0) FROM openai_usage_evidence WHERE COALESCE(model, request_model) IS NOT NULL")
+            .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_EVIDENCE_FAILED", error.to_string()))?;
+        let mapped = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    u64_from_i64(row.get::<_, i64>(2)?),
+                ))
+            })
+            .map_err(|error| {
+                AppError::new("OPENAI_USAGE_REPRICE_EVIDENCE_FAILED", error.to_string())
+            })?;
+        mapped.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            AppError::new("OPENAI_USAGE_REPRICE_EVIDENCE_FAILED", error.to_string())
+        })?
+    };
+    let mut stmt = tx.prepare("UPDATE openai_usage_evidence SET pricing_model=?1,pricing_tier=?2,pricing_source_url=?3 WHERE evidence_id=?4")
+        .map_err(|error| AppError::new("OPENAI_USAGE_REPRICE_EVIDENCE_FAILED", error.to_string()))?;
+    for (evidence_id, model, input) in rows {
+        let rate = pricing_for_model(&model);
+        let tier = if rate
+            .as_ref()
+            .is_some_and(|rate| rate.canonical_id.starts_with("gpt-5.6-") && input >= 272_000)
+        {
+            PRICING_TIER_UNPRICED_LONG_CONTEXT
+        } else {
+            PRICING_TIER_STANDARD_SHORT_CONTEXT
+        };
+        stmt.execute(params![
+            rate.as_ref()
+                .map(|rate| rate.canonical_id.as_str())
+                .unwrap_or(&model),
+            tier,
+            rate.as_ref().map(|_| PRICING_SOURCE_URL),
+            evidence_id
+        ])
+        .map_err(|error| {
+            AppError::new("OPENAI_USAGE_REPRICE_EVIDENCE_FAILED", error.to_string())
+        })?;
+    }
+    Ok(())
+}
+
+fn ensure_canonical_map_current(conn: &mut Connection, codex_home: &Path) -> AppResult<()> {
+    let expected_signature: Option<String> = conn
+        .query_row(
+            "SELECT source_signature FROM openai_usage_sync_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_STATE_FAILED", error.to_string()))?;
+    let current: Option<(String, String, String, String)> = conn
+        .query_row(
+            "SELECT mapping_version, source_signature, pricing_version, classifier_version FROM openai_usage_canonical_map_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_STATE_FAILED", error.to_string()))?;
+    let valid = current.is_some_and(|(version, signature, pricing, classifier)| {
+        version == CANONICAL_MAP_VERSION
+            && Some(signature) == expected_signature
+            && pricing == current_pricing_version()
+            && classifier == EVIDENCE_CLASSIFIER_VERSION
+    });
+    if valid {
+        Ok(())
+    } else {
+        rebuild_canonical_map(conn, codex_home)
+    }
+}
+
+fn rebuild_canonical_map(conn: &mut Connection, codex_home: &Path) -> AppResult<()> {
+    let query = query_with_scope(&OpenAiUsageQuery::default(), SCOPE_COMBINED_ATTRIBUTED);
+    let resolved = load_resolved_usage_facts(conn, codex_home, &query)?;
+    let source_signature: String = conn
+        .query_row(
+            "SELECT source_signature FROM openai_usage_sync_state WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_STATE_FAILED", error.to_string()))?;
+    let tx = conn
+        .transaction()
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_TX_FAILED", error.to_string()))?;
+    tx.execute("DELETE FROM openai_usage_canonical_map", [])
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_WRITE_FAILED", error.to_string()))?;
+    for fact in &resolved.facts {
+        let canonical_key = resolved.resolver.canonical_key_for_fact(fact);
+        let preferred_label = resolved.preferred_account_labels.get(&canonical_key);
+        tx.execute(
+            "INSERT INTO openai_usage_canonical_map (evidence_id, canonical_key, preferred_label) VALUES (?1, ?2, ?3)",
+            params![fact.evidence_id, canonical_key, preferred_label],
+        )
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_WRITE_FAILED", error.to_string()))?;
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO openai_usage_canonical_map_state (id, mapping_version, source_signature, pricing_version, classifier_version) VALUES (1, ?1, ?2, ?3, ?4)",
+        params![CANONICAL_MAP_VERSION, source_signature, current_pricing_version(), EVIDENCE_CLASSIFIER_VERSION],
+    )
+    .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_WRITE_FAILED", error.to_string()))?;
+    tx.commit()
+        .map_err(|error| AppError::new("OPENAI_USAGE_CANONICAL_COMMIT_FAILED", error.to_string()))
+}
+
+fn load_incremental_sync_state(conn: &Connection) -> AppResult<Option<IncrementalSyncState>> {
+    let mut checkpoints = Vec::new();
+    let mut stmt = conn.prepare("SELECT path, committed_offset, line_count, boundary_hash, parser_state_json, global_signature FROM openai_usage_session_checkpoints ORDER BY path")
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_QUERY_FAILED", e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(SessionCheckpointRecord {
+                path: row.get(0)?,
+                committed_offset: u64_from_i64(row.get(1)?),
+                line_count: u64_from_i64(row.get(2)?),
+                boundary_hash: row.get(3)?,
+                parser_state_json: row.get(4)?,
+                global_signature: row.get(5)?,
+            })
+        })
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_QUERY_FAILED", e.to_string()))?;
+    for row in rows {
+        checkpoints.push(
+            row.map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_ROW_FAILED", e.to_string()))?,
+        );
+    }
+    if checkpoints.is_empty() {
+        return Ok(None);
+    }
+    let mut state = IncrementalSyncState {
+        checkpoints,
+        ..Default::default()
+    };
+    let mut stmt = conn.prepare("SELECT request_id, fingerprint, evidence_id FROM openai_usage_evidence WHERE decision = 'accepted'")
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_DEDUPE_FAILED", e.to_string()))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_DEDUPE_FAILED", e.to_string()))?;
+    for row in rows {
+        let (request_id, fingerprint, evidence_id) =
+            row.map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_DEDUPE_FAILED", e.to_string()))?;
+        if let Some(value) = request_id {
+            state.request_ids.insert(value, evidence_id.clone());
+        }
+        if let Some(value) = fingerprint {
+            state.fingerprints.insert(value, evidence_id);
+        }
+    }
+    let mut summary = OpenAiUsageSummary::default();
+    if let Some(signature) = conn
+        .query_row(
+            "SELECT source_signature FROM openai_usage_sync_state WHERE id=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_STATE_FAILED", e.to_string()))?
+    {
+        let _ = apply_cached_usage_sync_state(conn, &signature, &mut summary)?;
+        state.exclusions = summary.exclusions;
+        state.attribution_since_ms = summary.attribution_since_ms;
+    }
+    state.ccswitch_checkpoint = conn.query_row("SELECT schema_hash,row_count,max_rowid,prefix_hash,max_created_at_sec FROM openai_usage_ccswitch_checkpoint WHERE id=1", [], |row| Ok(CcSwitchCheckpoint { schema_hash: row.get(0)?, row_count: u64_from_i64(row.get(1)?), max_rowid: row.get(2)?, prefix_hash: row.get(3)?, max_created_at_sec: row.get(4)? })).optional()
+        .map_err(|e| AppError::new("OPENAI_USAGE_CCSWITCH_CHECKPOINT_QUERY_FAILED", e.to_string()))?;
+    Ok(Some(state))
 }
 
 fn open_usage_ledger(codex_home: &Path) -> AppResult<Connection> {
@@ -1429,6 +2129,20 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
     drop_legacy_usage_events_table_if_needed(conn)?;
     conn.execute_batch(
         r#"
+        CREATE TABLE IF NOT EXISTS openai_usage_canonical_map (
+            evidence_id TEXT PRIMARY KEY,
+            canonical_key TEXT NOT NULL,
+            preferred_label TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_openai_usage_canonical_key
+            ON openai_usage_canonical_map(canonical_key);
+        CREATE TABLE IF NOT EXISTS openai_usage_canonical_map_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            mapping_version TEXT NOT NULL,
+            source_signature TEXT NOT NULL,
+            pricing_version TEXT NOT NULL,
+            classifier_version TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS openai_usage_events (
             request_id TEXT PRIMARY KEY,
             fingerprint TEXT NOT NULL UNIQUE,
@@ -1623,6 +2337,28 @@ fn ensure_usage_ledger_schema(conn: &Connection) -> AppResult<()> {
             output_tokens INTEGER NOT NULL,
             reasoning_output_tokens INTEGER NOT NULL,
             real_total_tokens INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS openai_usage_session_checkpoints (
+            path TEXT PRIMARY KEY,
+            committed_offset INTEGER NOT NULL,
+            line_count INTEGER NOT NULL,
+            boundary_hash TEXT NOT NULL,
+            parser_state_json TEXT NOT NULL,
+            global_signature TEXT NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS openai_usage_refresh_diagnostics (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            mode TEXT NOT NULL,
+            fallback_reason TEXT,
+            parsed_lines INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS openai_usage_ccswitch_checkpoint (
+            id INTEGER PRIMARY KEY CHECK (id=1), schema_hash TEXT NOT NULL,
+            row_count INTEGER NOT NULL, max_rowid INTEGER NOT NULL,
+            prefix_hash TEXT NOT NULL, updated_at_ms INTEGER NOT NULL,
+            max_created_at_sec INTEGER NOT NULL DEFAULT 0
         );
         "#,
     )
@@ -2129,14 +2865,14 @@ fn apply_cached_usage_sync_state(
             attribution_backfill_version,
         )) => {
             let current = stored_signature == source_signature
-                && stored_pricing_checked_at == PRICING_CHECKED_AT
+                && stored_pricing_checked_at == pricing_checked_at()
                 && parser_version.as_deref() == Some(EVIDENCE_PARSER_VERSION)
                 && classifier_version.as_deref() == Some(EVIDENCE_CLASSIFIER_VERSION)
                 && dedupe_version.as_deref() == Some(EVIDENCE_DEDUPE_VERSION)
                 && ledger_schema_version.as_deref() == Some(LEDGER_SCHEMA_VERSION)
                 && layer_classifier_version.as_deref() == Some(LAYER_CLASSIFIER_VERSION)
                 && attribution_backfill_version.as_deref() == Some(ATTRIBUTION_BACKFILL_VERSION)
-                && pricing_version.as_deref() == Some(PRICING_VERSION);
+                && pricing_version.as_deref() == Some(current_pricing_version().as_str());
             if current {
                 summary.attribution_since_ms =
                     attribution_since_ms.and_then(|value| u64::try_from(value).ok());
@@ -2243,13 +2979,25 @@ fn rebuild_usage_events(
                 format!("Failed to clear cc-switch import manifest: {error}"),
             )
         })?;
+    tx.execute("DELETE FROM openai_usage_session_checkpoints", [])
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_CLEAR_FAILED", e.to_string()))?;
+    tx.execute("DELETE FROM openai_usage_ccswitch_checkpoint", [])
+        .map_err(|e| {
+            AppError::new(
+                "OPENAI_USAGE_CCSWITCH_CHECKPOINT_CLEAR_FAILED",
+                e.to_string(),
+            )
+        })?;
     insert_usage_evidence(&tx, &usage.evidence)?;
     insert_usage_facts(&tx, &usage.facts)?;
+    upsert_session_checkpoints(&tx, &usage.session_checkpoints)?;
+    upsert_refresh_diagnostics(&tx, usage)?;
     if let Some(manifest) = usage.ccswitch_manifest.as_ref() {
         tx.execute(
             "INSERT INTO openai_usage_ccswitch_manifest (id, status, error_code, source_signature, cutoff_ms, source_rows, input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens, real_total_tokens) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![manifest.status, manifest.error_code, manifest.source_signature, manifest.cutoff_ms.map(i64_from_u64), i64_from_u64(manifest.source_rows), i64_from_u64(manifest.source_tokens.input_tokens), i64_from_u64(manifest.source_tokens.cached_input_tokens), i64_from_u64(manifest.source_tokens.output_tokens), i64_from_u64(manifest.source_tokens.reasoning_output_tokens), i64_from_u64(manifest.source_tokens.real_total_tokens)],
         ).map_err(|error| AppError::new("OPENAI_USAGE_CCSWITCH_MANIFEST_INSERT_FAILED", format!("Failed to persist cc-switch import manifest: {error}")))?;
+        upsert_ccswitch_checkpoint(&tx, manifest.checkpoint.as_ref())?;
     }
     {
         let mut stmt = tx
@@ -2313,11 +3061,11 @@ fn rebuild_usage_events(
                 if event.cost.priced { 1_i64 } else { 0_i64 },
                 event.cost.pricing_note.as_deref(),
                 PRICING_SOURCE,
-                PRICING_CHECKED_AT,
+                pricing_checked_at(),
                 &event.pricing_model,
                 &event.pricing_tier,
                 &event.pricing_source_url,
-                PRICING_VERSION,
+                current_pricing_version(),
                 i64::from(event.status_code),
                 i64_from_u64(event.created_at_ms),
                 &event.data_source,
@@ -2387,8 +3135,8 @@ fn rebuild_usage_events(
             LEDGER_SCHEMA_VERSION,
             LAYER_CLASSIFIER_VERSION,
             ATTRIBUTION_BACKFILL_VERSION,
-            PRICING_VERSION,
-            PRICING_CHECKED_AT,
+            current_pricing_version(),
+            pricing_checked_at(),
             i64_from_u64(current_time_ms()),
             summary.attribution_since_ms.map(i64_from_u64),
             i64_from_u64(usage.decisions.accepted),
@@ -2420,6 +3168,135 @@ fn rebuild_usage_events(
             format!("Failed to commit usage ledger rebuild: {error}"),
         )
     })?;
+    Ok(())
+}
+
+fn append_usage_delta(
+    conn: &mut Connection,
+    usage: &UsageLoadResult,
+    summary: &mut OpenAiUsageSummary,
+) -> AppResult<()> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| AppError::new("OPENAI_USAGE_INCREMENTAL_TRANSACTION_FAILED", e.to_string()))?;
+    insert_usage_evidence(&tx, &usage.evidence)?;
+    insert_usage_facts(&tx, &usage.facts)?;
+    insert_usage_events_delta(&tx, &usage.events)?;
+    upsert_session_checkpoints(&tx, &usage.session_checkpoints)?;
+    upsert_refresh_diagnostics(&tx, usage)?;
+    if let Some(manifest) = &usage.ccswitch_manifest {
+        tx.execute("UPDATE openai_usage_ccswitch_manifest SET status=?1,error_code=?2,source_signature=?3,cutoff_ms=?4,source_rows=?5,input_tokens=?6,cached_input_tokens=?7,output_tokens=?8,reasoning_output_tokens=?9,real_total_tokens=?10 WHERE id=1",
+            params![manifest.status,manifest.error_code,manifest.source_signature,manifest.cutoff_ms.map(i64_from_u64),i64_from_u64(manifest.source_rows),i64_from_u64(manifest.source_tokens.input_tokens),i64_from_u64(manifest.source_tokens.cached_input_tokens),i64_from_u64(manifest.source_tokens.output_tokens),i64_from_u64(manifest.source_tokens.reasoning_output_tokens),i64_from_u64(manifest.source_tokens.real_total_tokens)])
+            .map_err(|e| AppError::new("OPENAI_USAGE_CCSWITCH_INCREMENTAL_MANIFEST_FAILED", e.to_string()))?;
+        upsert_ccswitch_checkpoint(&tx, manifest.checkpoint.as_ref())?;
+    }
+    tx.execute(
+        r#"UPDATE openai_usage_sync_state SET
+        source_signature=?1, evidence_source_signature=?1, synced_at_ms=?2,
+        accepted_events=accepted_events+?3, candidate_events=candidate_events+?4,
+        rejected_events=rejected_events+?5, superseded_events=superseded_events+?6,
+        strict_proven_events=strict_proven_events+?7,
+        legacy_profile_attributed_events=legacy_profile_attributed_events+?8,
+        candidate_unattributed_events=candidate_unattributed_events+?9,
+        rejected_invalid_events=rejected_invalid_events+?10,
+        duplicate_events=?11, non_official_base_url=?12, unproven_history=?13,
+        unattributed=?14, missing_model=?15, invalid_delta=?16, malformed_lines=?17
+        WHERE id=1"#,
+        params![
+            usage.source_signature,
+            i64_from_u64(current_time_ms()),
+            i64_from_u64(usage.decisions.accepted),
+            i64_from_u64(usage.decisions.candidate),
+            i64_from_u64(usage.decisions.rejected),
+            i64_from_u64(usage.decisions.superseded),
+            i64_from_u64(usage.decisions.strict_proven),
+            i64_from_u64(usage.decisions.legacy_profile_attributed),
+            i64_from_u64(usage.decisions.candidate_unattributed),
+            i64_from_u64(usage.decisions.rejected_invalid),
+            i64_from_u64(summary.exclusions.duplicate_events),
+            i64_from_u64(summary.exclusions.non_official_base_url),
+            i64_from_u64(summary.exclusions.unproven_history),
+            i64_from_u64(summary.exclusions.unattributed),
+            i64_from_u64(summary.exclusions.missing_model),
+            i64_from_u64(summary.exclusions.invalid_delta),
+            i64_from_u64(summary.exclusions.malformed_lines)
+        ],
+    )
+    .map_err(|e| AppError::new("OPENAI_USAGE_INCREMENTAL_STATE_FAILED", e.to_string()))?;
+    #[cfg(test)]
+    if FAIL_NEXT_INCREMENTAL_COMMIT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        return Err(AppError::new(
+            "OPENAI_USAGE_INCREMENTAL_COMMIT_FAILED",
+            "injected commit failure",
+        ));
+    }
+    tx.commit()
+        .map_err(|e| AppError::new("OPENAI_USAGE_INCREMENTAL_COMMIT_FAILED", e.to_string()))
+}
+
+fn insert_usage_events_delta(tx: &Transaction<'_>, events: &[UsageEvent]) -> AppResult<()> {
+    let mut stmt = tx.prepare(r#"INSERT INTO openai_usage_events (
+        request_id,fingerprint,evidence_id,session_id,profile,account_label,account_identity_key,
+        official_source,model,request_model,model_reasoning_effort,model_verbosity,input_tokens,
+        cached_input_tokens,output_tokens,reasoning_output_tokens,real_total_tokens,input_cost_micros,
+        cached_input_cost_micros,output_cost_micros,total_cost_micros,unpriced_tokens,priced,pricing_note,
+        pricing_source,pricing_checked_at,pricing_model,pricing_tier,pricing_source_url,pricing_version,
+        status_code,created_at_ms,data_source,source_type,source_priority,usage_confidence,inserted_at_ms)
+        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36,?37)"#)
+        .map_err(|e| AppError::new("OPENAI_USAGE_INCREMENTAL_EVENT_PREPARE_FAILED", e.to_string()))?;
+    let inserted = i64_from_u64(current_time_ms());
+    for event in events {
+        stmt.execute(params![
+            event.request_id,
+            event.fingerprint,
+            event.evidence_id,
+            event.session_id,
+            event.profile,
+            event.account_label,
+            event.account_identity_key,
+            event.official_source,
+            event.model,
+            event.requested_model,
+            event.model_reasoning_effort,
+            event.model_verbosity,
+            i64_from_u64(event.delta.input_tokens),
+            i64_from_u64(event.delta.cached_input_tokens),
+            i64_from_u64(event.delta.output_tokens),
+            i64_from_u64(event.delta.reasoning_output_tokens),
+            i64_from_u64(
+                event
+                    .delta
+                    .input_tokens
+                    .saturating_add(event.delta.output_tokens)
+            ),
+            i64_from_u64(event.cost.breakdown.input_cost_micros),
+            i64_from_u64(event.cost.breakdown.cached_input_cost_micros),
+            i64_from_u64(event.cost.breakdown.output_cost_micros),
+            i64_from_u64(event.cost.breakdown.total_cost_micros),
+            i64_from_u64(event.cost.breakdown.unpriced_tokens),
+            if event.cost.priced { 1_i64 } else { 0_i64 },
+            event.cost.pricing_note,
+            PRICING_SOURCE,
+            pricing_checked_at(),
+            event.pricing_model,
+            event.pricing_tier,
+            event.pricing_source_url,
+            current_pricing_version(),
+            i64::from(event.status_code),
+            i64_from_u64(event.created_at_ms),
+            event.data_source,
+            event.source_type,
+            event.source_priority,
+            event.usage_confidence,
+            inserted
+        ])
+        .map_err(|e| {
+            AppError::new(
+                "OPENAI_USAGE_INCREMENTAL_EVENT_INSERT_FAILED",
+                format!("{}: {e}", event.request_id),
+            )
+        })?;
+    }
     Ok(())
 }
 
@@ -2529,6 +3406,47 @@ fn insert_usage_evidence(tx: &Transaction<'_>, evidence: &[UsageEvidence]) -> Ap
     Ok(())
 }
 
+fn upsert_session_checkpoints(
+    tx: &Transaction<'_>,
+    checkpoints: &[SessionCheckpointRecord],
+) -> AppResult<()> {
+    let mut stmt = tx.prepare("INSERT INTO openai_usage_session_checkpoints (path, committed_offset, line_count, boundary_hash, parser_state_json, global_signature, updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(path) DO UPDATE SET committed_offset=excluded.committed_offset,line_count=excluded.line_count,boundary_hash=excluded.boundary_hash,parser_state_json=excluded.parser_state_json,global_signature=excluded.global_signature,updated_at_ms=excluded.updated_at_ms")
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_PREPARE_FAILED", e.to_string()))?;
+    for checkpoint in checkpoints {
+        stmt.execute(params![
+            checkpoint.path,
+            i64_from_u64(checkpoint.committed_offset),
+            i64_from_u64(checkpoint.line_count),
+            checkpoint.boundary_hash,
+            checkpoint.parser_state_json,
+            checkpoint.global_signature,
+            i64_from_u64(current_time_ms())
+        ])
+        .map_err(|e| AppError::new("OPENAI_USAGE_CHECKPOINT_UPSERT_FAILED", e.to_string()))?;
+    }
+    Ok(())
+}
+
+fn upsert_ccswitch_checkpoint(
+    tx: &Transaction<'_>,
+    checkpoint: Option<&CcSwitchCheckpoint>,
+) -> AppResult<()> {
+    let Some(checkpoint) = checkpoint else {
+        return Ok(());
+    };
+    tx.execute("INSERT INTO openai_usage_ccswitch_checkpoint (id,schema_hash,row_count,max_rowid,prefix_hash,updated_at_ms,max_created_at_sec) VALUES (1,?1,?2,?3,?4,?5,?6) ON CONFLICT(id) DO UPDATE SET schema_hash=excluded.schema_hash,row_count=excluded.row_count,max_rowid=excluded.max_rowid,prefix_hash=excluded.prefix_hash,updated_at_ms=excluded.updated_at_ms,max_created_at_sec=excluded.max_created_at_sec",
+        params![checkpoint.schema_hash, i64_from_u64(checkpoint.row_count), checkpoint.max_rowid, checkpoint.prefix_hash, i64_from_u64(current_time_ms()), checkpoint.max_created_at_sec])
+        .map_err(|e| AppError::new("OPENAI_USAGE_CCSWITCH_CHECKPOINT_UPSERT_FAILED", e.to_string()))?;
+    Ok(())
+}
+
+fn upsert_refresh_diagnostics(tx: &Transaction<'_>, usage: &UsageLoadResult) -> AppResult<()> {
+    tx.execute("INSERT INTO openai_usage_refresh_diagnostics (id,mode,fallback_reason,parsed_lines,updated_at_ms) VALUES (1,?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET mode=excluded.mode,fallback_reason=excluded.fallback_reason,parsed_lines=excluded.parsed_lines,updated_at_ms=excluded.updated_at_ms",
+        params![if usage.incremental { "incremental" } else { "full" }, usage.fallback_reason, i64_from_u64(usage.work_lines), i64_from_u64(current_time_ms())])
+        .map_err(|e| AppError::new("OPENAI_USAGE_REFRESH_DIAGNOSTICS_FAILED", e.to_string()))?;
+    Ok(())
+}
+
 fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()> {
     let mut stmt = tx
         .prepare(
@@ -2599,11 +3517,11 @@ fn insert_usage_facts(tx: &Transaction<'_>, facts: &[UsageFact]) -> AppResult<()
             if fact.cost.priced { 1_i64 } else { 0_i64 },
             fact.cost.pricing_note.as_deref(),
             PRICING_SOURCE,
-            PRICING_CHECKED_AT,
+            pricing_checked_at(),
             &fact.pricing_model,
             &fact.pricing_tier,
             &fact.pricing_source_url,
-            PRICING_VERSION,
+            current_pricing_version(),
             i64::from(fact.status_code),
             i64_from_u64(fact.created_at_ms),
             &fact.data_source,
@@ -2913,6 +3831,9 @@ fn load_usage_facts(conn: &Connection, query: &OpenAiUsageQuery) -> AppResult<Ve
             )
         })?);
     }
+    DASHBOARD_MATERIALIZED_FACT_ROWS.with(|counter| {
+        counter.set(counter.get().saturating_add(facts.len() as u64));
+    });
     Ok(facts)
 }
 
@@ -3100,6 +4021,9 @@ fn load_evidence_usage_facts(
             )
         })?);
     }
+    DASHBOARD_MATERIALIZED_FACT_ROWS.with(|counter| {
+        counter.set(counter.get().saturating_add(facts.len() as u64));
+    });
     Ok(facts)
 }
 
@@ -3140,6 +4064,36 @@ fn attach_layer_summaries(
         resolver,
     )?);
     summary.layer_summaries = build_layer_summaries(&facts, query);
+    Ok(summary)
+}
+
+fn attach_layer_summaries_sql(
+    conn: &Connection,
+    query: &OpenAiUsageQuery,
+    mut summary: OpenAiUsageSummary,
+) -> AppResult<OpenAiUsageSummary> {
+    let mut layers = BTreeMap::<String, query::SqlAggregate>::new();
+    for ledger_layer in [
+        LEDGER_LAYER_STRICT_PROVEN,
+        LEDGER_LAYER_LEGACY_PROFILE_ATTRIBUTED,
+        LEDGER_LAYER_CANDIDATE_UNATTRIBUTED,
+    ] {
+        layers.entry(ledger_layer.to_string()).or_default();
+    }
+    for scope in [SCOPE_COMBINED_ATTRIBUTED, SCOPE_CANDIDATE] {
+        for group in query::group_by_ledger_layer(conn, &query_with_scope(query, scope))? {
+            layers.insert(group.key, group.aggregate);
+        }
+    }
+    summary.layer_summaries = layers
+        .into_iter()
+        .map(|(ledger_layer, aggregate)| OpenAiUsageLayerSummary {
+            ledger_layer,
+            request_count: aggregate.requests,
+            tokens: aggregate.tokens,
+            cost: aggregate.cost,
+        })
+        .collect();
     Ok(summary)
 }
 
@@ -3739,11 +4693,25 @@ fn attribution_for_event(
     AttributionLookup::CandidateUnattributed("no attribution record covered this event")
 }
 
-fn official_pricing_note(pricing: ModelPricing) -> String {
-    format!(
-        "{} ({}, checked {})",
-        PRICING_SOURCE, pricing.source_url, pricing.checked_at
-    )
+fn official_pricing_note(pricing: &pricing::ModelRate) -> String {
+    with_active_pricing(|snapshot| {
+        let freshness = if snapshot.bundled_seed {
+            "bundled seed; stale"
+        } else if snapshot.stale {
+            "last known good; stale"
+        } else {
+            "last known good"
+        };
+        let error = snapshot
+            .load_error
+            .as_deref()
+            .map(|value| format!("; local catalog rejected: {value}"))
+            .unwrap_or_default();
+        format!(
+            "{} ({}, {}; model {}{})",
+            PRICING_SOURCE, PRICING_SOURCE_URL, freshness, pricing.canonical_id, error
+        )
+    })
 }
 
 fn official_data_source() -> &'static str {
@@ -4661,12 +5629,25 @@ fn calculate_cost(model: &str, delta: UsageCounts) -> CalculatedCost {
             pricing_note: Some("No OpenAI price configured for this model".to_string()),
         };
     };
-    let input_cost = cost_micros(fresh_input, pricing.input_micros_per_million);
-    let cached_input_cost = cost_micros(
-        delta.cached_input_tokens,
-        pricing.cached_input_micros_per_million,
-    );
-    let output_cost = cost_micros(delta.output_tokens, pricing.output_micros_per_million);
+    if pricing.canonical_id.starts_with("gpt-5.6-") && delta.input_tokens >= 272_000 {
+        return CalculatedCost {
+            breakdown: OpenAiUsageCostBreakdown {
+                unpriced_tokens: delta.input_tokens.saturating_add(delta.output_tokens),
+                ..OpenAiUsageCostBreakdown::default()
+            },
+            priced: false,
+            pricing_note: Some(
+                "GPT-5.6 long-context rate is not explicitly present in the validated catalog"
+                    .to_string(),
+            ),
+        };
+    }
+    let input_rate = pricing.input_micros_per_million;
+    let cached_rate = pricing.cached_input_micros_per_million;
+    let output_rate = pricing.output_micros_per_million;
+    let input_cost = cost_micros(fresh_input, input_rate);
+    let cached_input_cost = cost_micros(delta.cached_input_tokens, cached_rate);
+    let output_cost = cost_micros(delta.output_tokens, output_rate);
     CalculatedCost {
         breakdown: OpenAiUsageCostBreakdown {
             input_cost_micros: input_cost,
@@ -4678,7 +5659,7 @@ fn calculate_cost(model: &str, delta: UsageCounts) -> CalculatedCost {
             unpriced_tokens: 0,
         },
         priced: true,
-        pricing_note: Some(official_pricing_note(pricing)),
+        pricing_note: Some(official_pricing_note(&pricing)),
     }
 }
 
@@ -4688,45 +5669,19 @@ fn cost_micros(tokens: u64, micros_per_million: u64) -> u64 {
     u64::try_from(rounded).unwrap_or(u64::MAX)
 }
 
-fn pricing_for_model(model: &str) -> Option<ModelPricing> {
-    let normalized = normalize_model(model);
-    MODEL_PRICES
-        .iter()
-        .copied()
-        .find(|entry| entry.model == normalized)
+fn pricing_for_model(model: &str) -> Option<pricing::ModelRate> {
+    with_active_pricing(|snapshot| snapshot.catalog.rate_for_model(model).cloned())
 }
 
 fn normalize_model(model: &str) -> String {
-    let mut value = model
+    model
         .trim()
         .to_ascii_lowercase()
         .replace('@', "-")
         .rsplit('/')
         .next()
         .unwrap_or("")
-        .to_string();
-    value = strip_date_suffix(&value);
-    value
-}
-
-fn strip_date_suffix(value: &str) -> String {
-    if value.len() > 11 {
-        let suffix = &value[value.len() - 11..];
-        if suffix.as_bytes()[0] == b'-'
-            && suffix[1..].chars().enumerate().all(|(idx, ch)| {
-                matches!(idx, 4 | 7) && ch == '-' || !matches!(idx, 4 | 7) && ch.is_ascii_digit()
-            })
-        {
-            return value[..value.len() - 11].to_string();
-        }
-    }
-    if value.len() > 9 {
-        let suffix = &value[value.len() - 9..];
-        if suffix.as_bytes()[0] == b'-' && suffix[1..].chars().all(|ch| ch.is_ascii_digit()) {
-            return value[..value.len() - 9].to_string();
-        }
-    }
-    value.to_string()
+        .to_string()
 }
 
 fn account_to_summary(account: AccountAggregate) -> OpenAiUsageAccountSummary {
@@ -5214,6 +6169,104 @@ mod tests {
         assert!(!cost.priced);
         assert_eq!(cost.breakdown.total_cost_micros, 0);
         assert_eq!(cost.breakdown.unpriced_tokens, 15);
+    }
+
+    #[test]
+    fn gpt_5_6_alias_prices_short_context_but_long_context_fails_unpriced() {
+        let short = calculate_cost(
+            "gpt-5.6",
+            UsageCounts {
+                input_tokens: 100_000,
+                cached_input_tokens: 20_000,
+                output_tokens: 10_000,
+                reasoning_output_tokens: 0,
+            },
+        );
+        assert!(short.priced);
+        assert_eq!(short.breakdown.total_cost_micros, 710_000);
+
+        let long = calculate_cost(
+            "gpt-5.6-terra",
+            UsageCounts {
+                input_tokens: 300_000,
+                cached_input_tokens: 0,
+                output_tokens: 100_000,
+                reasoning_output_tokens: 0,
+            },
+        );
+        assert!(!long.priced);
+        assert_eq!(long.breakdown.total_cost_micros, 0);
+        assert_eq!(long.breakdown.unpriced_tokens, 400_000);
+        assert!(long
+            .pricing_note
+            .as_deref()
+            .unwrap()
+            .contains("not explicitly present"));
+    }
+
+    #[test]
+    fn undeclared_dated_snapshot_remains_unpriced() {
+        let cost = calculate_cost(
+            "gpt-5.6-sol-2099-01-01",
+            UsageCounts {
+                input_tokens: 10,
+                output_tokens: 5,
+                ..UsageCounts::default()
+            },
+        );
+        assert!(!cost.priced);
+        assert_eq!(cost.breakdown.unpriced_tokens, 15);
+    }
+
+    #[test]
+    fn catalog_content_change_reprices_without_changing_token_evidence() {
+        let original = pricing::bundled_seed();
+        let mut changed = original.clone();
+        let rate = changed
+            .models
+            .iter_mut()
+            .find(|rate| rate.canonical_id == "gpt-5.3-codex")
+            .unwrap();
+        rate.input_micros_per_million = 2_000_000;
+        changed.catalog_hash = changed.content_hash().unwrap();
+        let tokens = UsageCounts {
+            input_tokens: 1_000_000,
+            cached_input_tokens: 0,
+            output_tokens: 0,
+            reasoning_output_tokens: 0,
+        };
+
+        ACTIVE_PRICING.with(|active| {
+            *active.borrow_mut() = pricing::CatalogSnapshot {
+                catalog: original.clone(),
+                stale: true,
+                bundled_seed: true,
+                load_error: None,
+            }
+        });
+        let before = calculate_cost("gpt-5.3-codex", tokens);
+        let old_version = current_pricing_version();
+        ACTIVE_PRICING.with(|active| {
+            *active.borrow_mut() = pricing::CatalogSnapshot {
+                catalog: changed,
+                stale: false,
+                bundled_seed: false,
+                load_error: None,
+            }
+        });
+        let after = calculate_cost("gpt-5.3-codex", tokens);
+
+        assert_eq!(before.breakdown.input_cost_micros, 1_750_000);
+        assert_eq!(after.breakdown.input_cost_micros, 2_000_000);
+        assert_ne!(old_version, current_pricing_version());
+        ACTIVE_PRICING.with(|active| {
+            *active.borrow_mut() = pricing::CatalogSnapshot {
+                catalog: original,
+                stale: true,
+                bundled_seed: true,
+                load_error: None,
+            }
+        });
     }
 
     #[test]
@@ -9332,7 +10385,7 @@ mod tests {
         assert_eq!(versions.0, EVIDENCE_PARSER_VERSION);
         assert_eq!(versions.1, EVIDENCE_CLASSIFIER_VERSION);
         assert_eq!(versions.2, EVIDENCE_DEDUPE_VERSION);
-        assert_eq!(versions.3, PRICING_VERSION);
+        assert_eq!(versions.3, current_pricing_version());
         assert_eq!(versions.4, LEDGER_SCHEMA_VERSION);
         assert_eq!(versions.5, LAYER_CLASSIFIER_VERSION);
         assert_eq!(versions.6, ATTRIBUTION_BACKFILL_VERSION);
@@ -9997,6 +11050,10 @@ mod tests {
                 error_code: Some("snapshot_failed".to_string()),
                 ..Default::default()
             }),
+            session_checkpoints: Vec::new(),
+            incremental: false,
+            fallback_reason: None,
+            work_lines: 0,
         };
         let mut failed_summary = OpenAiUsageSummary::default();
         rebuild_usage_events(
@@ -10378,12 +11435,15 @@ mod tests {
 
         assert_eq!(dashboard.summary.pricing_source_url, PRICING_SOURCE_URL);
         let model = &dashboard.summary.models[0];
-        assert_eq!(model.model, "gpt-5.3-codex");
+        assert_eq!(model.model, "gpt-5.3-codex-2026-07-08");
         assert_eq!(
             model.requested_model.as_deref(),
             Some("openai/gpt-5.3-codex-2026-07-08")
         );
-        assert_eq!(model.pricing_model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(
+            model.pricing_model.as_deref(),
+            Some("gpt-5.3-codex-2026-07-08")
+        );
         assert_eq!(model.model_reasoning_effort.as_deref(), Some("xhigh"));
         assert_eq!(model.model_verbosity.as_deref(), Some("high"));
         assert_eq!(
@@ -10396,12 +11456,15 @@ mod tests {
         );
 
         let log = &dashboard.logs.data[0];
-        assert_eq!(log.model, "gpt-5.3-codex");
+        assert_eq!(log.model, "gpt-5.3-codex-2026-07-08");
         assert_eq!(
             log.requested_model.as_deref(),
             Some("openai/gpt-5.3-codex-2026-07-08")
         );
-        assert_eq!(log.pricing_model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(
+            log.pricing_model.as_deref(),
+            Some("gpt-5.3-codex-2026-07-08")
+        );
         assert_eq!(log.model_reasoning_effort.as_deref(), Some("xhigh"));
         assert_eq!(log.model_verbosity.as_deref(), Some("high"));
         assert_eq!(log.usage_confidence, CONFIDENCE_HIGH);
@@ -10468,6 +11531,313 @@ mod tests {
         assert_eq!(summary.tokens.input_tokens, 500);
         assert_eq!(summary.tokens.cached_input_tokens, 50);
         assert_eq!(summary.tokens.output_tokens, 75);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn hot_refresh_parses_only_complete_appended_session_lines_and_conserves_tokens() {
+        let codex_home = temp_codex_home("hot-session-checkpoint");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let initial = [
+            r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-hot"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+        ].join("\n") + "\n";
+        write_session(&codex_home, &initial);
+        let first = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(first.summary.tokens.real_total_tokens, 110);
+
+        let path = codex_home.join("sessions/2999/01/01/rollout-test.jsonl");
+        ingestion::reset_session_lines_parsed(&codex_home);
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", r#"{"timestamp":"2999-01-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":25,"output_tokens":15,"reasoning_output_tokens":0}}}}"#).unwrap();
+        drop(file);
+        let appended = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(ingestion::session_lines_parsed(&codex_home), 1);
+        assert_eq!(appended.summary.total_requests, 2);
+        assert_eq!(appended.summary.tokens.real_total_tokens, 165);
+
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let unchanged = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(ingestion::session_lines_parsed(&codex_home), 0);
+        assert_eq!(unchanged.summary.tokens.real_total_tokens, 165);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn pricing_catalog_change_reprices_sqlite_without_reparsing_sessions() {
+        let codex_home = temp_codex_home("pricing-reprice-no-session-read");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let initial = [
+            r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-reprice"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}}}"#,
+        ]
+        .join("\n")
+            + "\n";
+        write_session(&codex_home, &initial);
+        let before = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+
+        let mut changed = pricing::bundled_seed();
+        changed
+            .models
+            .iter_mut()
+            .find(|rate| rate.canonical_id == "gpt-5.3-codex")
+            .unwrap()
+            .input_micros_per_million = 2_000_000;
+        changed.catalog_hash = changed.content_hash().unwrap();
+        pricing::publish_validated(&get_backup_root(Some(&codex_home)), &changed).unwrap();
+
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let after = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(ingestion::session_lines_parsed(&codex_home), 0);
+        assert_eq!(
+            after.summary.tokens.input_tokens,
+            before.summary.tokens.input_tokens
+        );
+        assert_eq!(
+            after.summary.tokens.cached_input_tokens,
+            before.summary.tokens.cached_input_tokens
+        );
+        assert_eq!(
+            after.summary.tokens.output_tokens,
+            before.summary.tokens.output_tokens
+        );
+        assert_eq!(
+            after.summary.tokens.real_total_tokens,
+            before.summary.tokens.real_total_tokens
+        );
+        assert_eq!(before.summary.cost.total_cost_micros, 1_750_000);
+        assert_eq!(after.summary.cost.total_cost_micros, 2_000_000);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let versions: (String, String) = conn
+            .query_row(
+                "SELECT s.pricing_version, c.pricing_version FROM openai_usage_sync_state s JOIN openai_usage_canonical_map_state c ON c.id=s.id WHERE s.id=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(versions.0, changed.catalog_hash);
+        assert_eq!(versions.1, changed.catalog_hash);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn partial_session_line_does_not_advance_hot_checkpoint_and_truncation_falls_back() {
+        let codex_home = temp_codex_home("hot-session-partial");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let initial = [
+            r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-partial"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":1,"reasoning_output_tokens":0}}}}"#,
+        ].join("\n") + "\n";
+        write_session(&codex_home, &initial);
+        load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let path = codex_home.join("sessions/2999/01/01/rollout-test.jsonl");
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        write!(file, "{{\"timestamp\":\"2999-01-01T00:00:03.000Z\"").unwrap();
+        drop(file);
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let partial = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(ingestion::session_lines_parsed(&codex_home), 0);
+        assert_eq!(partial.summary.tokens.real_total_tokens, 11);
+
+        fs::write(&path, &initial[..initial.len() / 2]).unwrap();
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let _ = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert!(ingestion::session_lines_parsed(&codex_home) > 0);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let diagnostic = conn.query_row("SELECT mode, fallback_reason, parsed_lines FROM openai_usage_refresh_diagnostics WHERE id=1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))).unwrap();
+        assert_eq!(diagnostic.0, "full");
+        assert!(diagnostic.1.is_some());
+        assert!(diagnostic.2 > 0);
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn hot_checkpoint_falls_back_when_global_inputs_change_or_new_evidence_conflicts() {
+        let codex_home = temp_codex_home("hot-session-fallbacks");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let initial = [
+            r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-fallback"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":1,"reasoning_output_tokens":0}}}}"#,
+        ].join("\n") + "\n";
+        write_session(&codex_home, &initial);
+        load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let path = codex_home.join("sessions/2999/01/01/rollout-test.jsonl");
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", r#"{"timestamp":"2999-01-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":20,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":0}}}}"#).unwrap();
+        drop(file);
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let conflict = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert!(
+            ingestion::session_lines_parsed(&codex_home) > 1,
+            "conflict must retry with the complete corpus"
+        );
+        assert_eq!(conflict.summary.tokens.real_total_tokens, 11);
+
+        let auth_path = codex_home.join("auth.json");
+        let mut auth = fs::read_to_string(&auth_path).unwrap();
+        auth.push('\n');
+        fs::write(auth_path, auth).unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", r#"{"timestamp":"2999-01-01T00:00:04.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"cached_input_tokens":4,"output_tokens":2,"reasoning_output_tokens":0}}}}"#).unwrap();
+        drop(file);
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let _ = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert!(
+            ingestion::session_lines_parsed(&codex_home) > 1,
+            "global-input changes must force a complete scan"
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn persisted_checkpoint_resumes_after_process_restart_without_rewriting_ledger() {
+        let codex_home = temp_codex_home("persisted-session-checkpoint");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        let initial = [
+            r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-persisted"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+            r#"{"timestamp":"2999-01-01T00:00:02.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":0}}}}"#,
+        ].join("\n") + "\n";
+        write_session(&codex_home, &initial);
+        load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        let ledger = get_openai_usage_ledger_path(Some(&codex_home));
+        let conn = Connection::open(&ledger).unwrap();
+        conn.execute_batch("CREATE TABLE delete_audit(table_name TEXT); CREATE TRIGGER audit_events_delete BEFORE DELETE ON openai_usage_events BEGIN INSERT INTO delete_audit VALUES('events'); END; CREATE TRIGGER audit_evidence_delete BEFORE DELETE ON openai_usage_evidence BEGIN INSERT INTO delete_audit VALUES('evidence'); END;").unwrap();
+        drop(conn);
+        ingestion::clear_hot_cache(&codex_home);
+
+        let path = codex_home.join("sessions/2999/01/01/rollout-test.jsonl");
+        use std::io::Write as _;
+        let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(file, "{}", r#"{"timestamp":"2999-01-01T00:00:03.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":150,"cached_input_tokens":25,"output_tokens":15,"reasoning_output_tokens":0}}}}"#).unwrap();
+        drop(file);
+        ingestion::reset_session_lines_parsed(&codex_home);
+        FAIL_NEXT_INCREMENTAL_COMMIT.store(true, std::sync::atomic::Ordering::SeqCst);
+        let failed = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap_err();
+        assert_eq!(failed.error_code, "OPENAI_USAGE_INCREMENTAL_COMMIT_FAILED");
+        let conn = Connection::open(&ledger).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM openai_usage_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM delete_audit", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(conn);
+        ingestion::reset_session_lines_parsed(&codex_home);
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), None, 1, 20).unwrap();
+        assert_eq!(ingestion::session_lines_parsed(&codex_home), 1);
+        assert_eq!(dashboard.summary.tokens.real_total_tokens, 165);
+        let conn = Connection::open(&ledger).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM delete_audit", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM openai_usage_events", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM openai_usage_session_checkpoints",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        let diagnostic = conn.query_row("SELECT mode, fallback_reason, parsed_lines FROM openai_usage_refresh_diagnostics WHERE id=1", [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))).unwrap();
+        assert_eq!(diagnostic, ("incremental".to_string(), None, 1));
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn common_thirty_day_dashboard_work_is_independent_of_history_size() {
+        let codex_home = temp_codex_home("dashboard-bounded-large-30d");
+        fs::create_dir_all(&codex_home).unwrap();
+        setup_profile(&codex_home, None);
+        write_session(
+            &codex_home,
+            &[
+                r#"{"timestamp":"2999-01-01T00:00:00.000Z","type":"session_meta","payload":{"id":"s-large-30d"}}"#,
+                r#"{"timestamp":"2999-01-01T00:00:01.000Z","type":"turn_context","payload":{"model":"gpt-5.3-codex"}}"#,
+                r#"{"timestamp":"2999-01-15T12:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":3,"reasoning_output_tokens":1}}}}"#,
+            ]
+            .join("\n"),
+        );
+        let query = OpenAiUsageQuery {
+            start_date: Some((ts("2999-01-01T00:00:00.000Z") / 1000) as i64),
+            end_date: Some((ts("2999-01-30T23:59:59.000Z") / 1000) as i64),
+            ..OpenAiUsageQuery::default()
+        };
+
+        let seeded =
+            load_openai_usage_dashboard(Some(&codex_home), Some(query.clone()), 1, 20).unwrap();
+        assert_eq!(seeded.summary.total_requests, 1);
+        let conn = Connection::open(get_openai_usage_ledger_path(Some(&codex_home))).unwrap();
+        let columns = {
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(openai_usage_facts)")
+                .unwrap();
+            stmt.query_map([], |row| row.get::<_, String>(1))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let select = columns
+            .iter()
+            .map(|column| match column.as_str() {
+                "evidence_id" => "'bulk-' || n".to_string(),
+                "request_id" => "'bulk-request-' || n".to_string(),
+                "fingerprint" => "'bulk-fingerprint-' || n".to_string(),
+                "created_at_ms" => "created_at_ms + n".to_string(),
+                "inserted_at_ms" => "inserted_at_ms + n".to_string(),
+                _ => column.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        conn.execute_batch(&format!(
+            "WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM seq WHERE n<2999)
+             INSERT INTO openai_usage_facts ({}) SELECT {} FROM openai_usage_facts, seq
+             WHERE evidence_id NOT LIKE 'bulk-%';
+             INSERT INTO openai_usage_canonical_map (evidence_id,canonical_key,preferred_label)
+             SELECT f.evidence_id,m.canonical_key,m.preferred_label
+             FROM openai_usage_facts f CROSS JOIN
+             (SELECT canonical_key,preferred_label FROM openai_usage_canonical_map LIMIT 1) m
+             WHERE f.evidence_id LIKE 'bulk-%';",
+            columns.join(","),
+            select
+        ))
+        .unwrap();
+        drop(conn);
+        reset_openai_usage_dashboard_work_counter();
+
+        let dashboard = load_openai_usage_dashboard(Some(&codex_home), Some(query), 1, 20).unwrap();
+
+        assert_eq!(dashboard.summary.total_requests, 3_000);
+        assert_eq!(dashboard.logs.data.len(), 20);
+        assert_eq!(openai_usage_dashboard_materialized_fact_rows(), 0);
         let _ = fs::remove_dir_all(&codex_home);
     }
 }

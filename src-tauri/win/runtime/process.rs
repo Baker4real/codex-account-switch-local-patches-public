@@ -1486,6 +1486,31 @@ pub fn reopen_codex_app_if_needed(
     Vec::new()
 }
 
+/// Confirm that Shell activation actually produced a process belonging to the
+/// managed Codex Store package. A successful `explorer.exe` spawn alone does
+/// not prove that the app was installed or activated.
+fn wait_for_codex_app_start_with_ops<O: AppProcessOps + ?Sized>(
+    ops: &mut O,
+    attempts: usize,
+) -> AppResult<()> {
+    for attempt in 0..attempts {
+        if !ops.snapshot()?.is_empty() {
+            return Ok(());
+        }
+        if attempt + 1 < attempts {
+            ops.sleep(Duration::from_millis(200));
+        }
+    }
+    Err(AppError::new(
+        "APP_RELAUNCH_FAILED",
+        "Codex launch was requested, but no managed Windows Store process appeared.",
+    ))
+}
+
+pub fn wait_for_codex_app_start() -> AppResult<()> {
+    wait_for_codex_app_start_with_ops(&mut SystemAppProcessOps, 25)
+}
+
 impl PlatformHooks for WindowsPlatformHooks {
     fn open_or_activate_codex_app(&self, codex_home: Option<&Path>) -> AppResult<String> {
         open_or_activate_codex_app(codex_home)
@@ -1571,7 +1596,7 @@ mod tests {
         looks_like_codex_version, parse_windows_store_processes, quit_codex_app_with_ops,
         quit_codex_app_with_ops_observed, redetect_runnable_codex_cli_paths,
         resolve_login_browser_app_server_launch, resolve_real_codex_cli,
-        resolve_windows_app_target, suggested_codex_cli_paths,
+        resolve_windows_app_target, suggested_codex_cli_paths, wait_for_codex_app_start_with_ops,
         where_codex_candidate_paths_with_timeout, windows_store_shell_target, AppExitObservation,
         AppLaunchTarget, AppProcessOps, InstallState, LoginBrowser, LoginBrowserLaunch,
         WindowsPlatformHooks, WindowsStoreProcess, WINDOWS_STORE_APP_ID,
@@ -2465,6 +2490,38 @@ mod tests {
 
     fn backend_process(process_id: u32) -> WindowsStoreProcess {
         WindowsStoreProcess::new("codex.exe (App)", process_id)
+    }
+
+    #[test]
+    fn app_start_wait_accepts_only_a_managed_package_snapshot() {
+        let mut ops = FakeAppProcessOps::new(vec![
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(vec![backend_process(42)]),
+        ]);
+
+        wait_for_codex_app_start_with_ops(&mut ops, 3).unwrap();
+        assert_eq!(ops.sleeps, 1);
+    }
+
+    #[test]
+    fn app_start_wait_times_out_after_bounded_empty_snapshots() {
+        let mut ops = FakeAppProcessOps::new(vec![
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(Vec::new()),
+            FakeSnapshot::Processes(Vec::new()),
+        ]);
+
+        let error = wait_for_codex_app_start_with_ops(&mut ops, 3).unwrap_err();
+        assert_eq!(error.error_code, "APP_RELAUNCH_FAILED");
+        assert_eq!(ops.sleeps, 2);
+    }
+
+    #[test]
+    fn app_start_wait_propagates_package_query_failure() {
+        let mut ops = FakeAppProcessOps::new(vec![FakeSnapshot::Error]);
+        let error = wait_for_codex_app_start_with_ops(&mut ops, 3).unwrap_err();
+        assert_eq!(error.error_code, "APP_PROCESS_QUERY_FAILED");
+        assert_eq!(ops.sleeps, 0);
     }
 
     #[test]

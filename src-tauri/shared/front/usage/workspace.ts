@@ -166,6 +166,7 @@ export function createUsageWorkspace(
   let model: string | null = null;
   let statusCode: number | null = null;
   let active = false;
+  let contextKnown = false;
   let refreshTimerId: unknown = null;
   let rangeLiveEndTimerId: unknown = null;
   let disposed = false;
@@ -383,12 +384,16 @@ export function createUsageWorkspace(
     options: { readonly forceNewInitial?: boolean } = {},
   ): Promise<void> {
     if (disposed) return;
+    if (contextKnown && !active) {
+      refreshOnActivate = true;
+      return;
+    }
     if (refreshRun !== null) {
+      const activeRequestReusable = activeAttempt !== null
+        && activeAttempt.serial === activeRequestSerial
+        && activeAttempt.intentKey === currentIntentKey();
       if (mode === "initial") {
-        const activeInitialReusable = activeRefreshMode === "initial"
-          && activeAttempt !== null
-          && activeAttempt.serial === activeRequestSerial
-          && activeAttempt.intentKey === currentIntentKey();
+        const activeInitialReusable = activeRefreshMode === "initial" && activeRequestReusable;
         const mustQueueInitial = options.forceNewInitial
           || !activeInitialReusable
           || queuedRefreshMode === "manual";
@@ -400,7 +405,10 @@ export function createUsageWorkspace(
         }
         await refreshRun;
       } else if (mode === "manual") {
-        if (queuedRefreshMode === null) {
+        if (activeRequestReusable) {
+          queuedRefreshMode = null;
+          state.refreshQueued = false;
+        } else if (queuedRefreshMode === null) {
           queuedRefreshMode = "manual";
           state.refreshQueued = true;
           if (active) notifyChange();
@@ -425,6 +433,7 @@ export function createUsageWorkspace(
       case "set-context":
         const activeChanged = active !== event.active;
         let shouldRefreshOnActivate = false;
+        contextKnown = true;
         active = event.active;
         state.locale = event.locale;
         if (!active) {

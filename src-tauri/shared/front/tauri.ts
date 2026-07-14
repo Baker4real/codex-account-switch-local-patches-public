@@ -706,6 +706,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
         return Promise.resolve(true) as Promise<T>;
       case "open_profile_folder":
       case "open_codex":
+      case "restart_codex":
       case "login_current_profile":
       case "login_profile":
       case "refresh_profile":
@@ -808,6 +809,10 @@ export function addProfile(folderName: string, openaiBaseUrl: string | null): Pr
 
 export function openCodex(): Promise<ActionResponse> {
   return invokeCommand<ActionResponse>("open_codex");
+}
+
+export function restartCodex(): Promise<ActionResponse> {
+  return invokeCommand<ActionResponse>("restart_codex");
 }
 
 export function loginCurrentProfile(): Promise<ActionResponse> {

@@ -77,6 +77,7 @@ export const elements = {
   controlDeckHeading: requiredElement<HTMLHeadingElement>("control-deck-heading"),
   addProfilesButton: requiredElement<HTMLButtonElement>("add-profiles-button"),
   openCodexButton: requiredElement<HTMLButtonElement>("open-codex-button"),
+  restartCodexButton: requiredElement<HTMLButtonElement>("restart-codex-button"),
   settingsGithubButton: requiredElement<HTMLButtonElement>("settings-github-button"),
   settingsCheckUpdateButton: requiredElement<HTMLButtonElement>("settings-check-update-button"),
   settingsUpdateUrlInput: requiredElement<HTMLInputElement>("settings-update-url-input"),
@@ -1183,6 +1184,7 @@ export function applyLocale(): void {
   elements.openCurrentFolderButton.textContent = t(state.locale, "openFolder");
   elements.addProfilesButton.textContent = t(state.locale, "addProfiles");
   elements.openCodexButton.textContent = t(state.locale, "openCodex");
+  elements.restartCodexButton.textContent = t(state.locale, "restartCodex");
   elements.starButton.textContent = t(state.locale, "star");
   elements.xiaohongshuButton.textContent = t(state.locale, "xiaohongshu");
   elements.previousPageButton.textContent = t(state.locale, "previous");

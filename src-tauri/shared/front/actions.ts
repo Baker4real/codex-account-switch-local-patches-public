@@ -30,6 +30,7 @@ import {
   getProfilesSnapshot,
   loginCurrentProfile,
   openCodex,
+  restartCodex,
   openContact,
   openReleases,
   openUrl,
@@ -541,6 +542,29 @@ async function handleOpenCodex(): Promise<void> {
     showToast(t(state.locale, "openedCodex"));
   } catch (error) {
     showToast(error instanceof Error ? error.message : t(state.locale, "failedToOpenCodex"), true);
+  }
+}
+
+let restartCodexInFlight = false;
+
+async function handleRestartCodex(): Promise<void> {
+  if (restartCodexInFlight) {
+    return;
+  }
+  restartCodexInFlight = true;
+  elements.restartCodexButton.disabled = true;
+  elements.restartCodexButton.setAttribute("aria-busy", "true");
+  elements.restartCodexButton.textContent = t(state.locale, "restartingCodex");
+  try {
+    await restartCodex();
+    showToast(t(state.locale, "restartedCodex"));
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : t(state.locale, "failedToRestartCodex"), true);
+  } finally {
+    restartCodexInFlight = false;
+    elements.restartCodexButton.disabled = false;
+    elements.restartCodexButton.removeAttribute("aria-busy");
+    elements.restartCodexButton.textContent = t(state.locale, "restartCodex");
   }
 }
 
@@ -1095,6 +1119,9 @@ export function bootstrap(): void {
   });
   elements.openCodexButton.addEventListener("click", () => {
     void handleOpenCodex();
+  });
+  elements.restartCodexButton.addEventListener("click", () => {
+    void handleRestartCodex();
   });
   elements.settingsGithubButton.addEventListener("click", () => {
     void handleOpenContact();

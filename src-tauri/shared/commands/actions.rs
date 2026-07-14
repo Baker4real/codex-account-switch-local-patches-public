@@ -18,6 +18,23 @@ pub fn open_codex() -> Result<ActionResponse, CommandError> {
 }
 
 #[tauri::command]
+pub async fn restart_codex() -> Result<ActionResponse, CommandError> {
+    let path = tauri::async_runtime::spawn_blocking(platform_runtime::actions::restart_codex_app)
+        .await
+        .map_err(|error| {
+            CommandError::new(
+                "APP_RESTART_TASK_FAILED",
+                format!("Restart task failed: {error}"),
+            )
+        })??;
+    Ok(ActionResponse {
+        ok: true,
+        message: "Restarted Codex.".to_string(),
+        path: Some(path),
+    })
+}
+
+#[tauri::command]
 pub fn login_current_profile() -> Result<ActionResponse, CommandError> {
     let path = platform_runtime::actions::login_current_profile()?;
     Ok(ActionResponse {

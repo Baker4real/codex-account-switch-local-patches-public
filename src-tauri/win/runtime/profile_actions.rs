@@ -43,6 +43,36 @@ pub fn open_codex_app() -> AppResult<String> {
     platform::open_or_activate_codex_app(None)
 }
 
+fn restart_after_verified_exit(
+    mut verify_exit: impl FnMut() -> AppResult<()>,
+    mut launch: impl FnMut() -> AppResult<String>,
+    mut verify_start: impl FnMut() -> AppResult<()>,
+) -> AppResult<String> {
+    verify_exit()?;
+    let path = launch().map_err(|error| AppError::new("APP_RELAUNCH_FAILED", error.message))?;
+    verify_start()?;
+    Ok(path)
+}
+
+/// Restart the managed Windows Store Codex app as one serialized lifecycle
+/// operation. The platform hook owns package-scoped discovery and shutdown;
+/// launching is attempted exactly once, and only after a verified stable exit.
+pub fn restart_codex_app() -> AppResult<String> {
+    let codex_home = get_codex_home();
+    let _lock = crate::shared::process_lock::acquire_process_lock(
+        Some(&codex_home),
+        "RESTART_BUSY",
+        "Another profile or Codex lifecycle operation is already in progress.",
+    )?;
+    let hooks = platform::current_hooks();
+    let mut observation = crate::platform::hooks::AppExitObservation::default();
+    restart_after_verified_exit(
+        || hooks.quit_codex_app_and_observe(&mut observation),
+        || hooks.open_or_activate_codex_app(Some(&codex_home)),
+        super::process::wait_for_codex_app_start,
+    )
+}
+
 pub fn login_profile(profile_name: &str) -> AppResult<String> {
     let codex_home = get_codex_home();
     let runtime_home = get_login_runtime_dir(Some(&codex_home));
@@ -356,7 +386,7 @@ pub fn open_xiaohongshu(app: &tauri::AppHandle) -> AppResult<String> {
 mod tests {
     use super::{
         add_profile, clear_profile_account, delete_profile, rename_profile_with_home,
-        update_profile_base_url,
+        restart_after_verified_exit, update_profile_base_url, AppError,
     };
     use crate::models::ProfileMetadata;
     use crate::windows::env_guard;
@@ -645,5 +675,84 @@ mod tests {
         } else {
             std::env::remove_var("CODEX_HOME");
         }
+    }
+
+    #[test]
+    fn restart_launches_exactly_once_after_verified_exit() {
+        let mut exits = 0;
+        let mut launches = 0;
+        let result = restart_after_verified_exit(
+            || {
+                exits += 1;
+                Ok(())
+            },
+            || {
+                launches += 1;
+                Ok("shell:AppsFolder\\OpenAI.Codex!App".to_string())
+            },
+            || Ok(()),
+        )
+        .unwrap();
+
+        assert_eq!(exits, 1);
+        assert_eq!(launches, 1);
+        assert!(result.starts_with("shell:AppsFolder"));
+    }
+
+    #[test]
+    fn restart_never_launches_when_verified_exit_fails() {
+        let mut launches = 0;
+        let error = restart_after_verified_exit(
+            || Err(AppError::new("APP_EXIT_FAILED", "still running")),
+            || {
+                launches += 1;
+                Ok("unexpected".to_string())
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.error_code, "APP_EXIT_FAILED");
+        assert_eq!(launches, 0);
+    }
+
+    #[test]
+    fn restart_reports_launch_failure_explicitly_without_retrying() {
+        let mut launches = 0;
+        let error = restart_after_verified_exit(
+            || Ok(()),
+            || {
+                launches += 1;
+                Err(AppError::new("OPEN_FAILED", "explorer spawn failed"))
+            },
+            || Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(launches, 1);
+        assert_eq!(error.error_code, "APP_RELAUNCH_FAILED");
+        assert_eq!(error.message, "explorer spawn failed");
+    }
+
+    #[test]
+    fn restart_reports_failure_when_managed_store_process_never_appears() {
+        let mut launches = 0;
+        let mut start_checks = 0;
+        let error = restart_after_verified_exit(
+            || Ok(()),
+            || {
+                launches += 1;
+                Ok("shell target".to_string())
+            },
+            || {
+                start_checks += 1;
+                Err(AppError::new("APP_RELAUNCH_FAILED", "not observed"))
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(launches, 1);
+        assert_eq!(start_checks, 1);
+        assert_eq!(error.error_code, "APP_RELAUNCH_FAILED");
     }
 }

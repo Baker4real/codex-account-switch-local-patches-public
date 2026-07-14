@@ -407,31 +407,38 @@ describe("UsageWorkspace", () => {
     expect(onError).toHaveBeenCalledWith(manualError);
   });
 
-  it("合并 busy manual 的有界队列 Promise，且 auto 立即跳过", async () => {
+  it("相同 intent 的 busy manual/auto 复用当前 Promise，不追加请求", async () => {
     const first = deferred<OpenAiUsageDashboard>();
-    const second = deferred<OpenAiUsageDashboard>();
     const loadDashboard = vi.fn()
-      .mockReturnValueOnce(first.promise)
-      .mockReturnValueOnce(second.promise);
+      .mockReturnValueOnce(first.promise);
     const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
     const running = workspace.dispatch({ type: "refresh", mode: "manual" });
-    let queuedSettled = false;
-    const queued = workspace.dispatch({ type: "refresh", mode: "manual" })
-      .then(() => { queuedSettled = true; });
+    let duplicateSettled = false;
     const duplicate = workspace.dispatch({ type: "refresh", mode: "manual" });
-    await workspace.dispatch({ type: "refresh", mode: "auto" });
+    const automatic = workspace.dispatch({ type: "refresh", mode: "auto" })
+      .then(() => { duplicateSettled = true; });
     await Promise.resolve();
-    expect(queuedSettled).toBe(false);
+    expect(duplicateSettled).toBe(false);
     expect(loadDashboard).toHaveBeenCalledTimes(1);
 
     first.resolve(emptyDashboard());
-    await vi.waitFor(() => expect(loadDashboard).toHaveBeenCalledTimes(2));
-    expect(queuedSettled).toBe(false);
-    second.resolve(emptyDashboard());
-    await Promise.all([running, queued, duplicate]);
+    await Promise.all([running, duplicate, automatic]);
 
-    expect(loadDashboard).toHaveBeenCalledTimes(2);
-    expect(queuedSettled).toBe(true);
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
+    expect(duplicateSettled).toBe(true);
+  });
+
+  it("route inactive 时 refresh 不读取，重新激活后只补一次 initial", async () => {
+    const loadDashboard = vi.fn().mockResolvedValue(emptyDashboard());
+    const workspace = createUsageWorkspace(fakeDependencies({ loadDashboard }));
+    await workspace.dispatch({ type: "set-context", active: false, locale: "zh-CN" });
+
+    await workspace.dispatch({ type: "refresh", mode: "manual" });
+    await workspace.dispatch({ type: "refresh", mode: "auto" });
+    expect(loadDashboard).not.toHaveBeenCalled();
+
+    await workspace.dispatch({ type: "set-context", active: true, locale: "zh-CN" });
+    expect(loadDashboard).toHaveBeenCalledTimes(1);
   });
 
   it("route inactive 吸收 queued manual，调用 Promise 结算且重新激活只补 initial", async () => {

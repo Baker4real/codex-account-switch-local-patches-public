@@ -36,6 +36,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             platform::setup_runtime()?;
+            tauri::async_runtime::spawn_blocking(|| {
+                let _ = crate::shared::openai_usage::refresh_openai_pricing_catalog(None);
+            });
             Ok(platform::install_windowing(app)?)
         })
         .invoke_handler(tauri::generate_handler![
@@ -50,6 +53,7 @@ pub fn run() {
             commands::usage::get_openai_usage_request_detail,
             commands::usage::get_openai_usage_data_sources,
             commands::actions::open_codex,
+            commands::actions::restart_codex,
             commands::actions::login_current_profile,
             commands::actions::login_profile,
             commands::actions::refresh_profile,
