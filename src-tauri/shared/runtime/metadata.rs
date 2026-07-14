@@ -741,6 +741,9 @@ pub fn sync_profile_quota_with_provenance(
 ) -> Result<ProfileMetadata, crate::errors::AppError> {
     update_profile_metadata(profile_name, codex_home, move |metadata| {
         if let Some(provenance) = provenance {
+            if let Some(credits) = quota.rate_limit_reset_credits.as_mut() {
+                credits.provenance = provenance.clone();
+            }
             quota.provenance = provenance;
         }
         metadata.quota = quota;

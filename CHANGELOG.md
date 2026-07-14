@@ -15,6 +15,7 @@
 - Windows 本地补丁登录现在改为显式 profile metadata 路由：`login_browser` 设置为 `edge` 的目标账号无论在哪个 profile 槽位都通过 `codex app-server` 打开用户正常 Edge 状态；profile `b` / `c` 不再自带 Chrome / Edge 强制规则。定向 Edge flow 仍不传 `--user-data-dir` / `--new-window`，并保留写入前账号身份校验。
 - 账号卡片和当前账号面板现在显示本地授权缓存状态：可观察到 refresh token 到期字段时显示到期时间；官方未提供 refresh token 到期时间时，根据 Codex 官方约 8 天 token bundle stale 规则提示“建议刷新”。UI 文案改为单行状态 chip，去掉“点刷新 / 点登录”等容易误解的内联动作文字。
 - 账号页 quota 读数现在显示来源与新鲜度：官方 ChatGPT API、Codex app-server fallback、本地 session 观测或未知来源。5 小时 / 周额度低于或等于 20% 时只显示低额度提示，不自动切换账号。
+- 修正账号卡片中的 5 小时 / 周额度错位、账号文本换行和窄窗口布局；额度窗口现在按服务端实际时长归位。可用额度重置卡会逐张显示北京时间的发放与到期时间；详情接口失败仍保留主 quota，未报告 additional 配额时不再显示误导性的空状态。
 - Windows 本地 MSVC 便携构建现在通过 `scripts/tauri-windows-msvc-build.mjs` 执行；脚本默认使用环境或系统 `rustup`，也可通过 `CODEX_SWITCH_RUSTUP_BIN`、`CODEX_SWITCH_CARGO_HOME`、`CODEX_SWITCH_RUSTUP_HOME`、`RUSTC` 或 `CARGO` 注入工具链，并在 `rustc -vV` 未报告 `x86_64-pc-windows-msvc` 时拒绝构建。
 - Windows 本地补丁构建新增 `npm run deploy:windows:remote-desktop` 远端桌面覆盖入口：先解析远端 `.lnk` 的真实目标，上传同一份 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll`，备份旧目标文件，停止远端进程并校验 SHA-256。
 - Login / refresh runtime 清理现在保留上游 `plugins` / `cache` / `sqlite` 共享行为，只 prune 隔离功能状态，拒绝不安全 prune 路径，并把 `_autosave` 保持为追加式 timestamp 授权快照。备份保留必须走显式 dry-run / apply 清理流程。

@@ -38,6 +38,21 @@ pub struct AdditionalQuotaWindow {
     pub is_spark: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct RateLimitResetCredit {
+    pub granted_at: Option<i64>,
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(default)]
+pub struct RateLimitResetCredits {
+    pub available_count: Option<u32>,
+    pub credits: Vec<RateLimitResetCredit>,
+    pub provenance: QuotaProvenance,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaSource {
@@ -68,7 +83,7 @@ impl Default for QuotaConfidence {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default)]
 pub struct QuotaProvenance {
     pub source: QuotaSource,
@@ -116,11 +131,15 @@ pub struct QuotaSummary {
     pub five_hour: QuotaWindow,
     pub weekly: QuotaWindow,
     pub additional: Option<Vec<AdditionalQuotaWindow>>,
+    pub rate_limit_reset_credits: Option<RateLimitResetCredits>,
     pub provenance: QuotaProvenance,
 }
 
 impl QuotaSummary {
     pub fn with_provenance(mut self, provenance: QuotaProvenance) -> Self {
+        if let Some(credits) = self.rate_limit_reset_credits.as_mut() {
+            credits.provenance = provenance.clone();
+        }
         self.provenance = provenance;
         self
     }
@@ -610,6 +629,7 @@ mod tests {
         assert_eq!(quota.provenance.observed_at_ms, None);
         assert_eq!(quota.provenance.source_mtime_ms, None);
         assert_eq!(quota.additional, None);
+        assert_eq!(quota.rate_limit_reset_credits, None);
     }
 
     #[test]

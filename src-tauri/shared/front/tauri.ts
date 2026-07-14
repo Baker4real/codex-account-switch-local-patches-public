@@ -49,6 +49,7 @@ function quota(
   source: QuotaSource = "chat_gpt_api",
   confidence: QuotaConfidence = "official",
   ageMs: number | null = 8 * 60 * 1000,
+  availableResetCredits: number | null = null,
 ): QuotaSummary {
   const observedAtMs = ageMs == null ? null : Date.now() - ageMs;
   return {
@@ -63,6 +64,15 @@ function quota(
       reset_at_timestamp: null,
     },
     additional: null,
+    rate_limit_reset_credits: availableResetCredits == null
+      ? null
+      : {
+          available_count: availableResetCredits,
+          credits: [{
+            granted_at: Math.floor((Date.now() - 2 * 24 * 60 * 60 * 1000) / 1000),
+            expires_at: Math.floor((Date.now() + 28 * 24 * 60 * 60 * 1000) / 1000),
+          }],
+        },
     provenance: {
       source,
       confidence,
@@ -100,7 +110,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Pro plan",
     subscription_days_left: 18,
     openai_base_url: null,
-    quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 30 * 60 * 1000),
+    quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 30 * 60 * 1000, 1),
     last_plan_check_ms: Date.now() - 30 * 60 * 1000,
     refresh_token_status: refreshStatus(),
   },

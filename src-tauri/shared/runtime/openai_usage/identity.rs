@@ -155,6 +155,7 @@ impl CanonicalAccountResolver {
         let profile_trusted_components = build_trusted_components(facts, &trusted_aliases, true);
         let global_trusted_components = build_trusted_components(facts, &trusted_aliases, false);
         let mut parents = (0..facts.len()).collect::<Vec<_>>();
+        let mut component_sizes = vec![1_usize; facts.len()];
         let mut owner_by_node = BTreeMap::<IdentityNode, usize>::new();
         for (index, (fact, fallback_key)) in facts.iter().zip(fallback_keys).enumerate() {
             let recovered = verified_aliases[index]
@@ -162,7 +163,7 @@ impl CanonicalAccountResolver {
                 .flat_map(|value| value.aliases());
             for node in identity_nodes(fact, fallback_key, recovered) {
                 if let Some(owner) = owner_by_node.insert(node, index) {
-                    union(&mut parents, index, owner);
+                    union(&mut parents, &mut component_sizes, index, owner);
                 }
             }
         }
@@ -205,7 +206,7 @@ impl CanonicalAccountResolver {
                 continue;
             };
             if let Some(owner) = owner_by_node.get(&IdentityNode::Alias(candidate_alias)) {
-                union(&mut parents, index, *owner);
+                union(&mut parents, &mut component_sizes, index, *owner);
             }
         }
 
@@ -860,12 +861,13 @@ fn build_trusted_components(
     profile_scoped: bool,
 ) -> Vec<Option<TrustedIdentityComponent>> {
     let mut parents = (0..facts.len()).collect::<Vec<_>>();
+    let mut component_sizes = vec![1_usize; facts.len()];
     let mut owner_by_alias = BTreeMap::<(Option<String>, IdentityAlias), usize>::new();
     for (index, (fact, fact_aliases)) in facts.iter().zip(aliases_by_fact).enumerate() {
         let scope = profile_scoped.then(|| fact.profile.clone());
         for alias in fact_aliases {
             if let Some(owner) = owner_by_alias.insert((scope.clone(), alias.clone()), index) {
-                union(&mut parents, index, owner);
+                union(&mut parents, &mut component_sizes, index, owner);
             }
         }
     }
@@ -959,17 +961,99 @@ fn verified_aliases_for_fact<'a>(
 }
 
 fn find(parents: &mut [usize], index: usize) -> usize {
-    if parents[index] != index {
-        let parent = parents[index];
-        parents[index] = find(parents, parent);
+    let mut root = index;
+    while parents[root] != root {
+        root = parents[root];
     }
-    parents[index]
+    let mut cursor = index;
+    while parents[cursor] != cursor {
+        let next = parents[cursor];
+        parents[cursor] = root;
+        cursor = next;
+    }
+    root
 }
 
-fn union(parents: &mut [usize], left: usize, right: usize) {
+fn union(parents: &mut [usize], component_sizes: &mut [usize], left: usize, right: usize) {
     let left_root = find(parents, left);
     let right_root = find(parents, right);
-    if left_root != right_root {
+    if left_root == right_root {
+        return;
+    }
+    if component_sizes[left_root] < component_sizes[right_root] {
+        parents[left_root] = right_root;
+        component_sizes[right_root] += component_sizes[left_root];
+    } else {
         parents[right_root] = left_root;
+        component_sizes[left_root] += component_sizes[right_root];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::OpenAiUsageCostBreakdown;
+    use crate::shared::openai_usage::{CalculatedCost, UsageCounts};
+
+    fn strict_fact(index: usize, alias: &str) -> UsageFact {
+        UsageFact {
+            evidence_id: format!("e-{index}"),
+            request_id: format!("r-{index}"),
+            fingerprint: format!("f-{index}"),
+            session_id: "s-large-component".to_string(),
+            profile: "a".to_string(),
+            account_label: Some("acct_A".to_string()),
+            account_identity_key: Some("identity-a".to_string()),
+            account_id_alias: Some(alias.to_string()),
+            email_alias: None,
+            legacy_account_key: None,
+            official_source: "OpenAI default".to_string(),
+            ledger_layer: LEDGER_LAYER_STRICT_PROVEN.to_string(),
+            layer_reason: None,
+            attribution_kind: ATTRIBUTION_KIND_STRICT_ACCOUNT.to_string(),
+            attribution_window_id: Some(index.to_string()),
+            model: "gpt-5.3-codex".to_string(),
+            requested_model: None,
+            model_reasoning_effort: None,
+            model_verbosity: None,
+            delta: UsageCounts::default(),
+            cost: CalculatedCost {
+                breakdown: OpenAiUsageCostBreakdown::default(),
+                priced: true,
+                pricing_note: None,
+            },
+            status_code: 200,
+            created_at_ms: index as u64,
+            data_source: "test".to_string(),
+            source_type: "test".to_string(),
+            source_priority: 1,
+            usage_confidence: "strict".to_string(),
+            pricing_model: "gpt-5.3-codex".to_string(),
+            pricing_tier: "standard".to_string(),
+            pricing_source_url: "https://example.test".to_string(),
+        }
+    }
+
+    #[test]
+    fn canonical_resolver_handles_twenty_thousand_facts_in_one_identity_component() {
+        let alias = account_id_alias(Some("acct_A")).unwrap();
+        let facts = (0..20_000)
+            .map(|index| strict_fact(index, &alias))
+            .collect::<Vec<_>>();
+        let fallback_keys = facts
+            .iter()
+            .map(raw_identity_independent_fallback)
+            .collect::<Vec<_>>();
+
+        let resolver = CanonicalAccountResolver::from_facts(
+            &facts,
+            &fallback_keys,
+            &VerifiedProfileAliases::new(),
+        );
+
+        let canonical = resolver.canonical_key_for_fact(&facts[0]);
+        assert!(facts
+            .iter()
+            .all(|fact| resolver.canonical_key_for_fact(fact) == canonical));
     }
 }

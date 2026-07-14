@@ -584,6 +584,7 @@ pub fn load_openai_usage_summary(
         &resolved.facts,
         &query,
         &resolved.resolver,
+        &resolved.preferred_account_labels,
     );
     attach_layer_summaries(&conn, &query, summary, &resolved.resolver)
 }
@@ -607,6 +608,7 @@ pub fn load_openai_usage_dashboard(
         &account_facts,
         &account_query,
         &resolved.resolver,
+        &resolved.preferred_account_labels,
     )
     .accounts;
     let model_query = without_model_filter(&query);
@@ -616,16 +618,29 @@ pub fn load_openai_usage_dashboard(
         &model_facts,
         &model_query,
         &resolved.resolver,
+        &resolved.preferred_account_labels,
     )
     .models;
     let summary = attach_layer_summaries(
         &conn,
         &query,
-        build_summary_from_facts_with_resolver(summary, facts, &query, &resolved.resolver),
+        build_summary_from_facts_with_resolver(
+            summary,
+            facts,
+            &query,
+            &resolved.resolver,
+            &resolved.preferred_account_labels,
+        ),
         &resolved.resolver,
     )?;
     let trends = build_trends(facts, &query);
-    let logs = build_request_log_page(facts, page, page_size);
+    let logs = build_request_log_page(
+        facts,
+        page,
+        page_size,
+        &resolved.resolver,
+        &resolved.preferred_account_labels,
+    );
     let data_sources = build_data_source_summaries(facts);
     Ok(OpenAiUsageDashboard {
         summary,
@@ -703,6 +718,7 @@ fn without_model_filter(query: &OpenAiUsageQuery) -> OpenAiUsageQuery {
 struct ResolvedUsageFacts {
     facts: Vec<UsageFact>,
     resolver: identity::CanonicalAccountResolver,
+    preferred_account_labels: BTreeMap<String, String>,
 }
 
 fn load_resolved_usage_facts(
@@ -740,8 +756,58 @@ fn load_resolved_usage_facts(
             .collect::<Vec<_>>();
         resolver.add_untrusted_facts(&untrusted_facts, &untrusted_fallback_keys);
     }
+    let preferred_account_labels = preferred_account_labels(&universe, &resolver);
     let facts = load_usage_facts_with_resolver(conn, query, &resolver)?;
-    Ok(ResolvedUsageFacts { facts, resolver })
+    Ok(ResolvedUsageFacts {
+        facts,
+        resolver,
+        preferred_account_labels,
+    })
+}
+
+fn preferred_account_labels(
+    facts: &[UsageFact],
+    resolver: &identity::CanonicalAccountResolver,
+) -> BTreeMap<String, String> {
+    let mut candidates = BTreeMap::<String, (u64, String, String)>::new();
+    let mut fallback_labels = BTreeMap::<String, BTreeSet<String>>::new();
+    for fact in facts {
+        let canonical = resolver.canonical_key_for_fact(fact);
+        if let Some(label) = normalized_account_label(fact.account_label.as_deref()) {
+            fallback_labels
+                .entry(canonical.clone())
+                .or_default()
+                .insert(label);
+        }
+        let Some(label) = trusted_account_label(fact) else {
+            continue;
+        };
+        let candidate = (fact.created_at_ms, fact.evidence_id.clone(), label);
+        if candidates
+            .get(&canonical)
+            .is_none_or(|current| candidate > *current)
+        {
+            candidates.insert(canonical, candidate);
+        }
+    }
+    let mut labels = candidates
+        .into_iter()
+        .map(|(canonical, (_, _, label))| (canonical, label))
+        .collect::<BTreeMap<_, _>>();
+    for (canonical, fallbacks) in fallback_labels {
+        if labels.contains_key(&canonical) || fallbacks.len() != 1 {
+            continue;
+        }
+        if let Some(label) = fallbacks.into_iter().next() {
+            labels.insert(canonical, label);
+        }
+    }
+    labels
+}
+
+fn normalized_account_label(value: Option<&str>) -> Option<String> {
+    let label = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!label.is_empty()).then_some(label)
 }
 
 fn load_usage_facts_with_resolver(
@@ -779,6 +845,7 @@ fn build_summary_from_facts_with_resolver(
     facts: &[UsageFact],
     query: &OpenAiUsageQuery,
     account_resolver: &identity::CanonicalAccountResolver,
+    preferred_account_labels: &BTreeMap<String, String>,
 ) -> OpenAiUsageSummary {
     let mut accounts: BTreeMap<String, AccountAggregate> = BTreeMap::new();
     let mut global_models: BTreeMap<String, ModelAggregate> = BTreeMap::new();
@@ -805,7 +872,12 @@ fn build_summary_from_facts_with_resolver(
     summary.cache_hit_rate = cache_hit_rate(&summary.tokens);
     summary.accounts = accounts
         .into_iter()
-        .map(|(_, account)| account_to_summary(account))
+        .map(|(canonical, mut account)| {
+            if let Some(label) = preferred_account_labels.get(&canonical) {
+                account.account_label = Some(label.clone());
+            }
+            account_to_summary(account)
+        })
         .collect();
     summary.models = models_to_summary(global_models);
     summary
@@ -834,7 +906,13 @@ pub fn load_openai_usage_request_logs(
     let mut summary = new_usage_summary(&query);
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
     let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
-    Ok(build_request_log_page(&resolved.facts, page, page_size))
+    Ok(build_request_log_page(
+        &resolved.facts,
+        page,
+        page_size,
+        &resolved.resolver,
+        &resolved.preferred_account_labels,
+    ))
 }
 
 pub fn load_openai_usage_request_detail(
@@ -844,13 +922,13 @@ pub fn load_openai_usage_request_detail(
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let mut summary = new_usage_summary(&OpenAiUsageQuery::default());
     let conn = sync_openai_usage_ledger(&codex_home, &mut summary)?;
-    Ok(load_usage_facts(
-        &conn,
-        &query_with_scope(&OpenAiUsageQuery::default(), SCOPE_COMBINED_ATTRIBUTED),
-    )?
-    .iter()
-    .find(|fact| fact.request_id == request_id)
-    .map(fact_to_log))
+    let query = query_with_scope(&OpenAiUsageQuery::default(), SCOPE_COMBINED_ATTRIBUTED);
+    let resolved = load_resolved_usage_facts(&conn, &codex_home, &query)?;
+    Ok(resolved
+        .facts
+        .iter()
+        .find(|fact| fact.request_id == request_id)
+        .map(|fact| fact_to_log(fact, &resolved.resolver, &resolved.preferred_account_labels)))
 }
 
 pub fn load_openai_usage_data_sources(
@@ -869,8 +947,13 @@ fn build_request_log_page(
     facts: &[UsageFact],
     page: u32,
     page_size: u32,
+    resolver: &identity::CanonicalAccountResolver,
+    preferred_account_labels: &BTreeMap<String, String>,
 ) -> OpenAiUsageRequestLogPage {
-    let mut logs = facts.iter().map(fact_to_log).collect::<Vec<_>>();
+    let mut logs = facts
+        .iter()
+        .map(|fact| fact_to_log(fact, resolver, preferred_account_labels))
+        .collect::<Vec<_>>();
     logs.sort_by(|left, right| {
         right
             .created_at_ms
@@ -3045,12 +3128,20 @@ fn event_to_log(event: &UsageEvent) -> OpenAiUsageRequestLog {
     }
 }
 
-fn fact_to_log(fact: &UsageFact) -> OpenAiUsageRequestLog {
+fn fact_to_log(
+    fact: &UsageFact,
+    resolver: &identity::CanonicalAccountResolver,
+    preferred_account_labels: &BTreeMap<String, String>,
+) -> OpenAiUsageRequestLog {
+    let canonical = resolver.canonical_key_for_fact(fact);
     OpenAiUsageRequestLog {
         request_id: fact.request_id.clone(),
         session_id: fact.session_id.clone(),
         profile: fact.profile.clone(),
-        account_label: fact.account_label.clone(),
+        account_label: preferred_account_labels
+            .get(&canonical)
+            .cloned()
+            .or_else(|| trusted_account_label(fact)),
         official_source: fact.official_source.clone(),
         ledger_layer: fact.ledger_layer.clone(),
         attribution_kind: fact.attribution_kind.clone(),
@@ -3633,7 +3724,7 @@ fn add_fact_usage(
         account.legacy_account_key = fact.legacy_account_key.clone();
     }
     if account.account_label.is_none() {
-        account.account_label = fact.account_label.clone();
+        account.account_label = trusted_account_label(fact);
     }
     if account.official_source != fact.official_source {
         account.official_source = "Multiple OpenAI sources".to_string();
@@ -3686,13 +3777,45 @@ fn new_account_aggregate(account_group_key: String, fact: &UsageFact) -> Account
         account_group_key,
         account_identity_key: fact.account_identity_key.clone(),
         legacy_account_key: fact.legacy_account_key.clone(),
-        account_label: fact.account_label.clone(),
+        account_label: trusted_account_label(fact),
         official_source: fact.official_source.clone(),
         ledger_layer: fact.ledger_layer.clone(),
         attribution_kind: fact.attribution_kind.clone(),
         attribution_window_id: fact.attribution_window_id.clone(),
         ..AccountAggregate::default()
     }
+}
+
+fn trusted_account_label(fact: &UsageFact) -> Option<String> {
+    let label = normalized_account_label(fact.account_label.as_deref())?;
+    let has_persisted_alias = fact.account_id_alias.is_some() || fact.email_alias.is_some();
+    let matches_verified_identity = if !has_persisted_alias {
+        fact.account_identity_key
+            .as_deref()
+            .is_some_and(|persisted| {
+                let candidate = if label.contains('@') {
+                    AccountIdentity {
+                        account_id: None,
+                        email: Some(label.clone()),
+                    }
+                } else {
+                    AccountIdentity {
+                        account_id: Some(label.clone()),
+                        email: None,
+                    }
+                };
+                account_identity_key(&candidate) == persisted
+            })
+    } else if label.contains('@') {
+        fact.email_alias.as_deref().is_some_and(|persisted| {
+            identity::email_alias(Some(&label)).as_deref() == Some(persisted)
+        })
+    } else {
+        fact.account_id_alias.as_deref().is_some_and(|persisted| {
+            identity::account_id_alias(Some(&label)).as_deref() == Some(persisted)
+        })
+    };
+    matches_verified_identity.then_some(label)
 }
 
 fn account_group_key(
@@ -9234,12 +9357,13 @@ mod tests {
     fn dashboard_account_summary_merges_same_strict_identity_across_label_changes() {
         let codex_home = temp_codex_home("same-identity-label-change");
         fs::create_dir_all(&codex_home).unwrap();
+        let account_alias = identity::account_id_alias(Some("acct_same")).unwrap();
         append_attribution_record(
             &codex_home,
             &AttributionRecord {
                 observed_at_ms: ts("2999-01-01T00:00:00.000Z"),
                 profile: Some("a".to_string()),
-                account_label: Some("old@example.com".to_string()),
+                account_label: Some("wrong@example.com".to_string()),
                 account_identity_key: Some("acct_same".to_string()),
                 account_id_alias: None,
                 email_alias: None,
@@ -9257,9 +9381,9 @@ mod tests {
             &AttributionRecord {
                 observed_at_ms: ts("2999-01-01T00:00:03.000Z"),
                 profile: Some("b".to_string()),
-                account_label: Some("new@example.com".to_string()),
+                account_label: Some("  acct_same\r\n".to_string()),
                 account_identity_key: Some("acct_same".to_string()),
-                account_id_alias: None,
+                account_id_alias: Some(account_alias),
                 email_alias: None,
                 openai_base_url: None,
                 official_source: Some("OpenAI default".to_string()),
@@ -9294,6 +9418,15 @@ mod tests {
 
         assert_eq!(dashboard.account_summary.len(), 1);
         assert_eq!(dashboard.account_summary[0].request_count, 2);
+        assert_eq!(
+            dashboard.account_summary[0].account_label.as_deref(),
+            Some("acct_same")
+        );
+        assert!(dashboard
+            .logs
+            .data
+            .iter()
+            .all(|log| log.account_label.as_deref() == Some("acct_same")));
         assert_eq!(
             dashboard.account_summary[0].profiles,
             vec!["a".to_string(), "b".to_string()]

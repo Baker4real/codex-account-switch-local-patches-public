@@ -136,6 +136,12 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   runtime 目录，避免 Codex 升级后应用继续指向已删除 runtime。
 - 账号页 quota 读数必须保留 provenance 元数据，避免把低可信度 fallback
   或本地 session 观测结果展示得像官方 ChatGPT API 读数。
+- 5 小时与周额度必须按服务端 `window_minutes` / `limit_window_seconds` 的实际窗口时长
+  归位，不能假设 primary / secondary 的固定顺序。额度重置卡数量来自 `/wham/usage`，
+  发放与到期时间来自 `/wham/rate-limit-reset-credits`；详情请求必须复用刷新后的 OAuth
+  身份和账号作用域 header，失败时保留主 quota。不得记录 token、cookie、完整账号或卡片
+  ID、失败响应正文；前端固定按北京时间显示时间，服务端没有 additional 配额时不显示
+  “接口未报告附加额度”一类空占位。
 - OpenAI 使用统计必须以有效 `base_url` 作为官方来源门禁，不得用
   `model_provider` 反推官方来源；只统计默认官方路径或 HTTPS
   `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建分层 ledger，

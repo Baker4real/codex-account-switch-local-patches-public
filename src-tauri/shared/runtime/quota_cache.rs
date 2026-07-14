@@ -206,7 +206,7 @@ pub fn file_signature(path: &Path) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{QuotaSummary, QuotaWindow};
+    use crate::models::{QuotaSummary, QuotaWindow, RateLimitResetCredits};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_codex_home(name: &str) -> PathBuf {
@@ -229,6 +229,10 @@ mod tests {
                 refresh_at: None,
                 ..QuotaWindow::default()
             },
+            rate_limit_reset_credits: Some(RateLimitResetCredits {
+                available_count: Some(2),
+                ..RateLimitResetCredits::default()
+            }),
             ..QuotaSummary::default()
         }
     }
@@ -264,6 +268,12 @@ mod tests {
         assert_eq!(last.path, PathBuf::from("/tmp/sample.jsonl"));
         assert_eq!(last.size, 4096);
         assert_eq!(last.quota.five_hour.remaining_percent, Some(80));
+        assert_eq!(
+            last.quota
+                .rate_limit_reset_credits
+                .and_then(|credits| credits.available_count),
+            Some(2)
+        );
         let entry = reloaded
             .entries
             .get(&PathBuf::from("/tmp/sample.jsonl"))

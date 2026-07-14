@@ -3,13 +3,23 @@ import type { QuotaSummary } from "@front-shared/types";
 import {
   ADDITIONAL_QUOTA_STALE_MS,
   buildAdditionalQuotaPresentation,
+  buildRateLimitResetCreditsPresentation,
 } from "@front-shared/quota-view-model";
 
-function quota(additional: QuotaSummary["additional"], observedAtMs: number | null): QuotaSummary {
+function quota(
+  additional: QuotaSummary["additional"],
+  observedAtMs: number | null,
+  availableResetCredits: number | null = null,
+  resetCreditCards: NonNullable<QuotaSummary["rate_limit_reset_credits"]>["credits"] = [],
+): QuotaSummary {
   return {
     five_hour: { remaining_percent: null, refresh_at: null, reset_at_timestamp: null },
     weekly: { remaining_percent: null, refresh_at: null, reset_at_timestamp: null },
     additional,
+    rate_limit_reset_credits:
+      availableResetCredits == null
+        ? null
+        : { available_count: availableResetCredits, credits: resetCreditCards },
     provenance: {
       source: "chat_gpt_api",
       confidence: "official",
@@ -65,25 +75,48 @@ describe("additional quota presentation", () => {
     expect(result.stale).toBe(false);
   });
 
-  it("shows unknown and stale explicitly", () => {
+  it("does not render a misleading status when model-specific quota was not reported", () => {
     const result = buildAdditionalQuotaPresentation(
       quota(null, 1_800_000_000_000 - ADDITIONAL_QUOTA_STALE_MS),
       true,
       false,
       1_800_000_000_000,
     );
-    expect(result.state).toBe("unknown");
+    expect(result.state).toBe("hidden");
     expect(result.stale).toBe(true);
   });
 
-  it("never turns an empty or hidden response into a full quota", () => {
+  it("hides an explicit empty response instead of claiming that reset cards are missing", () => {
     expect(
       buildAdditionalQuotaPresentation(quota([], 1_800_000_000_000), true, false, 1_800_000_000_000)
         .state,
-    ).toBe("empty");
+    ).toBe("hidden");
     expect(
       buildAdditionalQuotaPresentation(quota([], 1_800_000_000_000), false, false, 1_800_000_000_000)
         .windows,
     ).toEqual([]);
+  });
+
+  it("presents every reset credit grant and expiry from the detail endpoint", () => {
+    const result = buildRateLimitResetCreditsPresentation(
+      quota([], 1_800_000_000_000, 2, [
+        { granted_at: 1_800_000_000, expires_at: 1_800_086_400 },
+        { granted_at: 1_800_010_000, expires_at: 1_800_096_400 },
+      ]),
+    );
+
+    expect(result).toEqual({
+      state: "ready",
+      availableCount: 2,
+      cards: [
+        { grantedAt: 1_800_000_000, expiresAt: 1_800_086_400 },
+        { grantedAt: 1_800_010_000, expiresAt: 1_800_096_400 },
+      ],
+    });
+  });
+
+  it("keeps card details empty when only the usage summary count is available", () => {
+    expect(buildRateLimitResetCreditsPresentation(quota([], 1_800_000_000_000, 1)))
+      .toEqual({ state: "ready", availableCount: 1, cards: [] });
   });
 });

@@ -117,6 +117,7 @@ pub fn normalize_quota_summary(
                 })
                 .collect()
         }),
+        rate_limit_reset_credits: quota.rate_limit_reset_credits,
         provenance: quota.provenance,
     }
 }

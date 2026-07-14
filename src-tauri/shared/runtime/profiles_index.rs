@@ -369,6 +369,7 @@ fn quota_summary_has_data(quota: &crate::models::QuotaSummary) -> bool {
             .additional
             .as_ref()
             .is_some_and(|entries| !entries.is_empty())
+        || quota.rate_limit_reset_credits.is_some()
 }
 
 fn select_current_quota(
@@ -383,7 +384,12 @@ fn select_current_quota(
             if snapshot.source_mtime_ms.unwrap_or(0) > stored_updated_at_ms
                 || !stored_is_populated =>
         {
-            snapshot.quota.clone()
+            let mut selected = snapshot.quota.clone();
+            if selected.rate_limit_reset_credits.is_none() {
+                selected.rate_limit_reset_credits =
+                    entry.stored_quota.rate_limit_reset_credits.clone();
+            }
+            selected
         }
         _ => entry.stored_quota.clone(),
     }
@@ -469,7 +475,7 @@ pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::RefreshTokenHealth;
+    use crate::models::{QuotaSummary, RateLimitResetCredits, RefreshTokenHealth};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestCacheGuard;
@@ -610,6 +616,45 @@ mod tests {
         assert!(current_quota.quota.is_none());
 
         let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn newer_live_windows_preserve_reset_credits_with_their_api_provenance() {
+        let mut stored_quota = QuotaSummary::default();
+        stored_quota.rate_limit_reset_credits = Some(RateLimitResetCredits {
+            available_count: Some(2),
+            credits: Vec::new(),
+            provenance: crate::models::QuotaProvenance::chatgpt_api(Some(90)),
+        });
+        let entry = ProfileIndexEntry {
+            stored_quota,
+            stored_quota_updated_at_ms: Some(100),
+            ..ProfileIndexEntry::default()
+        };
+        let mut live_quota = QuotaSummary::default();
+        live_quota.weekly.remaining_percent = Some(1);
+        let live = super::super::session_usage::LocalQuotaSnapshot {
+            quota: live_quota,
+            source_mtime_ms: Some(200),
+        };
+
+        let selected = select_current_quota(&entry, Some(&live));
+
+        assert_eq!(selected.weekly.remaining_percent, Some(1));
+        assert_eq!(
+            selected
+                .rate_limit_reset_credits
+                .as_ref()
+                .and_then(|credits| credits.available_count),
+            Some(2)
+        );
+        assert_eq!(
+            selected
+                .rate_limit_reset_credits
+                .as_ref()
+                .and_then(|credits| credits.provenance.observed_at_ms),
+            Some(90)
+        );
     }
 
     #[test]

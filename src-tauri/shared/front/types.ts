@@ -21,6 +21,17 @@ export interface AdditionalQuotaWindow {
   is_spark: boolean;
 }
 
+export interface RateLimitResetCredit {
+  granted_at: number | null;
+  expires_at: number | null;
+}
+
+export interface RateLimitResetCredits {
+  available_count: number | null;
+  credits: RateLimitResetCredit[];
+  provenance?: QuotaProvenance;
+}
+
 export type QuotaSource = "unknown" | "chat_gpt_api" | "codex_app_server" | "session_jsonl";
 
 export type QuotaConfidence = "unknown" | "official" | "fallback" | "local_observation";
@@ -37,6 +48,7 @@ export interface QuotaSummary {
   five_hour: QuotaWindow;
   weekly: QuotaWindow;
   additional?: AdditionalQuotaWindow[] | null;
+  rate_limit_reset_credits?: RateLimitResetCredits | null;
   provenance?: QuotaProvenance;
 }
 

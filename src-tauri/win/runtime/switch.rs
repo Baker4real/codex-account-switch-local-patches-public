@@ -31,6 +31,7 @@ fn quota_summary_has_data(quota: &QuotaSummary) -> bool {
             .additional
             .as_ref()
             .is_some_and(|entries| !entries.is_empty())
+        || quota.rate_limit_reset_credits.is_some()
 }
 
 fn write_root_profile_metadata(codex_home: &Path, metadata: &ProfileMetadata) -> AppResult<()> {

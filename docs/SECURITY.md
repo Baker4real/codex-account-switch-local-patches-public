@@ -21,6 +21,8 @@
 
 本项目在本机保存和切换 token；登录与 quota 刷新会通过 Codex CLI、ChatGPT Web API 或 `codex app-server` 访问官方 OpenAI / ChatGPT endpoint。按设计不会把 token 发送到第三方服务。
 
+额度重置卡详情请求只把当前刷新后的 access token 和账号作用域 header 发往官方 ChatGPT backend。实现不得记录 Authorization、cookie、token、完整账号 ID、完整卡片 ID 或失败响应正文；持久化与前端模型只保留可用数量、发放时间和到期时间。详情接口失败不能让已经成功取得的主 quota 一并失败。
+
 主要风险是 Git、截图、共享终端、不安全备份或宽松 Windows ACL 导致 token 意外暴露。
 
 本机 Windows Edge 浏览器登录补丁只对 `profile.json` 明确设置 `login_browser` 为 `edge` 的 profile 复用用户正常 Edge 状态，不创建独立浏览器 profile。这移除了旧的浏览器 profile 缓存面，但也意味着 Edge 当前登录的 ChatGPT 账号就是 OAuth 返回的身份。应用必须保留写入前身份检查，避免已知 profile 被另一个浏览器账号静默覆盖。

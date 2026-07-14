@@ -77,9 +77,15 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
   继续使用。版本管理器扫描只读取受限的直接版本目录，不做全盘递归。
 - plan 来自 OAuth `id_token` claims；quota 优先走 ChatGPT Web API，必要时使用
   app-server `account/rateLimits/read` fallback。UI 显示 provenance 和观测时间，低于阈值
-  只告警，不自动切换。账号页支持本地搜索、动态套餐筛选和显示数/总数；additional/
-  model-specific 配额保留 unknown/stale 语义，Spark 噪声行默认隐藏，显示偏好只写浏览器
-  localStorage，不写入账号凭据或 profile 配置。
+  只告警，不自动切换。`/wham/usage` 的 5 小时与周额度按 `window_minutes` 或
+  `limit_window_seconds` 的实际窗口时长归位，不依赖 primary/secondary 槽位顺序。
+- `/wham/usage` 提供重置卡可用数量，`/wham/rate-limit-reset-credits` 补充每张卡的
+  `granted_at` / `expires_at`；前端固定按 `Asia/Shanghai` 显示到秒。详情接口失败不丢弃已
+  成功取得的主 quota，401 明确归因为凭证失效或 Authorization header 无效。响应中的卡片
+  ID 不进入模型、缓存或日志。
+- 账号页支持本地搜索、动态套餐筛选和显示数/总数；additional/model-specific 配额保留
+  unknown/stale 语义，Spark 噪声行默认隐藏，显示偏好只写浏览器 localStorage，不写入账号
+  凭据或 profile 配置。服务端没有报告 additional 配额时不显示空占位状态。
 
 ## 更新检查
 

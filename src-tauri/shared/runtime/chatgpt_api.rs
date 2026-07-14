@@ -38,7 +38,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::errors::{AppError, AppResult};
-use crate::models::{QuotaSummary, QuotaWindow};
+use crate::models::{QuotaSummary, QuotaWindow, RateLimitResetCredit, RateLimitResetCredits};
 
 use super::fs_ops::atomic_write_file;
 use super::paths::get_backup_root;
@@ -50,6 +50,7 @@ const ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CHATGPT_BACKEND: &str = "https://chatgpt.com/backend-api";
 const USAGE_PATH: &str = "/wham/usage";
+const RESET_CREDITS_PATH: &str = "/wham/rate-limit-reset-credits";
 /// Reserved for future use: surfaces the active subscription / plan tier
 /// without relying on the id_token claims, useful when migrating between
 /// `prolite` / `plus` / `pro` / `business`.
@@ -146,6 +147,8 @@ struct RateLimitStatusPayload {
     rate_limit: Option<RateLimitDetails>,
     #[serde(default)]
     additional_rate_limits: Option<Value>,
+    #[serde(default)]
+    rate_limit_reset_credits: Option<RateLimitResetCredits>,
 }
 
 #[derive(Deserialize)]
@@ -170,6 +173,8 @@ struct RateLimitWindow {
     /// the mapping logic.
     #[serde(default)]
     window_minutes: Option<i64>,
+    #[serde(default)]
+    limit_window_seconds: Option<i64>,
 }
 
 /// Cheap predicate the caller can hit before paying for an HTTP round-trip.
@@ -279,13 +284,31 @@ pub fn refresh_profile_via_api_with_options_detailed(
             .map_err(|error| {
                 ChatGptApiRefreshFailure::new(error.error, error.oauth_token_rotated)
             })?;
+    let reset_credit_cards = match fetch_reset_credits(&client, &usage_result.auth) {
+        Ok(cards) => Some(cards),
+        Err(error) => {
+            eprintln!("Reset credits detail unavailable: {error}");
+            None
+        }
+    };
     let usage_payload = usage_result.payload;
     let plan_type = usage_payload
         .plan_type
         .clone()
         .filter(|value| !value.trim().is_empty());
-    let subscription_expires_at = read_subscription_expiry_from_id_token(&auth.id_token);
-    let quota = quota_summary_from_payload(&usage_payload);
+    let subscription_expires_at =
+        read_subscription_expiry_from_id_token(&usage_result.auth.id_token);
+    let mut quota = quota_summary_from_payload(&usage_payload);
+    if let Some(reset_credit_cards) = reset_credit_cards {
+        let summary = quota.get_or_insert_with(QuotaSummary::default);
+        let reset_credits = summary
+            .rate_limit_reset_credits
+            .get_or_insert_with(RateLimitResetCredits::default);
+        if reset_credits.available_count.is_none() {
+            reset_credits.available_count = u32::try_from(reset_credit_cards.len()).ok();
+        }
+        reset_credits.credits = reset_credit_cards;
+    }
 
     Ok(ChatGptApiSnapshot {
         quota,
@@ -435,6 +458,7 @@ fn fetch_usage_with_retry(
             payload: decode_usage_response(response)
                 .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?,
             oauth_token_rotated,
+            auth: working_auth,
         });
     }
 
@@ -449,12 +473,14 @@ fn fetch_usage_with_retry(
         payload: decode_usage_response(retry)
             .map_err(|error| UsageFetchError::new(error, oauth_token_rotated))?,
         oauth_token_rotated,
+        auth: refreshed,
     })
 }
 
 struct UsageFetchResult {
     payload: RateLimitStatusPayload,
     oauth_token_rotated: bool,
+    auth: ProfileAuthFile,
 }
 
 struct UsageFetchError {
@@ -486,6 +512,76 @@ fn send_usage_request(
                 format!("ChatGPT usage request failed: {error}"),
             )
         })
+}
+
+fn fetch_reset_credits(
+    client: &Client,
+    auth: &ProfileAuthFile,
+) -> AppResult<Vec<RateLimitResetCredit>> {
+    let headers = build_chatgpt_headers(&auth.access_token, auth.account_id.as_deref())?;
+    let response = client
+        .get(format!("{CHATGPT_BACKEND}{RESET_CREDITS_PATH}"))
+        .headers(headers)
+        .send()
+        .map_err(|error| {
+            AppError::new(
+                "HTTP_REQUEST_FAILED",
+                format!("ChatGPT reset credits request failed: {error}"),
+            )
+        })?;
+    let status = response.status();
+    if let Some(error) = reset_credits_status_error(status) {
+        return Err(error);
+    }
+    let payload: Value = response.json().map_err(|error| {
+        AppError::new(
+            "RESET_CREDITS_PARSE_FAILED",
+            format!("Failed to parse reset credits response: {error}"),
+        )
+    })?;
+    reset_credits_from_payload(&payload).ok_or_else(|| {
+        AppError::new(
+            "RESET_CREDITS_PARSE_FAILED",
+            "重置卡接口响应缺少 `credits` 数组。",
+        )
+    })
+}
+
+fn reset_credits_status_error(status: StatusCode) -> Option<AppError> {
+    if status == StatusCode::UNAUTHORIZED {
+        return Some(AppError::new(
+            "RESET_CREDITS_UNAUTHORIZED",
+            "重置卡接口返回 401：凭证已失效，或请求未携带有效的 Authorization header。",
+        ));
+    }
+    (!status.is_success()).then(|| {
+        AppError::new(
+            "RESET_CREDITS_HTTP_ERROR",
+            format!("重置卡接口返回 HTTP {status}。"),
+        )
+    })
+}
+
+fn reset_credits_from_payload(payload: &Value) -> Option<Vec<RateLimitResetCredit>> {
+    let credits = payload.get("credits")?.as_array()?;
+    Some(
+        credits
+            .iter()
+            .map(|credit| RateLimitResetCredit {
+                granted_at: credit.get("granted_at").and_then(timestamp_seconds),
+                expires_at: credit.get("expires_at").and_then(timestamp_seconds),
+            })
+            .collect(),
+    )
+}
+
+fn timestamp_seconds(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|raw| chrono::DateTime::parse_from_rfc3339(raw).ok())
+            .map(|timestamp| timestamp.timestamp())
+    })
 }
 
 fn decode_usage_response(
@@ -636,7 +732,8 @@ fn quota_summary_from_payload(payload: &RateLimitStatusPayload) -> Option<QuotaS
     summary.additional = super::additional_quota::parse_additional_rate_limits(
         payload.additional_rate_limits.as_ref(),
     );
-    let mut any_data = summary.additional.is_some();
+    summary.rate_limit_reset_credits = payload.rate_limit_reset_credits.clone();
+    let mut any_data = summary.additional.is_some() || summary.rate_limit_reset_credits.is_some();
 
     // Position is just a fallback; `window_minutes` is authoritative.
     // OpenAI usually puts the 5h window in primary and weekly in
@@ -655,7 +752,13 @@ fn quota_summary_from_payload(payload: &RateLimitStatusPayload) -> Option<QuotaS
                 continue;
             }
             any_data = true;
-            match slot_from_window_minutes(window.window_minutes, fallback) {
+            let window_minutes = window.window_minutes.or_else(|| {
+                window
+                    .limit_window_seconds
+                    .filter(|seconds| *seconds > 0)
+                    .map(|seconds| (seconds + 59) / 60)
+            });
+            match slot_from_window_minutes(window_minutes, fallback) {
                 QuotaSlot::FiveHour => summary.five_hour = mapped,
                 QuotaSlot::Weekly => summary.weekly = mapped,
             }
@@ -808,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn quota_summary_routes_by_window_minutes_when_weekly_lands_in_primary_slot() {
+    fn quota_summary_routes_real_usage_seconds_when_weekly_lands_in_primary_slot() {
         // Real session JSONL audit on the maintainer's machine surfaced
         // 2 events shaped like this — primary holds the weekly window,
         // secondary is null. Without `window_minutes`-based routing,
@@ -820,7 +923,7 @@ mod tests {
                 "primary_window": {
                     "used_percent": 12.0,
                     "reset_at": 1_716_000_000,
-                    "window_minutes": 10080
+                    "limit_window_seconds": 604800
                 },
                 "secondary_window": null
             }
@@ -904,6 +1007,61 @@ mod tests {
 
         let quota = quota_summary_from_payload(&payload).expect("explicit empty additional quota");
         assert_eq!(quota.additional, Some(Vec::new()));
+    }
+
+    #[test]
+    fn quota_summary_preserves_available_rate_limit_reset_credits() {
+        let payload: RateLimitStatusPayload = serde_json::from_value(serde_json::json!({
+            "plan_type": "pro",
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 97,
+                    "limit_window_seconds": 604800,
+                    "reset_at": 1_784_503_690_i64
+                },
+                "secondary_window": null
+            },
+            "rate_limit_reset_credits": { "available_count": 2 }
+        }))
+        .unwrap();
+
+        let quota = quota_summary_from_payload(&payload).expect("quota with reset credits");
+        let credits = quota.rate_limit_reset_credits.expect("reset credits");
+        assert_eq!(credits.available_count, Some(2));
+        assert!(credits.credits.is_empty());
+    }
+
+    #[test]
+    fn reset_credit_details_preserve_each_grant_and_expiry() {
+        let payload = serde_json::json!({
+            "credits": [
+                {
+                    "id": "must-not-be-persisted",
+                    "granted_at": "2026-07-12T21:12:45.739898Z",
+                    "expires_at": "2026-08-11T21:12:45.739898Z"
+                },
+                {
+                    "id": "also-discarded",
+                    "granted_at": 1_783_900_000_i64,
+                    "expires_at": 1_786_500_000_i64
+                }
+            ]
+        });
+
+        let credits = reset_credits_from_payload(&payload).expect("reset credit details");
+        assert_eq!(credits.len(), 2);
+        assert_eq!(credits[0].granted_at, Some(1_783_890_765));
+        assert_eq!(credits[0].expires_at, Some(1_786_482_765));
+        assert_eq!(credits[1].granted_at, Some(1_783_900_000));
+        assert_eq!(credits[1].expires_at, Some(1_786_500_000));
+    }
+
+    #[test]
+    fn reset_credits_401_explains_credentials_or_authorization_header() {
+        let error = reset_credits_status_error(StatusCode::UNAUTHORIZED).expect("401 error");
+        assert_eq!(error.error_code, "RESET_CREDITS_UNAUTHORIZED");
+        assert!(error.message.contains("凭证已失效"));
+        assert!(error.message.contains("Authorization header"));
     }
 
     #[test]

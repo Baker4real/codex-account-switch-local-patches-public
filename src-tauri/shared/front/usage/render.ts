@@ -1,4 +1,5 @@
 import { t, type MessageKey } from "../i18n";
+import { collapseDisplayWhitespace } from "../display-text";
 import type {
   OpenAiUsageAccountSummary,
   OpenAiUsageCostBreakdown,
@@ -657,7 +658,7 @@ function buildUsageAccountTable(view: UsageWorkspaceView, accounts: readonly Ope
       .join("");
     return `
     <tr${selectedClass}>
-      <td class="usage-table-cell--account">${escapeHtml(account.account_label ?? "--")}</td>
+      <td class="usage-table-cell--account">${escapeHtml(collapseDisplayWhitespace(account.account_label ?? "--"))}</td>
       <td><div class="usage-attribution-breakdown">${attributionBreakdown || "--"}</div></td>
       <td>${escapeHtml(account.official_source)}</td>
       <td>${formatInteger(view.locale, account.request_count)}</td>
@@ -1074,7 +1075,7 @@ function buildUsageLogsTable(view: UsageWorkspaceView): string {
     <tr>
       <td><code>${escapeHtml(log.request_id)}</code></td>
       <td>${formatDateTimeMs(log.created_at_ms, view.locale)}</td>
-      <td class="usage-table-cell--account" title="${escapeHtml(log.account_label ?? log.profile)}">${escapeHtml(log.account_label ?? log.profile)}</td>
+      <td class="usage-table-cell--account" title="${escapeHtml(collapseDisplayWhitespace(log.account_label ?? log.profile))}">${escapeHtml(collapseDisplayWhitespace(log.account_label ?? log.profile))}</td>
       <td>${escapeHtml(formatUsageLayerLabel(view, log.ledger_layer))}</td>
       <td class="usage-table-cell--model">${buildUsageModelEvidenceCell(view, log)}</td>
       <td class="usage-table-cell--evidence">${buildUsageRequestEvidenceCell(view, log)}</td>

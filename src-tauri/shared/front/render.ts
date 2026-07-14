@@ -16,13 +16,18 @@ import type {
 } from "@front-shared/types";
 import { t, type MessageKey } from "@front-shared/i18n";
 import { state } from "@front-shared/state";
+import { collapseDisplayWhitespace } from "@front-shared/display-text";
+import { formatBeijingDateTimeSeconds } from "@front-shared/time-format";
 import { getThemeOption, isThemeId } from "@front-shared/theme";
 import {
   countActiveProfileFilters,
   listProfilePlanOptions,
   type ProfileFilters,
 } from "@front-shared/profile-filters";
-import { buildAdditionalQuotaPresentation } from "@front-shared/quota-view-model";
+import {
+  buildAdditionalQuotaPresentation,
+  buildRateLimitResetCreditsPresentation,
+} from "@front-shared/quota-view-model";
 
 const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "usage", "settings", "guide"];
 const LOW_QUOTA_THRESHOLD_PERCENT = 20;
@@ -495,15 +500,15 @@ function isProfileUnavailable(profile: Pick<ProfileCard, "auth_present" | "has_a
 function normalizeDisplayParts(
   entry: Pick<ProfileCard | CurrentCard, "folder_name" | "display_title" | "account_label">,
 ): { folder: string; account: string } {
-  const folder = entry.folder_name.trim();
-  const account = entry.account_label?.trim() ?? "";
+  const folder = collapseDisplayWhitespace(entry.folder_name);
+  const account = collapseDisplayWhitespace(entry.account_label ?? "");
 
   if (account) {
     return { folder, account };
   }
 
-  const rawTitle = entry.display_title?.trim() ?? "";
-  const parts = rawTitle.split(" / ").map((value) => value.trim()).filter(Boolean);
+  const rawTitle = collapseDisplayWhitespace(entry.display_title ?? "");
+  const parts = rawTitle.split(" / ").map(collapseDisplayWhitespace).filter(Boolean);
   if (parts.length >= 2) {
     return {
       folder: parts[0] ?? folder,
@@ -687,14 +692,6 @@ function buildAdditionalQuotaMarkup(
   }
 
   const stackClass = layout === "current" ? "current-additional-quota" : "profile-additional-quota";
-  if (presentation.state === "unknown" || presentation.state === "empty") {
-    const message =
-      presentation.state === "unknown"
-        ? t(state.locale, "additionalQuotaUnknown")
-        : t(state.locale, "additionalQuotaEmpty");
-    return `<div class="${stackClass} additional-quota-status">${escapeHtml(message)}</div>`;
-  }
-
   const rows = presentation.windows
     .map((entry: AdditionalQuotaWindow) => {
       const value = formatPercent(entry.remaining_percent);
@@ -723,6 +720,52 @@ function buildAdditionalQuotaMarkup(
   return `<div class="${stackClass}">${rows}</div>`;
 }
 
+function buildRateLimitResetCreditsMarkup(
+  quota: QuotaSummary | null | undefined,
+  unavailable: boolean,
+  layout: "profile" | "current",
+): string {
+  if (unavailable) {
+    return "";
+  }
+  const presentation = buildRateLimitResetCreditsPresentation(quota);
+  if (presentation.state === "unknown") {
+    return "";
+  }
+  const layoutClass = layout === "current" ? "current-reset-credits" : "profile-reset-credits";
+  const message = t(state.locale, "resetCreditsAvailable", {
+    value: presentation.availableCount,
+  });
+  const details = presentation.cards.length === 0
+    ? `<span class="reset-credits-details-unknown">${escapeHtml(t(state.locale, "resetCreditsDetailsUnknown"))}</span>`
+    : presentation.cards.map((card, index) => {
+        const grantedAt = card.grantedAt == null
+          ? "--"
+          : (formatBeijingDateTimeSeconds(card.grantedAt, state.locale) ?? "--");
+        const expiresAt = card.expiresAt == null
+          ? "--"
+          : (formatBeijingDateTimeSeconds(card.expiresAt, state.locale) ?? "--");
+        return `<span class="reset-credit-card">
+          <strong>${escapeHtml(t(state.locale, "resetCreditsCard", { value: index + 1 }))}</strong>
+          <span>${escapeHtml(t(state.locale, "resetCreditsGrantedAt", { value: grantedAt }))}</span>
+          <span>${escapeHtml(t(state.locale, "resetCreditsExpiresAt", { value: expiresAt }))}</span>
+        </span>`;
+      }).join("");
+  const provenance = quota?.rate_limit_reset_credits?.provenance;
+  const evidence = provenance
+    ? t(state.locale, "quotaEvidenceTitle", {
+        source: quotaSourceLabel(provenance.source),
+        confidence: quotaConfidenceLabel(provenance.confidence),
+        observed: formatQuotaObservedAge(provenance),
+      })
+    : "";
+  const title = evidence ? ` title="${escapeHtml(evidence)}"` : "";
+  return `<div class="${layoutClass} reset-credits-status"${title}>
+    <span class="reset-credits-count">${escapeHtml(message)}</span>
+    <span class="reset-credits-details">${details}</span>
+  </div>`;
+}
+
 function buildProfileQuotaMarkup(profile: ProfileCard): string {
   const unavailable = isProfileUnavailable(profile);
   const quota = profile.quota;
@@ -738,6 +781,7 @@ function buildProfileQuotaMarkup(profile: ProfileCard): string {
         ${buildQuotaEvidenceMarkup(quota, "profile")}
         ${buildQuotaLowWarningMarkup(quota, unavailable, "profile")}
       </div>
+      ${buildRateLimitResetCreditsMarkup(quota, unavailable, "profile")}
       ${buildAdditionalQuotaMarkup(quota, unavailable, "profile")}
     </div>
   `;
@@ -757,6 +801,7 @@ function buildCurrentQuotaMarkup(
       ${buildMetricLineMarkup(t(state.locale, "fiveHourAllowance"), quota?.five_hour, "blue", unavailable, "current")}
       ${buildMetricLineMarkup(t(state.locale, "weeklyAllowance"), quota?.weekly, "pink", unavailable, "current")}
       ${buildQuotaLowWarningMarkup(quota, unavailable, "current")}
+      ${buildRateLimitResetCreditsMarkup(quota, unavailable, "current")}
       ${buildAdditionalQuotaMarkup(quota, unavailable, "current")}
     </div>
   `;

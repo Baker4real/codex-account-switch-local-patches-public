@@ -211,6 +211,18 @@ function viewFor(accountSummary: OpenAiUsageAccountSummary): UsageWorkspaceView 
 }
 
 describe("renderUsage account presentation", () => {
+  it("折叠账号标签中的换行和连续空白", () => {
+    const value = account();
+    value.account_label = "  same@example.com\r\n  extra  ";
+    const { elements, account: accountPanel } = fakeElements();
+
+    renderUsage(elements, viewFor(value));
+
+    expect(accountPanel.innerHTML).toContain("same@example.com extra");
+    const accountCell = accountPanel.innerHTML.match(/usage-table-cell--account">([^<]*)<\/td>/)?.[1];
+    expect(accountCell).toBe("same@example.com extra");
+  });
+
   it("按 canonical 账号渲染一行及严格/推定拆分，并移除来源槽位", () => {
     const value = account();
     const { elements, account: accountPanel } = fakeElements();

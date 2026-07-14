@@ -15,7 +15,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 - 多账号管理：账号备份位于 `%CODEX_HOME%\account_backup\<profile>\`，切换时只同步 `auth.json` 和 `profile.json`。
 - 身份路由写回：`.current_profile` 与 `.active_profile` 只是提示，实际按 live `auth.json` 的 `account_id` / email 识别归属；无法证明归属时拒绝覆盖旧槽位。
 - Windows Store 生命周期：切换前按 `OpenAI.Codex_*__2p2nqsd0c76g0` 包身份退出并确认空快照，提交失败会事务回滚，避免半切换状态。
-- plan/quota：优先读取官方 ChatGPT API，必要时使用 Codex app-server fallback；界面显示来源和观测时间，不会因为低额度自动切换账号。支持 additional/model-specific 配额；未知或过期数据不会伪装成满额，Spark 噪声行默认隐藏。
+- plan/quota：优先读取官方 ChatGPT API，必要时使用 Codex app-server fallback；5 小时与周额度按服务端窗口时长归位，界面显示来源和观测时间，不会因为低额度自动切换账号。支持 additional/model-specific 配额与额度重置卡；重置卡逐张显示北京时间的发放、到期时间，接口未返回附加额度时不渲染误导性占位文案。未知或过期数据不会伪装成满额，Spark 噪声行默认隐藏。
 - 账号筛选：账号页支持本地搜索、动态套餐筛选、显示数/总数提示和一键清除；筛选不修改账号快照或凭据。
 - 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
 - Codex CLI 自动检测：扫描 PATH、官方 Windows runtime、nvm-windows、fnm、asdf 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。

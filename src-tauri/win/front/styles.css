@@ -260,7 +260,7 @@ button.pager-pill:hover:not(:disabled) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) max-content;
   grid-template-areas:
-    "title title"
+    "title actions"
     "quotas actions";
   align-items: center;
   row-gap: 10px;
@@ -278,10 +278,45 @@ button.pager-pill:hover:not(:disabled) {
 .profile-card-actions { grid-area: actions; }
 
 .profile-additional-quota,
-.current-additional-quota {
+.current-additional-quota,
+.profile-reset-credits,
+.current-reset-credits {
   display: grid;
   gap: 6px;
   margin-top: 8px;
+}
+
+.reset-credits-status {
+  display: grid;
+  gap: 2px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.reset-credits-count,
+.reset-credits-details,
+.reset-credit-card,
+.reset-credits-details-unknown {
+  white-space: nowrap;
+}
+
+.reset-credits-details,
+.reset-credit-card {
+  display: grid;
+  gap: 2px;
+}
+
+.reset-credit-card + .reset-credit-card {
+  margin-top: 4px;
+}
+
+.reset-credit-card strong,
+.reset-credits-details-unknown,
+.reset-credit-card span {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 500;
 }
 
 .additional-quota-row {
@@ -363,19 +398,23 @@ button.pager-pill:hover:not(:disabled) {
   display: flex;
   flex-direction: row;
   align-items: baseline;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px 12px;
   min-width: 0;
 }
 
 .profile-title-account {
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--font-body);
   font-size: 0.95rem;
   font-weight: 500;
   line-height: 1.25;
   letter-spacing: 0;
   color: var(--text-body);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .profile-plan,
@@ -391,11 +430,37 @@ button.pager-pill:hover:not(:disabled) {
 }
 
 .profile-quota-stack {
-  display: flex;
-  flex-direction: row;
-  gap: 24px;
+  display: grid;
+  grid-template-columns: minmax(300px, 1fr) max-content max-content;
+  grid-template-areas:
+    "metrics meta reset"
+    "additional additional additional";
+  gap: 10px 20px;
   align-items: center;
   min-width: 0;
+}
+
+.profile-quota-metrics {
+  grid-area: metrics;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(130px, 1fr));
+  gap: 20px;
+  min-width: 0;
+}
+
+.quota-meta-stack--profile {
+  grid-area: meta;
+  min-width: 0;
+}
+
+.profile-reset-credits {
+  grid-area: reset;
+  margin-top: 0;
+}
+
+.profile-additional-quota {
+  grid-area: additional;
+  margin-top: 0;
 }
 
 .current-quota-stack {
@@ -477,6 +542,10 @@ button.pager-pill:hover:not(:disabled) {
 }
 
 .current-quota-refresh {
+  white-space: nowrap;
+}
+
+.profile-quota-refresh {
   white-space: nowrap;
 }
 
@@ -664,7 +733,9 @@ button.pager-pill:disabled {
 
 .current-account-title {
   max-width: 100%;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-strong);
   font-family: var(--font-body);
   font-size: 0.95rem;
@@ -850,6 +921,18 @@ button.pager-pill:disabled {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .profile-card {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "title"
+      "quotas"
+      "actions";
+  }
+
+  .profile-card-actions {
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 860px) {
@@ -885,22 +968,15 @@ button.pager-pill:disabled {
     grid-template-columns: 1fr;
   }
 
-  .profile-card {
+  .profile-quota-stack {
     grid-template-columns: 1fr;
     grid-template-areas:
-      "title"
-      "quotas"
-      "actions";
-  }
-
-  .profile-quota-stack {
-    flex-direction: column;
+      "metrics"
+      "meta"
+      "reset"
+      "additional";
     align-items: stretch;
     gap: 8px;
-  }
-
-  .profile-card-actions {
-    justify-content: flex-start;
   }
 
   .current-actions {
