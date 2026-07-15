@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ProfileCard } from "@front-shared/types";
-import { canRefreshProfile } from "@front-shared/profile-refresh";
+import { canRefreshProfile, refreshableAuthObservedAt } from "@front-shared/profile-refresh";
 
 function profile(canRefresh: boolean): Pick<ProfileCard, "auth_present" | "refresh_token_status"> {
   return {
@@ -25,5 +25,12 @@ describe("profile refresh eligibility", () => {
 
   it("allows refresh only when the profile has a refreshable OAuth session", () => {
     expect(canRefreshProfile(profile(true))).toBe(true);
+  });
+
+  it("hides a legacy refresh timestamp when the auth is not refreshable", () => {
+    const status = profile(false).refresh_token_status;
+    status.last_refresh_at_ms = 1_772_582_400_000;
+
+    expect(refreshableAuthObservedAt(status)).toBeNull();
   });
 });

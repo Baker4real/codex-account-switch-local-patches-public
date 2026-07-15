@@ -16,7 +16,7 @@ import type {
 } from "@front-shared/types";
 import { t, type MessageKey } from "@front-shared/i18n";
 import { state } from "@front-shared/state";
-import { canRefreshProfile } from "@front-shared/profile-refresh";
+import { canRefreshProfile, refreshableAuthObservedAt } from "@front-shared/profile-refresh";
 import { collapseDisplayWhitespace } from "@front-shared/display-text";
 import { formatBeijingDateTimeSeconds } from "@front-shared/time-format";
 import { getThemeOption, isThemeId } from "@front-shared/theme";
@@ -392,10 +392,13 @@ function buildTokenStatusMarkup(
   layout: "profile" | "current",
 ): string {
   const label = tokenHealthLabel(status.health);
-  const updated = formatTokenObservedAge(status.last_refresh_at_ms ?? status.auth_updated_at_ms);
+  const observedAt = refreshableAuthObservedAt(status);
+  const updated = observedAt == null ? null : formatTokenObservedAge(observedAt);
   const refreshExpiry = formatTokenDate(status.refresh_token_expires_at_ms);
   const compactRefreshExpiry = formatTokenCompactDate(status.refresh_token_expires_at_ms);
-  const authCacheAge = t(state.locale, "tokenAuthCacheUpdated", { value: updated });
+  const authCacheAge = updated == null
+    ? null
+    : t(state.locale, "tokenAuthCacheUpdated", { value: updated });
   const expiryLine = refreshExpiry
     ? t(state.locale, "tokenRefreshExpiresAt", { value: refreshExpiry })
     : t(state.locale, "tokenRefreshExpiryUnknown");
@@ -403,7 +406,7 @@ function buildTokenStatusMarkup(
     ? t(state.locale, "tokenRefreshExpiresShort", { value: compactRefreshExpiry })
     : updated;
   const action = tokenActionText(status);
-  const title = `${label}. ${authCacheAge}. ${expiryLine}. ${action}`;
+  const title = [label, authCacheAge, expiryLine, action].filter((value): value is string => value != null).join(". ");
 
   return `
     <div
@@ -413,7 +416,7 @@ function buildTokenStatusMarkup(
     >
       <span class="token-status-dot" aria-hidden="true"></span>
       <span class="token-status-label">${escapeHtml(label)}</span>
-      <span class="token-status-age">${escapeHtml(inlineExpiry)}</span>
+      ${inlineExpiry ? `<span class="token-status-age">${escapeHtml(inlineExpiry)}</span>` : ""}
     </div>
   `;
 }
