@@ -606,6 +606,14 @@ mod tests {
         std::env::temp_dir().join(format!("codex-switch-install-{name}-{unique}"))
     }
 
+    fn assert_same_existing_path(actual: Option<String>, expected: PathBuf) {
+        let actual = actual.expect("expected a persisted CLI path");
+        assert_eq!(
+            fs::canonicalize(PathBuf::from(actual)).unwrap(),
+            fs::canonicalize(expected).unwrap(),
+        );
+    }
+
     fn shell_command(script: &str) -> Command {
         if cfg!(target_os = "windows") {
             let program = std::env::var_os("COMSPEC")
@@ -706,14 +714,10 @@ mod tests {
             fs::read_to_string(codex_home.join("account_backup").join(".current_profile")).unwrap(),
             "a\n"
         );
-        assert_eq!(
-            load_install_state(Some(&codex_home)),
-            InstallState {
-                real_codex_path: Some(npm_dir.join("codex.cmd").to_string_lossy().into_owned()),
-                path_added_by_installer: true,
-                user_codex_path: None,
-            }
-        );
+        let state = load_install_state(Some(&codex_home));
+        assert_same_existing_path(state.real_codex_path, npm_dir.join("codex.cmd"));
+        assert!(state.path_added_by_installer);
+        assert_eq!(state.user_codex_path, None);
         assert!(result.path_added_by_installer);
         assert!(result.path_changed);
         let _ = fs::remove_dir_all(&codex_home);
@@ -805,10 +809,7 @@ mod tests {
         refresh_install_state(&codex_home).unwrap();
         let state = load_install_state(Some(&codex_home));
 
-        assert_eq!(
-            state.real_codex_path,
-            Some(npm_dir.join("codex.cmd").to_string_lossy().into_owned())
-        );
+        assert_same_existing_path(state.real_codex_path, npm_dir.join("codex.cmd"));
         let _ = fs::remove_dir_all(&codex_home);
     }
 

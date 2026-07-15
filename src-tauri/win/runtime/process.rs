@@ -1621,6 +1621,14 @@ mod tests {
         std::env::temp_dir().join(format!("codex-switch-process-{name}-{unique}"))
     }
 
+    fn assert_same_existing_path(actual: Option<PathBuf>, expected: PathBuf) {
+        let actual = actual.expect("expected a discovered CLI path");
+        assert_eq!(
+            fs::canonicalize(actual).unwrap(),
+            fs::canonicalize(expected).unwrap()
+        );
+    }
+
     fn write_profile_metadata(codex_home: &Path, profile_name: &str, account_label: &str) {
         write_profile_metadata_with_login_browser(codex_home, profile_name, account_label, None);
     }
@@ -1951,7 +1959,7 @@ mod tests {
 
         let resolved = discover_real_codex_cli_path(Some(&managed_bin.join("codex.cmd")));
 
-        assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
+        assert_same_existing_path(resolved, npm_dir.join("codex.cmd"));
         let _ = fs::remove_dir_all(&codex_home);
     }
 
@@ -1985,7 +1993,7 @@ mod tests {
 
         let resolved = discover_real_codex_cli_path(Some(&managed_bin.join("codex.cmd")));
 
-        assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
+        assert_same_existing_path(resolved, npm_dir.join("codex.cmd"));
         let _ = fs::remove_dir_all(&codex_home);
     }
 
@@ -2214,10 +2222,10 @@ mod tests {
         let resolved = resolve_real_codex_cli(Some(&codex_home));
         let persisted_state = load_install_state(Some(&codex_home));
 
-        assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
-        assert_eq!(
-            persisted_state.real_codex_path,
-            Some(npm_dir.join("codex.cmd").to_string_lossy().into_owned())
+        assert_same_existing_path(resolved, npm_dir.join("codex.cmd"));
+        assert_same_existing_path(
+            persisted_state.real_codex_path.map(PathBuf::from),
+            npm_dir.join("codex.cmd"),
         );
         let _ = fs::remove_dir_all(&codex_home);
     }

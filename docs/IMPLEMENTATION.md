@@ -140,3 +140,7 @@ npm run tauri:build:windows:portable
 路径等于目标的 `codex_switch` 进程；复制或哈希校验失败会恢复部署前的成对备份。通用参数
 契约和回滚细节见 [`LOCAL_PATCHES.md`](../LOCAL_PATCHES.md)，设备快照见
 [`windows-dual-host.md`](environments/windows-dual-host.md)。
+
+远端默认通过其 PATH 中的 `pwsh.exe` 执行部署脚本；没有该入口的设备必须显式传入
+`-RemotePowerShellPath`，或设置 `CODEX_SWITCH_REMOTE_POWERSHELL_PATH`。不要把某台设备的
+PowerShell 绝对路径写回通用发布脚本。

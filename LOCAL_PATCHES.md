@@ -89,6 +89,8 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   `-RemoteDesktopLink` / `CODEX_SWITCH_REMOTE_DESKTOP_LINK` 提供。
 - `RemoteStageRoot` 只有正式 deploy 必填，可由 `-RemoteStageRoot` 或
   `CODEX_REMOTE_STAGE_ROOT` 提供；`-InspectOnly` 不读取、不创建 staging，因而不要求该值。
+- `RemotePowerShellPath` 默认使用远端 PATH 中的 `pwsh.exe`；仅当目标未暴露该命令时，才通过
+  `-RemotePowerShellPath` 或 `CODEX_SWITCH_REMOTE_POWERSHELL_PATH` 指定其固定路径。
 - `EvidenceRoot` 必须由 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`
   或 `CODEX_HOME` 派生路径提供。脚本不依赖仓库内 `.scratch` 作为部署证据 fallback。
 - 设备专属默认值不得复制到通用部署契约；当前维护设备的可复制命令见
