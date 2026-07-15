@@ -59,11 +59,22 @@ SHA-256，随即关闭临时服务。正式覆盖前必须再次锁定 `BAKER`�
 WorkingDirectory 和旧哈希；远端成对备份 exe/DLL，只停止完整路径等于目标的进程，
 失败时成对回滚，成功后从快捷方式启动并独立复核进程路径、窗口响应和两文件哈希。
 
-## 通用部署路径
+## 本项目部署路径
 
-通用的 UU + HTTP 部署契约位于
-`D:\Codex\.codex\docs\agent-guidance\remote-windows-gui-deployment.md`。本文件仅保留
-自习室的设备和路径事实；每次执行仍必须按该契约实时验证。
+以下路径只约束 `codex-account-switch` 的 Windows 产物部署，不是其他项目的主机级规则。
+
+1. 本机从本项目的 release 输出取得 `codex_switch.exe`、匹配 x64
+   `WebView2Loader.dll` 及两者 SHA-256。
+2. 用 UU wrapper 实时解析自习室快捷方式的 `TargetPath`、`WorkingDirectory`、主机名和
+   当前哈希；不以本文件快照替代检查。
+3. 本机在 Tailscale 地址上临时启动只读 HTTP 服务，只暴露这两个产物和短远端部署脚本；
+   远端先以 `Invoke-WebRequest -Method Head` 验证可达。
+4. UU 只发送短启动命令，让远端下载并执行脚本。不得通过 UU Base64 传输二进制，也不
+   得把完整部署逻辑塞进长 UU 命令，否则会产生 detached 会话并丢失可靠结果。
+5. 远端脚本必须校验主机与快捷方式目标、在 D 盘 staging 校验文件哈希、成对备份 exe/DLL、
+   只停止严格匹配目标路径的进程并等待句柄释放、成对覆盖并复核哈希；任何失败均成对回滚。
+6. 覆盖成功后从 `.lnk` 启动，独立核验精确进程路径与两项 SHA-256；关闭 HTTP 服务并清理
+   本次 UU 会话。
 
 当前设备的实测结果：远端 `BAKER` 的快捷方式目标仍为
 `D:\Codex\apps\codex_switch\codex_switch.exe`；2026-07-15 部署的 exe SHA-256 为
