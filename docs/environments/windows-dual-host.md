@@ -59,25 +59,11 @@ SHA-256，随即关闭临时服务。正式覆盖前必须再次锁定 `BAKER`�
 WorkingDirectory 和旧哈希；远端成对备份 exe/DLL，只停止完整路径等于目标的进程，
 失败时成对回滚，成功后从快捷方式启动并独立复核进程路径、窗口响应和两文件哈希。
 
-## 可复用的 UU + HTTP 部署契约
+## 通用部署路径
 
-这是在 2026-07-15 对自习室实际跑通的稳定路径，后续任何需要将 Windows GUI
-产物同步到远端桌面快捷方式目标的项目均可复用其结构。
-
-1. 本机先构建完整产物，并同时取得主 exe 与其同目录运行所需 DLL 的 SHA-256。
-2. 用 `uuycmgr.exe device list` 确认目标设备在线；使用 UU wrapper 解析远端
-   `.lnk` 的 `TargetPath`、`WorkingDirectory`、主 exe/DLL 哈希和主机名。快照不
-   可替代此步骤。
-3. 在本机 Tailscale 地址上启动仅本次使用的只读 HTTP 服务，仅暴露待部署文件与
-   一个短远端部署脚本。远端先以 `Invoke-WebRequest -Method Head` 确认可达。
-4. UU **只**发送短启动命令：远端下载该脚本到 D 盘 staging 后执行。不要通过 UU
-   Base64 传输二进制，也不要把完整部署逻辑塞进一条长 UU 命令，后者会被终端截断
-   并变成 detached 会话，无法可靠取得执行结果。
-5. 远端脚本必须依次：验证主机和快捷方式目标、下载 exe/DLL 到 D 盘 staging、
-   核对两项哈希、成对备份、只停止路径严格等于 `TargetPath` 的进程并等待句柄释
-   放、成对覆盖、核对最终哈希。任一失败都要成对恢复备份。
-6. 替换成功后，从 `.lnk` 启动，再独立检查精确目标路径进程和两个 SHA-256。最后
-   停止本机 HTTP 服务并确认没有遗留活动 UU 会话。
+通用的 UU + HTTP 部署契约位于
+`D:\Codex\.codex\docs\agent-guidance\remote-windows-gui-deployment.md`。本文件仅保留
+自习室的设备和路径事实；每次执行仍必须按该契约实时验证。
 
 当前设备的实测结果：远端 `BAKER` 的快捷方式目标仍为
 `D:\Codex\apps\codex_switch\codex_switch.exe`；2026-07-15 部署的 exe SHA-256 为
