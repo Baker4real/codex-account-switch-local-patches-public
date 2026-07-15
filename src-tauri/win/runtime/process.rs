@@ -37,6 +37,7 @@ use crate::shared::codex_app_server::{
 };
 use crate::shared::codex_cli_path::CodexPathResolver;
 pub use crate::shared::codex_cli_path::{InstallState, RealCodexPathSource};
+use crate::shared::dedicated_proxy::configure_child_process;
 use crate::shared::fs_ops::atomic_write_file;
 use crate::shared::login_cancel::wait_for_login_or_cancel;
 use crate::shared::metadata::load_profile_metadata;
@@ -703,6 +704,7 @@ fn build_app_server_command(real_codex_path: &Path, runtime_codex_home: &Path) -
     hide_console_window(&mut command);
     command.current_dir(runtime_codex_home);
     command.env("CODEX_HOME", runtime_codex_home);
+    configure_child_process(&mut command);
     command
 }
 
@@ -723,6 +725,7 @@ fn build_login_command(real_codex_path: &Path, runtime_codex_home: &Path) -> Com
     hide_console_window(&mut command);
     command.current_dir(runtime_codex_home);
     command.env("CODEX_HOME", runtime_codex_home);
+    configure_child_process(&mut command);
     command
 }
 

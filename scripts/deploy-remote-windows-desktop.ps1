@@ -8,6 +8,8 @@ param(
     [string]$EvidenceRoot = $env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT,
     [string]$KnownHostsPath,
     [string]$AskPassPath,
+    [string]$IdentityFile,
+    [string]$RemotePowerShellPath = 'D:\Codex\tools\PowerShell\7.6.3\pwsh.exe',
     [switch]$InspectOnly
 )
 
@@ -168,13 +170,18 @@ function Invoke-CheckedProcess {
 function Get-SshBaseArgs {
     param(
         [string]$KnownHosts,
-        [bool]$UseAskPass
+        [bool]$UseAskPass,
+        [string]$Identity
     )
 
     $arguments = @(
         '-o', 'StrictHostKeyChecking=accept-new',
         '-o', "UserKnownHostsFile=$KnownHosts"
     )
+
+    if ($Identity) {
+        $arguments += @('-i', $Identity, '-o', 'IdentitiesOnly=yes')
+    }
 
     if ($UseAskPass) {
         $arguments += @(
@@ -212,10 +219,10 @@ function Invoke-RemotePowerShell {
 
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
     $arguments = @()
-    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -UseAskPass ([bool]$AskPass)
+    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -UseAskPass ([bool]$AskPass) -Identity $IdentityFile
     $arguments += @(
         $RemoteTarget,
-        "powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+        "$RemotePowerShellPath -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
     )
 
     Invoke-CheckedProcess -FileName (Get-Command ssh).Source -Arguments $arguments -OutFile $OutFile -ErrFile $ErrFile -AskPass $AskPass
@@ -242,7 +249,7 @@ function Copy-ToRemote {
     )
 
     $arguments = @()
-    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -UseAskPass ([bool]$AskPass)
+    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -UseAskPass ([bool]$AskPass) -Identity $IdentityFile
     $arguments += @(
         $LocalPath,
         "${RemoteTarget}:$(ConvertTo-ScpRemotePath -Path $RemotePath)"
@@ -473,6 +480,9 @@ if (-not $ReleaseRoot) {
 
 if (-not $KnownHostsPath) {
     $KnownHostsPath = Join-Path $EvidenceRoot 'home_known_hosts'
+}
+if ($IdentityFile -and -not (Test-Path -LiteralPath $IdentityFile -PathType Leaf)) {
+    throw "IdentityFile does not exist: $IdentityFile"
 }
 
 $run = New-RunDirectory -Root $EvidenceRoot

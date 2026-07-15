@@ -4,6 +4,7 @@ pub mod codex_app_server;
 pub mod codex_cli_path;
 pub mod config;
 pub mod dashboard_refresh;
+pub mod dedicated_proxy;
 pub mod fs_ops;
 pub mod login_cancel;
 pub mod login_runtime;
