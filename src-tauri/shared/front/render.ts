@@ -16,6 +16,7 @@ import type {
 } from "@front-shared/types";
 import { t, type MessageKey } from "@front-shared/i18n";
 import { state } from "@front-shared/state";
+import { canRefreshProfile } from "@front-shared/profile-refresh";
 import { collapseDisplayWhitespace } from "@front-shared/display-text";
 import { formatBeijingDateTimeSeconds } from "@front-shared/time-format";
 import { getThemeOption, isThemeId } from "@front-shared/theme";
@@ -1017,7 +1018,7 @@ export function renderProfiles(
       const renameDisabled =
         state.loading || cardBusy || profile.status === "current";
       const refreshDisabled =
-        !profile.auth_present || state.loading || cardBusy || loginPending;
+        !canRefreshProfile(profile) || state.loading || cardBusy || loginPending;
       const baseDisabled = state.loading || cardBusy;
       const switchDisabled =
         !profile.auth_present || state.loading || cardBusy || loginPending || profile.status === "current";

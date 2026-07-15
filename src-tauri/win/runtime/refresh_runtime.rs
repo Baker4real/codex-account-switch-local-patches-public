@@ -258,7 +258,7 @@ fn refresh_via_app_server(
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_refresh_runtime_home, refresh_profile};
+    use super::{ensure_refreshable_auth, prepare_refresh_runtime_home, refresh_profile};
     use crate::shared::paths::get_profiles_index_path;
     use crate::shared::process_lock::acquire_process_lock;
     use crate::windows::paths::get_refresh_runtime_dir;
@@ -273,6 +273,23 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("codex-switch-refresh-runtime-{name}-{unique}"))
+    }
+
+    #[test]
+    fn refreshable_auth_guard_rejects_profile_without_refresh_token() {
+        let codex_home = temp_codex_home("missing-refresh-token");
+        fs::create_dir_all(&codex_home).unwrap();
+        let auth_path = codex_home.join("auth.json");
+        fs::write(
+            &auth_path,
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"access-token"}}"#,
+        )
+        .unwrap();
+
+        let error = ensure_refreshable_auth(&auth_path).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_AUTH_NOT_REFRESHABLE");
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]
