@@ -2267,10 +2267,10 @@ mod tests {
         let resolved = resolve_real_codex_cli(Some(&codex_home));
         let persisted_state = load_install_state(Some(&codex_home));
 
-        assert_eq!(resolved, Some(npm_dir.join("codex.cmd")));
-        assert_eq!(
-            persisted_state.real_codex_path,
-            Some(npm_dir.join("codex.cmd").to_string_lossy().into_owned())
+        assert_same_existing_path(resolved, npm_dir.join("codex.cmd"));
+        assert_same_existing_path(
+            persisted_state.real_codex_path.map(PathBuf::from),
+            npm_dir.join("codex.cmd"),
         );
         let _ = fs::remove_dir_all(&codex_home);
     }
