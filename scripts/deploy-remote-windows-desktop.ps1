@@ -9,12 +9,16 @@ param(
     [string]$KnownHostsPath,
     [string]$AskPassPath,
     [string]$IdentityFile,
-    [string]$RemotePowerShellPath = 'D:\Codex\tools\PowerShell\7.6.3\pwsh.exe',
+    [string]$RemotePowerShellPath = $env:CODEX_SWITCH_REMOTE_POWERSHELL_PATH,
     [switch]$InspectOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+if ([string]::IsNullOrWhiteSpace($RemotePowerShellPath)) {
+    $RemotePowerShellPath = 'pwsh.exe'
+}
 
 function Resolve-RepoRoot {
     return (Split-Path -Parent $PSScriptRoot)
