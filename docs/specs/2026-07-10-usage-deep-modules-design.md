@@ -3,7 +3,7 @@
 ## 状态
 
 - 日期：2026-07-10
-- 结论：已实施并完成验证；本文保留为两项 deep module 的现行架构依据
+- 结论：已实施并完成验证；本文保留为两项 deep module 的历史设计依据。当前产品仅支持 Windows x64，涉及 macOS runtime 的表述只反映实施当时的架构背景。
 - 范围：完成架构扫描中全部“强烈推荐”候选
 
 ## 目标
@@ -21,7 +21,7 @@
 - 不改变现有 Tauri Usage command 名称、参数与返回模型。
 - 不改变 `openai_usage.sqlite` schema、重建条件、证据分层、去重、定价或 official Base URL 判定语义。
 - 不把 provider sync 接入账号切换或 Usage 默认流程。
-- Windows 与 macOS 平台 runtime 继续独立；本设计不扩大共享平台行为。
+- 本设计不扩大共享平台行为；当前 Windows-only runtime 边界以仓库 `AGENTS.md` 为准。
 - 不修改账号、设置、主题、语言、登录和切换页面的用户行为。
 - 不引入新的前端状态框架或通用插件系统。
 

@@ -2,6 +2,8 @@
 
 日期：2026-07-13
 
+> 状态（2026-07-14）：已实施并归档；本文保留为实时身份解析的历史设计依据。当前产品仅支持 Windows x64，涉及 macOS 共享契约的表述仅反映实施当时的架构背景。
+
 ## 目标
 
 Codex Switch 显示的“当前账号”必须与实时 `CODEX_HOME/auth.json` 所属的托管 profile 一致，不能仅依赖可能过期的 `.current_profile` marker。
