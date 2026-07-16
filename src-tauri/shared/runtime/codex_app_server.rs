@@ -12,9 +12,9 @@
 //!   * mandatory `initialize` request + `initialized` notification
 //!     handshake before any other call
 //!   * methods used: `account/login/start` for browser login URLs owned
-//!     by this UI, `account/read` (with `refreshToken: true` so the
-//!     OAuth refresh runs server-side and `auth.json` is rewritten with
-//!     fresh `id_token` / `access_token` / `refresh_token`),
+//!     by this UI, `account/read` (with `refreshToken: false` so a
+//!     normal quota fallback observes the existing authorization without
+//!     forcing an OAuth rotation),
 //!     `account/rateLimits/read` (no params)
 //!
 //! On error the server returns standard JSON-RPC error objects. Codes we
@@ -49,11 +49,9 @@ const LOGIN_COMPLETE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 /// budget — slow-network users are exactly the population this
 /// fallback exists to serve.
 const RATE_LIMITS_TIMEOUT: Duration = Duration::from_secs(15);
-/// `account/read` with `refreshToken: true` chains an OAuth refresh
-/// POST plus the account read itself. Each leg can legitimately take
-/// the full 15s on a high-latency link, so allow a wider window than
-/// the read-only call to avoid producing `APP_SERVER_TIMEOUT` in the
-/// exact "slow network" case the fallback was meant to recover from.
+/// `account/read` is intentionally non-rotating during a normal refresh,
+/// but the app-server launch plus authenticated account lookup can still be
+/// slower than a single rate-limit GET on a high-latency link.
 const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(25);
 /// Hard upper bound on the whole RPC session. Defends against a child
 /// that hangs after responding to one method but not the next. Sized
@@ -479,12 +477,15 @@ fn parse_login_completed_notification(message: &Value, login_id: &str) -> Option
     Some(Err(AppError::new("LOGIN_FAILED", error)))
 }
 
+fn account_read_params() -> Value {
+    // The direct API path already rotates when the access token is expired,
+    // near expiry, or returns 401. A transient API failure must not make the
+    // app-server fallback consume a refresh token just to read account data.
+    json!({ "refreshToken": false })
+}
+
 fn read_account_plan(session: &mut Session) -> AppResult<Option<String>> {
-    // `refreshToken: true` forces an OAuth refresh server-side, so the
-    // id_token claims (plan tier, subscription expiry) and `auth.json`
-    // tokens move within a single click rather than waiting on the
-    // cached access_token to expire.
-    let params = json!({ "refreshToken": true });
+    let params = account_read_params();
     let result = session.call("account/read", Some(params), ACCOUNT_READ_TIMEOUT)?;
     Ok(extract_plan_type(&result))
 }
@@ -733,6 +734,11 @@ mod tests {
             "requiresOpenaiAuth": false
         });
         assert_eq!(extract_plan_type(&result).as_deref(), Some("plus"));
+    }
+
+    #[test]
+    fn account_read_params_keep_oauth_refresh_lazy() {
+        assert_eq!(account_read_params(), json!({ "refreshToken": false }));
     }
 
     #[test]

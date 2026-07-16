@@ -22,7 +22,12 @@ fn select_current_quota(
 
     match live_snapshot {
         Some(snapshot) if snapshot.source_mtime_ms.unwrap_or(0) > stored_updated_at_ms => {
-            snapshot.quota.clone()
+            let mut selected = snapshot.quota.clone();
+            if selected.rate_limit_reset_credits.is_none() {
+                selected.rate_limit_reset_credits =
+                    entry.stored_quota.rate_limit_reset_credits.clone();
+            }
+            selected
         }
         _ => entry.stored_quota.clone(),
     }
@@ -74,6 +79,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::load_current_live_quota;
+    use crate::models::QuotaSource;
     use crate::windows::env_guard;
 
     fn temp_codex_home(name: &str) -> PathBuf {
@@ -156,7 +162,7 @@ mod tests {
         .unwrap();
         fs::write(
             profile_dir.join("profile.json"),
-            r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":41},"weekly":{"remaining_percent":63}},"quota_updated_at_ms":1}"#,
+            r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":41},"weekly":{"remaining_percent":63},"rate_limit_reset_credits":{"available_count":1,"credits":[],"provenance":{"source":"chat_gpt_api","confidence":"official"}}},"quota_updated_at_ms":1}"#,
         )
         .unwrap();
         write_quota_session(
@@ -171,6 +177,20 @@ mod tests {
         let quota = response.quota.expect("expected quota");
         assert_eq!(quota.five_hour.remaining_percent, Some(89));
         assert_eq!(quota.weekly.remaining_percent, Some(88));
+        assert_eq!(
+            quota
+                .rate_limit_reset_credits
+                .as_ref()
+                .and_then(|credits| credits.available_count),
+            Some(1)
+        );
+        assert_eq!(
+            quota
+                .rate_limit_reset_credits
+                .as_ref()
+                .map(|credits| credits.provenance.source),
+            Some(QuotaSource::ChatGptApi)
+        );
 
         let _ = fs::remove_dir_all(&codex_home);
     }

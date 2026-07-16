@@ -80,8 +80,8 @@ Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dl
 远端桌面覆盖入口使用显式参数；下面是通用形状，尖括号内容必须替换为真实值：
 
 ```powershell
-npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -EvidenceRoot '<local-evidence-root>' -InspectOnly
-npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -RemoteStageRoot '<remote-stage-root>' -EvidenceRoot '<local-evidence-root>'
+npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -IdentityFile '<direction-private-key>' -KnownHostsPath '<direction-known-hosts>' -EvidenceRoot '<local-evidence-root>' -InspectOnly
+npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -IdentityFile '<direction-private-key>' -KnownHostsPath '<direction-known-hosts>' -RemoteStageRoot '<remote-stage-root>' -EvidenceRoot '<local-evidence-root>'
 ```
 
 - `RemoteTarget` 与 `RemoteDesktopLink` 对 inspect 和 deploy 都是必填项，可分别由
@@ -89,6 +89,11 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   `-RemoteDesktopLink` / `CODEX_SWITCH_REMOTE_DESKTOP_LINK` 提供。
 - `RemoteStageRoot` 只有正式 deploy 必填，可由 `-RemoteStageRoot` 或
   `CODEX_REMOTE_STAGE_ROOT` 提供；`-InspectOnly` 不读取、不创建 staging，因而不要求该值。
+- `IdentityFile` 与 `KnownHostsPath` 对 inspect 和 deploy 都是必填项，且必须是该方向独立的
+  已存在文件。脚本固定使用 `BatchMode=yes`、`IdentitiesOnly=yes`、
+  `StrictHostKeyChecking=yes` 和短连接超时；不自动接纳主机密钥，也不支持密码或 `SSH_ASKPASS` 回退。
+- 本地 npm 部署入口固定调用 PATH 中的最新版 PowerShell 7（`pwsh`），不再默认回退到 Windows
+  PowerShell 5.1；缺少 `pwsh` 时应修复本机 runtime，而不是改用旧宿主绕过。
 - `RemotePowerShellPath` 默认使用远端 PATH 中的 `pwsh.exe`；仅当目标未暴露该命令时，才通过
   `-RemotePowerShellPath` 或 `CODEX_SWITCH_REMOTE_POWERSHELL_PATH` 指定其固定路径。
 - `EvidenceRoot` 必须由 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`
@@ -106,8 +111,6 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   `codex_switch` 进程，覆盖 exe+dll 并复核哈希；其他目录中的同名进程不受影响。
 - 远端替换开始后，如任一复制或哈希校验失败，脚本会自动用部署前备份恢复
   `codex_switch.exe` 与 `WebView2Loader.dll`，避免目标目录停留在混合版本。
-- 脚本不保存密码。非交互认证通过 `-AskPassPath` 或调用环境里的
-  `SSH_ASKPASS` 注入；通用文档不记录凭据来源或内容。
 - 有效 evidence 根依次取 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`、
   `CODEX_HOME\run-evidence\codex-account-switch`；三者都不可用时立即失败。每次运行的
   stdout/stderr、inspect 和 deploy JSON 会写入其下的 `remote-desktop-deploy-*`
@@ -138,12 +141,17 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   runtime 目录，避免 Codex 升级后应用继续指向已删除 runtime。
 - 账号页 quota 读数必须保留 provenance 元数据，避免把低可信度 fallback
   或本地 session 观测结果展示得像官方 ChatGPT API 读数。
+- 套餐也必须记录来源：`/wham/usage` 的 `plan_type` 优先于 OAuth `id_token` claim，
+  app-server 返回的套餐只可用于没有 ChatGPT API 套餐时，`id_token` 仅用于初始或无 live 数据时的
+  fallback。已确认的 ChatGPT API 套餐不得被 app-server 或之后 metadata hydration 中的旧 token
+  覆盖；普通刷新保持 OAuth 惰性，只在 token 过期、临近过期或 usage 返回 401 时轮换授权。
 - 5 小时与周额度必须按服务端 `window_minutes` / `limit_window_seconds` 的实际窗口时长
   归位，不能假设 primary / secondary 的固定顺序。额度重置卡数量来自 `/wham/usage`，
   发放与到期时间来自 `/wham/rate-limit-reset-credits`；详情请求必须复用刷新后的 OAuth
   身份和账号作用域 header，失败时保留主 quota。不得记录 token、cookie、完整账号或卡片
   ID、失败响应正文；前端固定按北京时间显示时间，服务端没有 additional 配额时不显示
-  “接口未报告附加额度”一类空占位。
+  “接口未报告附加额度”一类空占位。较新的本地 session JSONL 若未包含重置卡，合并和切换写回
+  必须保留已存的官方卡片，不得把可用卡清零。
 - OpenAI 使用统计必须以有效 `base_url` 作为官方来源门禁，不得用
   `model_provider` 反推官方来源；只统计默认官方路径或 HTTPS
   `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建分层 ledger，

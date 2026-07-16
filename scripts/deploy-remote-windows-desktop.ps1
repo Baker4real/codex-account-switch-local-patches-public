@@ -7,7 +7,6 @@ param(
     [string]$LoaderPath,
     [string]$EvidenceRoot = $env:CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT,
     [string]$KnownHostsPath,
-    [string]$AskPassPath,
     [string]$IdentityFile,
     [string]$RemotePowerShellPath = $env:CODEX_SWITCH_REMOTE_POWERSHELL_PATH,
     [switch]$InspectOnly
@@ -15,6 +14,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    throw 'PowerShell 7 (pwsh) is required for remote desktop deployment.'
+}
 
 if ([string]::IsNullOrWhiteSpace($RemotePowerShellPath)) {
     $RemotePowerShellPath = 'pwsh.exe'
@@ -91,29 +94,6 @@ function Resolve-ReleaseArtifacts {
     }
 }
 
-function Get-EffectiveAskPassPath {
-    param([string]$RequestedPath)
-
-    if ($RequestedPath) {
-        if (-not (Test-Path -LiteralPath $RequestedPath)) {
-            throw "Configured AskPassPath does not exist: $RequestedPath"
-        }
-
-        return $RequestedPath
-    }
-
-    if ($env:SSH_ASKPASS -and (Test-Path -LiteralPath $env:SSH_ASKPASS)) {
-        return $env:SSH_ASKPASS
-    }
-
-    $defaultAskPass = Join-Path $EvidenceRoot 'ssh-askpass-home.cmd'
-    if (Test-Path -LiteralPath $defaultAskPass) {
-        return $defaultAskPass
-    }
-
-    return $null
-}
-
 function Invoke-CheckedProcess {
     param(
         [Parameter(Mandatory = $true)]
@@ -124,23 +104,19 @@ function Invoke-CheckedProcess {
 
         [string]$OutFile,
 
-        [string]$ErrFile,
-
-        [string]$AskPass
+        [string]$ErrFile
     )
 
+    # PowerShell 7 exposes ArgumentList so every SSH/SCP item remains a
+    # discrete argument, including remote commands and paths with spaces.
     $psi = [Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $FileName
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
-
-    if ($AskPass) {
-        $psi.Environment['SSH_ASKPASS'] = $AskPass
-        $psi.Environment['SSH_ASKPASS_REQUIRE'] = 'force'
-        $psi.Environment['DISPLAY'] = 'codex'
-    }
+    $psi.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
+    $psi.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
 
     foreach ($argument in $Arguments) {
         [void]$psi.ArgumentList.Add($argument)
@@ -173,35 +149,39 @@ function Invoke-CheckedProcess {
 
 function Get-SshBaseArgs {
     param(
+        [Parameter(Mandatory = $true)]
         [string]$KnownHosts,
-        [bool]$UseAskPass,
+
+        [Parameter(Mandatory = $true)]
         [string]$Identity
     )
 
-    $arguments = @(
-        '-o', 'StrictHostKeyChecking=accept-new',
-        '-o', "UserKnownHostsFile=$KnownHosts"
+    return @(
+        '-i', $Identity,
+        '-o', 'BatchMode=yes',
+        '-o', 'IdentitiesOnly=yes',
+        '-o', 'StrictHostKeyChecking=yes',
+        '-o', "UserKnownHostsFile=$KnownHosts",
+        '-o', 'ConnectTimeout=10',
+        '-o', 'PasswordAuthentication=no',
+        '-o', 'KbdInteractiveAuthentication=no'
+    )
+}
+
+function Get-RemotePowerShellCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PowerShellPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$EncodedCommand
     )
 
-    if ($Identity) {
-        $arguments += @('-i', $Identity, '-o', 'IdentitiesOnly=yes')
+    if ($PowerShellPath -match '["\r\n]') {
+        throw 'RemotePowerShellPath must be a single executable path without quotes or line breaks.'
     }
 
-    if ($UseAskPass) {
-        $arguments += @(
-            '-o', 'BatchMode=no',
-            '-o', 'NumberOfPasswordPrompts=1',
-            '-o', 'PreferredAuthentications=keyboard-interactive,password',
-            '-o', 'PubkeyAuthentication=no',
-            '-o', 'KbdInteractiveAuthentication=yes'
-        )
-    } else {
-        $arguments += @(
-            '-o', 'BatchMode=yes'
-        )
-    }
-
-    return $arguments
+    return '"{0}" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand {1}' -f $PowerShellPath, $EncodedCommand
 }
 
 function Invoke-RemotePowerShell {
@@ -215,21 +195,49 @@ function Invoke-RemotePowerShell {
         [Parameter(Mandatory = $true)]
         [string]$ErrFile,
 
-        [string]$AskPass,
-
         [Parameter(Mandatory = $true)]
         [string]$KnownHosts
     )
 
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    # OpenSSH can preserve remote Unicode paths, while a Windows console can
+    # still decode the returned JSON with its active code page. Return the
+    # remote stdout as UTF-8 base64 so evidence always retains the exact text.
+    $transportCommand = @"
+`$ErrorActionPreference = 'Stop'
+`$ProgressPreference = 'SilentlyContinue'
+`$WarningPreference = 'SilentlyContinue'
+`$InformationPreference = 'SilentlyContinue'
+`$result = & {
+$Command
+} | Out-String
+`$payload = [Text.Encoding]::UTF8.GetBytes([string]`$result)
+[Console]::Out.Write([Convert]::ToBase64String(`$payload))
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($transportCommand))
     $arguments = @()
-    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -UseAskPass ([bool]$AskPass) -Identity $IdentityFile
+    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -Identity $IdentityFile
     $arguments += @(
         $RemoteTarget,
-        "$RemotePowerShellPath -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand $encoded"
+        (Get-RemotePowerShellCommand -PowerShellPath $RemotePowerShellPath -EncodedCommand $encoded)
     )
 
-    Invoke-CheckedProcess -FileName (Get-Command ssh).Source -Arguments $arguments -OutFile $OutFile -ErrFile $ErrFile -AskPass $AskPass
+    $encodedStdout = Invoke-CheckedProcess -FileName (Get-Command ssh).Source -Arguments $arguments -ErrFile $ErrFile
+    $trimmedStdout = $encodedStdout.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedStdout)) {
+        $stdout = ''
+    } else {
+        try {
+            $stdout = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($trimmedStdout))
+        } catch {
+            throw "Remote PowerShell returned invalid UTF-8 base64 output: $($_.Exception.Message)"
+        }
+    }
+
+    if ($OutFile) {
+        [IO.File]::WriteAllText($OutFile, $stdout, [Text.UTF8Encoding]::new($false))
+    }
+
+    return $stdout
 }
 
 function Copy-ToRemote {
@@ -246,20 +254,18 @@ function Copy-ToRemote {
         [Parameter(Mandatory = $true)]
         [string]$ErrFile,
 
-        [string]$AskPass,
-
         [Parameter(Mandatory = $true)]
         [string]$KnownHosts
     )
 
     $arguments = @()
-    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -UseAskPass ([bool]$AskPass) -Identity $IdentityFile
+    $arguments += Get-SshBaseArgs -KnownHosts $KnownHosts -Identity $IdentityFile
     $arguments += @(
         $LocalPath,
         "${RemoteTarget}:$(ConvertTo-ScpRemotePath -Path $RemotePath)"
     )
 
-    Invoke-CheckedProcess -FileName (Get-Command scp).Source -Arguments $arguments -OutFile $OutFile -ErrFile $ErrFile -AskPass $AskPass | Out-Null
+    Invoke-CheckedProcess -FileName (Get-Command scp).Source -Arguments $arguments -OutFile $OutFile -ErrFile $ErrFile | Out-Null
 }
 
 function New-InspectCommand {
@@ -482,22 +488,25 @@ if (-not $ReleaseRoot) {
     $ReleaseRoot = Join-Path $repoRoot 'src-tauri\target\x86_64-pc-windows-msvc\release'
 }
 
-if (-not $KnownHostsPath) {
-    $KnownHostsPath = Join-Path $EvidenceRoot 'home_known_hosts'
+if ([string]::IsNullOrWhiteSpace($KnownHostsPath)) {
+    throw 'KnownHostsPath is required. Pass the direction-specific known_hosts file explicitly.'
 }
-if ($IdentityFile -and -not (Test-Path -LiteralPath $IdentityFile -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath $KnownHostsPath -PathType Leaf)) {
+    throw "KnownHostsPath does not exist: $KnownHostsPath"
+}
+if ([string]::IsNullOrWhiteSpace($IdentityFile)) {
+    throw 'IdentityFile is required. Pass the direction-specific SSH private key explicitly.'
+}
+if (-not (Test-Path -LiteralPath $IdentityFile -PathType Leaf)) {
     throw "IdentityFile does not exist: $IdentityFile"
 }
 
 $run = New-RunDirectory -Root $EvidenceRoot
-$askPass = Get-EffectiveAskPassPath -RequestedPath $AskPassPath
-$knownHostsParent = Split-Path -Parent $KnownHostsPath
-New-Item -ItemType Directory -Force -Path $knownHostsParent | Out-Null
 
 $inspectCommand = New-InspectCommand -DesktopLink $RemoteDesktopLink
 $inspectBeforePath = Join-Path $run.Path 'inspect-before.json'
 $inspectBeforeErrPath = Join-Path $run.Path 'inspect-before.stderr.txt'
-$inspectBefore = Invoke-RemotePowerShell -Command $inspectCommand -OutFile $inspectBeforePath -ErrFile $inspectBeforeErrPath -AskPass $askPass -KnownHosts $KnownHostsPath
+$inspectBefore = Invoke-RemotePowerShell -Command $inspectCommand -OutFile $inspectBeforePath -ErrFile $inspectBeforeErrPath -KnownHosts $KnownHostsPath
 
 if ($InspectOnly) {
     [pscustomobject]@{
@@ -517,23 +526,23 @@ $createStageCommand = @"
 New-Item -ItemType Directory -Force -Path $(Quote-PSLiteral -Value $remoteStageDir) | Out-Null
 "@
 
-Invoke-RemotePowerShell -Command $createStageCommand -OutFile (Join-Path $run.Path 'create-stage.stdout.txt') -ErrFile (Join-Path $run.Path 'create-stage.stderr.txt') -AskPass $askPass -KnownHosts $KnownHostsPath | Out-Null
+Invoke-RemotePowerShell -Command $createStageCommand -OutFile (Join-Path $run.Path 'create-stage.stdout.txt') -ErrFile (Join-Path $run.Path 'create-stage.stderr.txt') -KnownHosts $KnownHostsPath | Out-Null
 
 $remoteFiles = Write-RemoteDeployFiles -RunDir $run.Path -StageDir $remoteStageDir -Artifacts $artifacts -DesktopLink $RemoteDesktopLink -Stamp $run.Stamp
 
-Copy-ToRemote -LocalPath $artifacts.ExePath -RemotePath (Join-Path $remoteStageDir 'codex_switch.exe') -OutFile (Join-Path $run.Path 'copy-exe.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-exe.stderr.txt') -AskPass $askPass -KnownHosts $KnownHostsPath
-Copy-ToRemote -LocalPath $artifacts.LoaderPath -RemotePath (Join-Path $remoteStageDir 'WebView2Loader.dll') -OutFile (Join-Path $run.Path 'copy-loader.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-loader.stderr.txt') -AskPass $askPass -KnownHosts $KnownHostsPath
-Copy-ToRemote -LocalPath $remoteFiles.ConfigPath -RemotePath (Join-Path $remoteStageDir 'remote-deploy-config.json') -OutFile (Join-Path $run.Path 'copy-config.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-config.stderr.txt') -AskPass $askPass -KnownHosts $KnownHostsPath
-Copy-ToRemote -LocalPath $remoteFiles.ScriptPath -RemotePath (Join-Path $remoteStageDir 'remote-deploy-codex-switch.ps1') -OutFile (Join-Path $run.Path 'copy-script.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-script.stderr.txt') -AskPass $askPass -KnownHosts $KnownHostsPath
+Copy-ToRemote -LocalPath $artifacts.ExePath -RemotePath (Join-Path $remoteStageDir 'codex_switch.exe') -OutFile (Join-Path $run.Path 'copy-exe.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-exe.stderr.txt') -KnownHosts $KnownHostsPath
+Copy-ToRemote -LocalPath $artifacts.LoaderPath -RemotePath (Join-Path $remoteStageDir 'WebView2Loader.dll') -OutFile (Join-Path $run.Path 'copy-loader.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-loader.stderr.txt') -KnownHosts $KnownHostsPath
+Copy-ToRemote -LocalPath $remoteFiles.ConfigPath -RemotePath (Join-Path $remoteStageDir 'remote-deploy-config.json') -OutFile (Join-Path $run.Path 'copy-config.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-config.stderr.txt') -KnownHosts $KnownHostsPath
+Copy-ToRemote -LocalPath $remoteFiles.ScriptPath -RemotePath (Join-Path $remoteStageDir 'remote-deploy-codex-switch.ps1') -OutFile (Join-Path $run.Path 'copy-script.stdout.txt') -ErrFile (Join-Path $run.Path 'copy-script.stderr.txt') -KnownHosts $KnownHostsPath
 
 $deployCommand = "& $(Quote-PSLiteral -Value (Join-Path $remoteStageDir 'remote-deploy-codex-switch.ps1'))"
 $deployResultPath = Join-Path $run.Path 'deploy-result.json'
 $deployErrPath = Join-Path $run.Path 'deploy-result.stderr.txt'
-$deployResult = Invoke-RemotePowerShell -Command $deployCommand -OutFile $deployResultPath -ErrFile $deployErrPath -AskPass $askPass -KnownHosts $KnownHostsPath
+$deployResult = Invoke-RemotePowerShell -Command $deployCommand -OutFile $deployResultPath -ErrFile $deployErrPath -KnownHosts $KnownHostsPath
 
 $inspectAfterPath = Join-Path $run.Path 'inspect-after.json'
 $inspectAfterErrPath = Join-Path $run.Path 'inspect-after.stderr.txt'
-$inspectAfter = Invoke-RemotePowerShell -Command $inspectCommand -OutFile $inspectAfterPath -ErrFile $inspectAfterErrPath -AskPass $askPass -KnownHosts $KnownHostsPath
+$inspectAfter = Invoke-RemotePowerShell -Command $inspectCommand -OutFile $inspectAfterPath -ErrFile $inspectAfterErrPath -KnownHosts $KnownHostsPath
 
 [pscustomobject]@{
     mode = 'deploy'

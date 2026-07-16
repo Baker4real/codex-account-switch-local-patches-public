@@ -1,84 +1,48 @@
 # Windows 双机部署环境
 
-> 状态：设备专属配置快照；核对日期为 2026-07-15。本文不是通用部署契约，也不保存密码或密钥。
+> 状态：设备专属配置快照；核对日期为 2026-07-16。本文不保存密码或私钥，通用传输规则以 `D:\Codex\.codex\docs\agent-guidance\ssh-mesh.md` 为准。
 
 ## 实时状态优先
 
-路径和快捷方式目标可能随安装、桌面重定向或远端维护变化。每次替换前都必须重新解析快捷方式；当前设备可直接复制以下 PowerShell 初始化与 inspect 命令：
+路径和快捷方式目标可能随安装、桌面重定向或远端维护变化。每次替换前都必须经严格 SSH
+重新解析快捷方式、主机身份和两项 SHA-256；若与本文不同，以实时结果为准。家里到自习室
+的正式路径是 OpenSSH/SCP over Tailscale，必须显式指定该方向专用私钥与 `known_hosts`，并
+固定 `BatchMode=yes`、`IdentitiesOnly=yes`、`StrictHostKeyChecking=yes` 和短连接超时。不得
+通过密码、`SSH_ASKPASS`、自动接纳主机密钥或 UU 搬运正式 payload。
 
-不要继续使用旧快照里的 `WINDOWS@<jia-li-tailscale-ip>` 作为远端：2026-07-11
-实时 Tailscale 状态确认该地址是当前机器自身的 `jia-li` 节点。自习室设备必须先通过
-UU 设备列表锁定，再用 UU 终端读取其主机身份、快捷方式目标和哈希。
-
-如果实时解析结果与本文不同，以实时结果为准，并在确认设备状态稳定后更新本文。
+UU 仅在 SSH 不可用时用于 bootstrap、诊断或受限救援；它不是日常命令或文件传输路径。
 
 ## 当前本机
 
 - Tailscale 节点：`jia-li` / `<jia-li-tailscale-ip>`
 - 桌面快捷方式：`D:\Desktop\codex_switch.exe.lnk`
-- 2026-07-11 已收敛到稳定 `TargetPath`：`D:\Codex\apps\codex_switch\codex_switch.exe`
+- 已确认 `TargetPath`：`D:\Codex\apps\codex_switch\codex_switch.exe`
 - `WorkingDirectory`：`D:\Codex\apps\codex_switch`
 - 替换时同时更新同目录的 `codex_switch.exe` 与 x64 `WebView2Loader.dll`，并在替换前后核对 SHA-256。
 
 ## 当前远端
 
-- UU 设备名 / ID：`自习室` / `aeawutfrjia4s5i6`
-- 已验证身份：主机 `BAKER`、用户 `14224`
+- 正式 SSH 目标：`14224@<zi-xi-shi-tailscale-ip>`（主机 `BAKER`）
 - Tailscale 节点：`zi-xi-shi` / `<zi-xi-shi-tailscale-ip>`
 - 桌面快捷方式：`D:\桌面\codex_switch.lnk`
-- 2026-07-11 解析到的 `TargetPath`：`D:\Codex\apps\codex_switch\codex_switch.exe`
+- 已确认 `TargetPath`：`D:\Codex\apps\codex_switch\codex_switch.exe`
 - `WorkingDirectory`：`D:\Codex\apps\codex_switch`
-- UU CLI：`D:\Program Files\Netease\GameViewer\bin\uuycmgr.exe`
-- UU 远端 PowerShell：`D:\Codex\tools\PowerShell\7.6.3\pwsh.exe`
 - 远端 staging 根目录：`D:\Codex\.codex\run-evidence\replicator\manual-artifacts\codex-account-switch`
 - 本机部署证据根目录：`D:\Codex\.codex\run-evidence\codex-account-switch`
-- 当前从本机到自习室的 Windows OpenSSH 没有可用私钥、agent 或 askpass；不要把 SSH 失败误判成设备离线。
 
-设备 `.lnk` 的真实 `TargetPath` 和 `WorkingDirectory` 仍必须每次实时确认；上面的值只用于检测漂移，不能替代检查。
-
-## 当前设备部署命令
-
-先实时读取 UU 设备列表并确认 `自习室` 在线：
-
-```powershell
-& 'D:\Program Files\Netease\GameViewer\bin\uuycmgr.exe' device list
-```
-
-远端命令检查使用 `codex-gsd-codex-c-skill` 项目中已验证的 UU wrapper；该项目名只保留历史名称，不代表重新启用 GSD workflow：
-
-```powershell
-& 'D:\Codex\tools\PowerShell\7.6.3\pwsh.exe' -NoLogo -NoProfile `
-  -File 'D:\Codex\projects\codex-gsd-codex-c-skill\scripts\Invoke-ReplicatorUuCommand.ps1' `
-  -ManifestPath 'D:\Codex\projects\codex-gsd-codex-c-skill\config\targets.example.json' `
-  -TargetId home -DeviceId 'aeawutfrjia4s5i6' -CleanupNewSession -Command '<read-only probe>'
-```
-
-大文件不能使用 UU Base64 小文件通道。已验证的救援路径是：本机只在 Tailscale IP
-上临时提供只读 HTTP，UU 远端 PowerShell 下载到 D 盘隔离 staging，逐文件校验
-SHA-256，随即关闭临时服务。正式覆盖前必须再次锁定 `BAKER`、快捷方式目标、
-WorkingDirectory 和旧哈希；远端成对备份 exe/DLL，只停止完整路径等于目标的进程，
-失败时成对回滚，成功后从快捷方式启动并独立复核进程路径、窗口响应和两文件哈希。
+设备 `.lnk` 的真实 `TargetPath` 和 `WorkingDirectory` 仍必须每次实时确认；上面的值只用于
+检测漂移，不能替代检查。部署时的具体哈希、备份目录和进程状态属于一次性 evidence，不写入
+本文件。
 
 ## 本项目部署路径
 
 以下路径只约束 `codex-account-switch` 的 Windows 产物部署，不是其他项目的主机级规则。
 
-1. 本机从本项目的 release 输出取得 `codex_switch.exe`、匹配 x64
-   `WebView2Loader.dll` 及两者 SHA-256。
-2. 用 UU wrapper 实时解析自习室快捷方式的 `TargetPath`、`WorkingDirectory`、主机名和
-   当前哈希；不以本文件快照替代检查。
-3. 本机在 Tailscale 地址上临时启动只读 HTTP 服务，只暴露这两个产物和短远端部署脚本；
-   远端先以 `Invoke-WebRequest -Method Head` 验证可达。
-4. UU 只发送短启动命令，让远端下载并执行脚本。不得通过 UU Base64 传输二进制，也不
-   得把完整部署逻辑塞进长 UU 命令，否则会产生 detached 会话并丢失可靠结果。
-5. 远端脚本必须校验主机与快捷方式目标、在 D 盘 staging 校验文件哈希、成对备份 exe/DLL、
-   只停止严格匹配目标路径的进程并等待句柄释放、成对覆盖并复核哈希；任何失败均成对回滚。
-6. 覆盖成功后从 `.lnk` 启动，独立核验精确进程路径与两项 SHA-256；关闭 HTTP 服务并清理
-   本次 UU 会话。
-
-当前设备的实测结果：远端 `BAKER` 的快捷方式目标仍为
-`D:\Codex\apps\codex_switch\codex_switch.exe`；2026-07-15 部署的 exe SHA-256 为
-`8D5532A282BA2C1A4578633DD6DF1B123BF6070BEFB01CDA23196D191915F9FD`，匹配 loader
-SHA-256 为 `8427B1FC58EC707813E5C0A51EB5D69397BB333250A7B891BE4D3B123F1E0F1C`，快捷
-方式启动后的精确目标进程 PID 为 `50652`。这些值是本次证据，不可跳过下一次的实
-时解析与哈希验证。
+1. 本机从 release 输出取得 `codex_switch.exe`、匹配 x64 `WebView2Loader.dll` 及两者 SHA-256。
+2. 用严格 SSH 的只读探针确认远端 `hostname`、`whoami`、快捷方式 `TargetPath`、`WorkingDirectory`
+   和现有文件哈希；不以本文件快照替代检查。
+3. 通过 SCP 先把产物写入远端 D 盘 staging，再在两端核对 SHA-256。
+4. 远端脚本必须成对备份 exe/DLL，只停止完整路径等于快捷方式 `TargetPath` 的进程，等待句柄
+   释放后成对覆盖并复核哈希；任何失败均成对回滚。
+5. 非交互 SSH 会话只能证明目标文件与进程路径，不能证明可见桌面窗口。需要 UI 可用性时，
+   在自习室实际桌面从快捷方式启动并观察窗口；不要把 SSH 会话的窗口句柄超时误判为哈希部署失败。

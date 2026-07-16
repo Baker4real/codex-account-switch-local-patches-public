@@ -5,7 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::models::{
-    ProfileMetadata, QuotaProvenance, QuotaSummary, RefreshTokenHealth, RefreshTokenStatus,
+    PlanSource, ProfileMetadata, QuotaProvenance, QuotaSummary, RefreshTokenHealth,
+    RefreshTokenStatus,
 };
 
 use super::fs_ops::atomic_write_file;
@@ -122,6 +123,7 @@ fn metadata_has_identity_bound_fields(metadata: &ProfileMetadata) -> bool {
 
     metadata.account_label.is_some()
         || metadata.plan_name.is_some()
+        || metadata.plan_source != PlanSource::Unknown
         || metadata.subscription_expires_at.is_some()
         || metadata.quota_updated_at_ms.is_some()
         || metadata.last_plan_check_ms.is_some()
@@ -137,6 +139,7 @@ fn metadata_has_identity_bound_fields(metadata: &ProfileMetadata) -> bool {
 fn clear_identity_bound_metadata(metadata: &mut ProfileMetadata) {
     metadata.account_label = None;
     metadata.plan_name = None;
+    metadata.plan_source = PlanSource::Unknown;
     metadata.subscription_expires_at = None;
     metadata.quota = QuotaSummary::default();
     metadata.quota_updated_at_ms = None;
@@ -554,6 +557,7 @@ fn apply_auth_metadata(
     metadata: &mut ProfileMetadata,
     auth_metadata: AuthDerivedMetadata,
     overwrite_account_label: bool,
+    overwrite_plan: bool,
 ) {
     let AuthDerivedMetadata {
         account_label,
@@ -576,7 +580,8 @@ fn apply_auth_metadata(
         metadata.account_label = account_label;
     }
 
-    if has_plan_claims {
+    if has_plan_claims && (overwrite_plan || normalized_value(metadata.plan_name.clone()).is_none())
+    {
         metadata.plan_name = plan_name;
         metadata.subscription_expires_at = subscription_expires_at;
         // The free→unknown_paid fallback is intentionally NOT applied
@@ -607,7 +612,16 @@ fn hydrate_profile_metadata(
     }
 
     if let Some(auth_metadata) = load_auth_metadata(profile_name, codex_home) {
-        apply_auth_metadata(&mut metadata, auth_metadata, false);
+        let auth_has_plan_claims = auth_metadata.has_plan_claims;
+        let had_plan = normalized_value(metadata.plan_name.clone()).is_some();
+        let overwrite_plan = matches!(
+            metadata.plan_source,
+            PlanSource::Unknown | PlanSource::AuthToken
+        );
+        apply_auth_metadata(&mut metadata, auth_metadata, false, overwrite_plan);
+        if auth_has_plan_claims && (overwrite_plan || !had_plan) {
+            metadata.plan_source = PlanSource::AuthToken;
+        }
     }
 
     metadata
@@ -644,15 +658,33 @@ pub fn load_profile_metadata(profile_name: &str, codex_home: Option<&Path>) -> P
     hydrate_profile_metadata(metadata, &profile_name, codex_home)
 }
 
+fn plan_source_may_replace(existing: PlanSource, incoming: PlanSource) -> bool {
+    match incoming {
+        // The direct ChatGPT API is the authoritative live plan source.
+        PlanSource::ChatGptApi => true,
+        // A successful login proves the account identity, but its new
+        // id_token can still carry a plan claim that lags either live source.
+        // It may seed or refresh only token-derived metadata, never roll back
+        // an already confirmed ChatGPT API or app-server plan.
+        PlanSource::AuthToken => matches!(existing, PlanSource::Unknown | PlanSource::AuthToken),
+        // app-server is a useful live fallback for token-derived/legacy data,
+        // but it must not roll back a plan confirmed by `/wham/usage`.
+        PlanSource::CodexAppServer => existing != PlanSource::ChatGptApi,
+        PlanSource::Unknown => false,
+    }
+}
+
 /// Re-derive the auth-backed slice of `ProfileMetadata` (account label,
 /// plan tier, subscription expiry) from disk and persist it.
 ///
-/// `api_plan_type_override`, when present and non-empty, replaces the
-/// id_token-derived `plan_name`. Callers that just refreshed the
-/// ChatGPT-API `wham/usage` payload pass `Some(plan_type)` so the
-/// authoritative live tier wins over a possibly-stale id_token claim;
-/// the legacy `codex exec` path and the post-login flow pass `None`
-/// because they have no fresher source.
+/// `plan_type_override`, when present and non-empty, replaces the
+/// id_token-derived `plan_name`; `plan_source` records whether it came from
+/// ChatGPT's live API or the app-server fallback. A post-login call uses
+/// `PlanSource::AuthToken` to seed token-derived metadata only when no live
+/// plan has already been confirmed. Neither token nor app-server fallback can
+/// replace a plan confirmed by the ChatGPT API, and a token cannot replace an
+/// app-server fallback plan. A live refresh with no returned plan leaves an
+/// already-persisted live plan intact instead of letting a stale token erase it.
 ///
 /// This is the plan-side half of the D1 split — the quota half is
 /// `sync_profile_quota`. The two operations used to live in a single
@@ -664,13 +696,14 @@ pub fn load_profile_metadata(profile_name: &str, codex_home: Option<&Path>) -> P
 /// from being shoehorned alongside unrelated quota arguments.
 pub fn sync_profile_metadata_from_auth(
     profile_name: &str,
-    api_plan_type_override: Option<String>,
+    plan_type_override: Option<String>,
+    plan_source: PlanSource,
     codex_home: Option<&Path>,
 ) -> Result<ProfileMetadata, crate::errors::AppError> {
     let auth_metadata = validate_profile_name(profile_name)
         .ok()
         .and_then(|profile_name| load_auth_metadata(&profile_name, codex_home));
-    let api_plan_normalized = api_plan_type_override.and_then(|raw| {
+    let plan_type_normalized = plan_type_override.and_then(|raw| {
         let trimmed = raw.trim();
         (!trimmed.is_empty() && !trimmed.eq_ignore_ascii_case("replace-me"))
             .then(|| trimmed.to_string())
@@ -683,10 +716,19 @@ pub fn sync_profile_metadata_from_auth(
             // plan info (nested or top-level), which counts as a
             // confirmed plan check — distinct from `quota_updated_at_ms`
             // since plan moves on a different cadence than usage.
-            plan_confirmed |= auth_metadata.has_plan_claims;
-            apply_auth_metadata(metadata, auth_metadata, true);
+            let auth_has_plan_claims = auth_metadata.has_plan_claims;
+            let had_plan = normalized_value(metadata.plan_name.clone()).is_some();
+            let overwrite_plan = plan_source == PlanSource::AuthToken
+                && plan_source_may_replace(metadata.plan_source, plan_source);
+            apply_auth_metadata(metadata, auth_metadata, true, overwrite_plan);
+            if auth_has_plan_claims && (overwrite_plan || !had_plan) {
+                metadata.plan_source = PlanSource::AuthToken;
+                plan_confirmed = true;
+            }
         }
-        if let Some(api_plan) = api_plan_normalized {
+        if let Some(plan) = plan_type_normalized
+            .filter(|_| plan_source_may_replace(metadata.plan_source, plan_source))
+        {
             // API plan_type is authoritative. The id_token claim can
             // lag behind real plan changes (downgrades especially: a
             // user who moved Plus → Free can still see "plus" in
@@ -696,9 +738,12 @@ pub fn sync_profile_metadata_from_auth(
             // the current backend state, so when it says "free" we
             // trust it even if the cached `metadata.quota` still has
             // a paid window left over from before the downgrade.
-            metadata.plan_name = Some(api_plan);
+            metadata.plan_name = Some(plan);
+            metadata.plan_source = plan_source;
             plan_confirmed = true;
-        } else {
+        } else if plan_source == PlanSource::AuthToken
+            && plan_source_may_replace(metadata.plan_source, plan_source)
+        {
             // No API plan_type to lean on. Fall back to the heuristic
             // that flips a stale "free" claim to `unknown_paid` when
             // the cached quota looks paid. This is the right call only
@@ -1040,6 +1085,214 @@ mod tests {
     }
 
     #[test]
+    fn api_plan_override_survives_hydration_from_stale_token_claim() {
+        let codex_home = temp_dir("api-plan-overrides-stale-token");
+        let profile_dir = get_profile_metadata_path("c", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        let stale_id_token = synthesize_jwt(
+            r#"{
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "prolite"
+                }
+            }"#,
+        );
+        write_auth_with_id_token(&profile_dir, &stale_id_token);
+
+        let synced = sync_profile_metadata_from_auth(
+            "c",
+            Some("free".to_string()),
+            PlanSource::ChatGptApi,
+            Some(&codex_home),
+        )
+        .expect("API plan sync should succeed");
+        let reloaded = load_profile_metadata("c", Some(&codex_home));
+
+        assert_eq!(synced.plan_name.as_deref(), Some("free"));
+        assert_eq!(synced.plan_source, PlanSource::ChatGptApi);
+        assert_eq!(reloaded.plan_name.as_deref(), Some("free"));
+        assert_eq!(reloaded.plan_source, PlanSource::ChatGptApi);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn legacy_plan_without_live_source_is_rehydrated_from_token_claim() {
+        let codex_home = temp_dir("legacy-plan-is-auth-hydrated");
+        let profile_dir = get_profile_metadata_path("c", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        let id_token = synthesize_jwt(
+            r#"{
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "prolite"
+                }
+            }"#,
+        );
+        write_auth_with_id_token(&profile_dir, &id_token);
+        std::fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"c","account_label":"user@example.com","plan_name":"free"}"#,
+        )
+        .expect("legacy profile metadata should be written");
+
+        let reloaded = load_profile_metadata("c", Some(&codex_home));
+
+        assert_eq!(reloaded.plan_name.as_deref(), Some("prolite"));
+        assert_eq!(reloaded.plan_source, PlanSource::AuthToken);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn live_plan_survives_a_later_refresh_without_plan_data() {
+        let codex_home = temp_dir("live-plan-survives-empty-fallback");
+        let profile_dir = get_profile_metadata_path("c", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        let stale_id_token = synthesize_jwt(
+            r#"{
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "prolite"
+                }
+            }"#,
+        );
+        write_auth_with_id_token(&profile_dir, &stale_id_token);
+        sync_profile_metadata_from_auth(
+            "c",
+            Some("free".to_string()),
+            PlanSource::ChatGptApi,
+            Some(&codex_home),
+        )
+        .expect("API plan sync should succeed");
+
+        let refreshed = sync_profile_metadata_from_auth(
+            "c",
+            None,
+            PlanSource::CodexAppServer,
+            Some(&codex_home),
+        )
+        .expect("empty fallback refresh should succeed");
+
+        assert_eq!(refreshed.plan_name.as_deref(), Some("free"));
+        assert_eq!(refreshed.plan_source, PlanSource::ChatGptApi);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn app_server_plan_does_not_override_chatgpt_api_plan() {
+        let codex_home = temp_dir("app-server-cannot-override-api-plan");
+        let profile_dir = get_profile_metadata_path("c", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        let stale_id_token = synthesize_jwt(
+            r#"{
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "prolite"
+                }
+            }"#,
+        );
+        write_auth_with_id_token(&profile_dir, &stale_id_token);
+        sync_profile_metadata_from_auth(
+            "c",
+            Some("free".to_string()),
+            PlanSource::ChatGptApi,
+            Some(&codex_home),
+        )
+        .expect("API plan sync should succeed");
+
+        let refreshed = sync_profile_metadata_from_auth(
+            "c",
+            Some("prolite".to_string()),
+            PlanSource::CodexAppServer,
+            Some(&codex_home),
+        )
+        .expect("app-server fallback should persist safely");
+
+        assert_eq!(refreshed.plan_name.as_deref(), Some("free"));
+        assert_eq!(refreshed.plan_source, PlanSource::ChatGptApi);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn post_login_token_plan_does_not_override_chatgpt_api_plan() {
+        let codex_home = temp_dir("post-login-token-cannot-override-api-plan");
+        let profile_dir = get_profile_metadata_path("c", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        let stale_id_token = synthesize_jwt(
+            r#"{
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "prolite"
+                }
+            }"#,
+        );
+        write_auth_with_id_token(&profile_dir, &stale_id_token);
+        sync_profile_metadata_from_auth(
+            "c",
+            Some("free".to_string()),
+            PlanSource::ChatGptApi,
+            Some(&codex_home),
+        )
+        .expect("API plan sync should succeed");
+
+        let refreshed =
+            sync_profile_metadata_from_auth("c", None, PlanSource::AuthToken, Some(&codex_home))
+                .expect("post-login token sync should persist safely");
+
+        assert_eq!(refreshed.plan_name.as_deref(), Some("free"));
+        assert_eq!(refreshed.plan_source, PlanSource::ChatGptApi);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn post_login_token_plan_does_not_override_app_server_plan() {
+        let codex_home = temp_dir("post-login-token-cannot-override-app-server-plan");
+        let profile_dir = get_profile_metadata_path("c", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        let stale_id_token = synthesize_jwt(
+            r#"{
+                "email": "user@example.com",
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "prolite"
+                }
+            }"#,
+        );
+        write_auth_with_id_token(&profile_dir, &stale_id_token);
+        sync_profile_metadata_from_auth(
+            "c",
+            Some("free".to_string()),
+            PlanSource::CodexAppServer,
+            Some(&codex_home),
+        )
+        .expect("app-server plan sync should succeed");
+
+        let refreshed =
+            sync_profile_metadata_from_auth("c", None, PlanSource::AuthToken, Some(&codex_home))
+                .expect("post-login token sync should persist safely");
+
+        assert_eq!(refreshed.plan_name.as_deref(), Some("free"));
+        assert_eq!(refreshed.plan_source, PlanSource::CodexAppServer);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
     fn free_plan_with_five_hour_quota_displays_unknown_paid_when_api_unavailable() {
         let mut metadata = ProfileMetadata {
             quota: quota_with_five_hour(),
@@ -1049,7 +1302,7 @@ mod tests {
         // The shape of the production sync flow when no API plan_type
         // is available: apply_auth_metadata writes plan_name from the
         // id_token, then the caller runs the paid-fallback helper.
-        apply_auth_metadata(&mut metadata, auth_plan("free"), true);
+        apply_auth_metadata(&mut metadata, auth_plan("free"), true, true);
         apply_paid_fallback_when_api_unavailable(&mut metadata);
 
         // The id_token says "free" but quota data implies an active
@@ -1062,7 +1315,7 @@ mod tests {
     fn free_plan_without_five_hour_quota_stays_free() {
         let mut metadata = ProfileMetadata::default();
 
-        apply_auth_metadata(&mut metadata, auth_plan("free"), true);
+        apply_auth_metadata(&mut metadata, auth_plan("free"), true, true);
         apply_paid_fallback_when_api_unavailable(&mut metadata);
 
         assert_eq!(metadata.plan_name.as_deref(), Some("free"));
@@ -1081,7 +1334,7 @@ mod tests {
             ..ProfileMetadata::default()
         };
 
-        apply_auth_metadata(&mut metadata, auth_plan("free"), true);
+        apply_auth_metadata(&mut metadata, auth_plan("free"), true, true);
 
         assert_eq!(
             metadata.plan_name.as_deref(),
@@ -1100,7 +1353,7 @@ mod tests {
                 ..ProfileMetadata::default()
             };
 
-            apply_auth_metadata(&mut metadata, auth_plan(plan_name), true);
+            apply_auth_metadata(&mut metadata, auth_plan(plan_name), true, true);
 
             assert_eq!(metadata.plan_name.as_deref(), Some(plan_name));
         }

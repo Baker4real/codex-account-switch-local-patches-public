@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::errors::{AppResult, CommandError};
-use crate::models::{CurrentQuotaResponse, QuotaProvenance};
+use crate::models::{CurrentQuotaResponse, PlanSource, QuotaProvenance};
 use crate::platform::hooks::PlatformHooks;
 
 use super::chatgpt_api::{ChatGptApiRefreshResult, RefreshOptions, PLAN_FRESHNESS_TTL_MS};
@@ -129,6 +129,7 @@ pub fn refresh_active_profile_quota_silent(
             let _ = super::metadata::sync_profile_metadata_from_auth(
                 &profile_name,
                 plan_type_from_api,
+                PlanSource::ChatGptApi,
                 Some(&codex_home),
             );
             let _ = super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home));
@@ -225,6 +226,7 @@ pub fn refresh_all_oauth_profile_plans_silent(
         if let Err(error) = super::metadata::sync_profile_metadata_from_auth(
             &entry.folder_name,
             plan_type_from_api,
+            PlanSource::ChatGptApi,
             Some(&codex_home),
         ) {
             eprintln!(

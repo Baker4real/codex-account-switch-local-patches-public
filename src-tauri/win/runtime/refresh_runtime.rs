@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::errors::{AppError, AppResult};
-use crate::models::{QuotaProvenance, QuotaSummary};
+use crate::models::{PlanSource, QuotaProvenance, QuotaSummary};
 use crate::platform;
 use crate::shared::process_lock::{acquire_process_lock, ProcessLockGuard};
 
@@ -116,15 +116,11 @@ fn try_refresh_via_chatgpt_api(
     codex_home: &Path,
     profile_dir: &Path,
 ) -> AppResult<Option<String>> {
-    // Do not force OAuth token rotation just because cached plan info
-    // is stale. See `mac/runtime/refresh_runtime.rs` for the same
-    // policy — this module mirrors it pending the planned mac/win merge.
-    let snapshot = match crate::shared::chatgpt_api::refresh_profile_via_api_with_options(
+    // `/wham/usage` is authoritative for plan data. Keep OAuth rotation lazy:
+    // a forced token round-trip need not advance a stale id_token plan claim.
+    let snapshot = match crate::shared::chatgpt_api::refresh_profile_via_api(
         profile_name,
         codex_home,
-        crate::shared::chatgpt_api::RefreshOptions {
-            force_token_rotation: false,
-        },
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -169,8 +165,12 @@ fn try_refresh_via_chatgpt_api(
         Some(QuotaProvenance::chatgpt_api(now_ms)),
         Some(codex_home),
     )?;
-    let metadata =
-        sync_profile_metadata_from_auth(profile_name, plan_type_from_api, Some(codex_home))?;
+    let metadata = sync_profile_metadata_from_auth(
+        profile_name,
+        plan_type_from_api,
+        PlanSource::ChatGptApi,
+        Some(codex_home),
+    )?;
     sync_root_metadata_if_current_profile(profile_name, &metadata, Some(codex_home))?;
     super::profiles_index::reload_profiles_index_after_mutation(Some(codex_home))?;
     Ok(Some(profile_dir.to_string_lossy().into_owned()))
@@ -248,8 +248,12 @@ fn refresh_via_app_server(
         Some(QuotaProvenance::codex_app_server(now_ms)),
         Some(codex_home),
     )?;
-    let metadata =
-        sync_profile_metadata_from_auth(profile_name, snapshot.plan_type, Some(codex_home))?;
+    let metadata = sync_profile_metadata_from_auth(
+        profile_name,
+        snapshot.plan_type,
+        PlanSource::CodexAppServer,
+        Some(codex_home),
+    )?;
     sync_root_metadata_if_current_profile(profile_name, &metadata, Some(codex_home))?;
     super::profiles_index::reload_profiles_index_after_mutation(Some(codex_home))?;
 

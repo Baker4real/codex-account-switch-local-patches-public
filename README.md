@@ -15,7 +15,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 - 多账号管理：账号备份位于 `%CODEX_HOME%\account_backup\<profile>\`，切换时只同步 `auth.json` 和 `profile.json`。
 - 身份路由写回：`.current_profile` 与 `.active_profile` 只是提示，实际按 live `auth.json` 的 `account_id` / email 识别归属；无法证明归属时拒绝覆盖旧槽位。
 - Windows Store 生命周期：切换前按 `OpenAI.Codex_*__2p2nqsd0c76g0` 包身份退出并确认空快照，提交失败会事务回滚，避免半切换状态。
-- plan/quota：优先读取官方 ChatGPT API，必要时使用 Codex app-server fallback；5 小时与周额度按服务端窗口时长归位，界面显示来源和观测时间，不会因为低额度自动切换账号。支持 additional/model-specific 配额与额度重置卡；重置卡逐张显示北京时间的发放、到期时间，接口未返回附加额度时不渲染误导性占位文案。未知或过期数据不会伪装成满额，Spark 噪声行默认隐藏。
+- plan/quota：优先读取官方 ChatGPT API，必要时使用 Codex app-server fallback；live 套餐不会被滞后的 OAuth `id_token` 覆盖，正常刷新只在授权确有需要时轮换 token。5 小时与周额度按服务端窗口时长归位，界面显示来源和观测时间，不会因为低额度自动切换账号。支持 additional/model-specific 配额与额度重置卡；重置卡逐张显示北京时间的发放、到期时间，较新的本地 session 快照缺卡时仍保留已确认卡片，接口未返回附加额度时不渲染误导性占位文案。未知或过期数据不会伪装成满额，Spark 噪声行默认隐藏。
 - 账号筛选：账号页支持本地搜索、动态套餐筛选、显示数/总数提示和一键清除；筛选不修改账号快照或凭据。
 - 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
 - Codex CLI 自动检测：扫描 PATH、官方 Windows runtime、nvm-windows、fnm、asdf 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。
@@ -45,7 +45,7 @@ Windows SmartScreen 可能提示未签名；确认来源后可选择“更多信
 
 ## 本地开发与验证
 
-在 Windows PowerShell 中执行：
+在已安装并处于 PATH 中的最新版 PowerShell 7（`pwsh`）中执行：
 
 ```powershell
 npm install
@@ -78,7 +78,7 @@ npm run version:check
 
 更新检查只读取版本 JSON、显示 release notes 并打开发布页。它不会下载、安装或覆盖公共上游二进制。当前安装版含本地 Windows patch；发现上游新版本时，先把上游 tag 合并到源码、重新保留本地补丁并通过 Windows 验证，再构建和替换安装目录。完整流程见 [`LOCAL_PATCHES.md`](LOCAL_PATCHES.md)。
 
-远端 Windows 桌面部署必须先用 `-InspectOnly` 实时解析快捷方式的 `TargetPath`，再上传并替换目标目录中的 exe + loader；不可把文件复制到 `.lnk` 路径，也不可只替换 exe。设备专属路径与传输证据见 [`docs/environments/windows-dual-host.md`](docs/environments/windows-dual-host.md)。
+远端 Windows 桌面部署必须使用严格 OpenSSH/SCP over Tailscale，并显式提供方向专用私钥与 `known_hosts`；先用 `-InspectOnly` 实时解析快捷方式的 `TargetPath`，再上传并替换目标目录中的 exe + loader。不可把文件复制到 `.lnk` 路径、只替换 exe、自动接纳新主机密钥或回退到密码认证。设备专属路径与传输证据见 [`docs/environments/windows-dual-host.md`](docs/environments/windows-dual-host.md)。
 
 ## 数据位置与安全边界
 

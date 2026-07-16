@@ -19,6 +19,7 @@
 use std::path::Path;
 
 use crate::errors::{AppError, AppResult};
+use crate::models::PlanSource;
 use crate::platform::hooks::PlatformHooks;
 
 use super::fs_ops::atomic_copy_file;
@@ -177,10 +178,16 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
         publish_auth_file(&runtime_auth, &live_auth)?;
     }
 
-    // Login flow has no fresher plan signal than the new id_token codex
-    // just wrote, so let `sync_profile_metadata_from_auth` re-derive
-    // plan / label from disk. No API override needed.
-    let metadata = sync_profile_metadata_from_auth(&profile_name, None, Some(&codex_home))?;
+    // Login flow has no fresher plan signal than the new id_token Codex just
+    // wrote. Re-derive the label and seed token-derived metadata only when
+    // there is no previously confirmed API plan: a new token can still lag a
+    // `/wham/usage` downgrade or upgrade.
+    let metadata = sync_profile_metadata_from_auth(
+        &profile_name,
+        None,
+        PlanSource::AuthToken,
+        Some(&codex_home),
+    )?;
     sync_root_metadata_if_current_profile(&profile_name, &metadata, Some(&codex_home))?;
     reload_profiles_index_after_mutation(Some(&codex_home))?;
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {

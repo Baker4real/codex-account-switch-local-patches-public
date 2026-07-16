@@ -68,6 +68,24 @@ impl Default for QuotaSource {
     }
 }
 
+/// The source that last established the persisted account plan. Keeping this
+/// separately from quota provenance lets a live plan response survive a stale
+/// OAuth id_token claim during later metadata hydration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanSource {
+    Unknown,
+    AuthToken,
+    ChatGptApi,
+    CodexAppServer,
+}
+
+impl Default for PlanSource {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QuotaConfidence {
@@ -151,6 +169,10 @@ pub struct ProfileMetadata {
     pub folder_name: Option<String>,
     pub account_label: Option<String>,
     pub plan_name: Option<String>,
+    /// The source that supplied `plan_name`. Legacy metadata omits this and
+    /// deserializes to `Unknown`, allowing its current id_token claim to
+    /// hydrate it as before.
+    pub plan_source: PlanSource,
     pub subscription_expires_at: Option<String>,
     pub openai_base_url: Option<String>,
     pub login_browser: Option<String>,

@@ -203,9 +203,8 @@ pub fn profile_supports_api_refresh(profile_dir: &Path) -> bool {
 /// treat any error here as a signal to fall back to the legacy path.
 ///
 /// Equivalent to [`refresh_profile_via_api_with_options`] with
-/// `force_token_rotation = false`. Used by the silent dashboard ticker
-/// which prefers the cheap path (skip OAuth refresh when access_token
-/// is still valid).
+/// `force_token_rotation = false`. Used by normal dashboard and account-card
+/// refreshes, which skip OAuth renewal while the access token is still valid.
 pub fn refresh_profile_via_api(
     profile_name: &str,
     codex_home: &Path,
@@ -447,10 +446,9 @@ fn fetch_usage_with_retry(
 ) -> Result<UsageFetchResult, UsageFetchError> {
     // 1) Refresh proactively if the JWT is already expired or about to
     //    expire. Avoids a guaranteed 401 + retry pair. When the caller
-    //    forces rotation, refresh unconditionally — id_token claims
-    //    (plan tier, subscription expiry) only rotate as a side-effect
-    //    of the OAuth refresh endpoint, so user-initiated refreshes
-    //    must take this path even when the access_token is still valid.
+    //    forces rotation, refresh unconditionally. Normal refreshes leave
+    //    this lazy because an OAuth round-trip does not guarantee a newer
+    //    id_token plan claim.
     let mut working_auth = auth.clone();
     let mut oauth_token_rotated = false;
     if should_refresh_oauth_before_usage(&working_auth.access_token, force_token_rotation) {

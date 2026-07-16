@@ -66,9 +66,13 @@ fn sync_current_profile_quota_before_switch(codex_home: &Path) -> AppResult<()> 
         let live_is_newer =
             snapshot.source_mtime_ms.unwrap_or(0) > metadata.quota_updated_at_ms.unwrap_or(0);
         if live_is_newer || !quota_summary_has_data(&metadata.quota) {
+            let mut quota = snapshot.quota;
+            if quota.rate_limit_reset_credits.is_none() {
+                quota.rate_limit_reset_credits = metadata.quota.rate_limit_reset_credits.clone();
+            }
             metadata = sync_profile_quota_with_provenance(
                 &current_profile,
-                snapshot.quota,
+                quota,
                 snapshot.source_mtime_ms,
                 None,
                 Some(codex_home),
@@ -257,7 +261,7 @@ mod tests {
         fs::write(profile_a_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
         fs::write(
             profile_a_dir.join("profile.json"),
-            r#"{"folder_name":"a","account_label":"acct_A","quota":{"five_hour":{"remaining_percent":25},"weekly":{"remaining_percent":50}},"quota_updated_at_ms":1}"#,
+            r#"{"folder_name":"a","account_label":"acct_A","quota":{"five_hour":{"remaining_percent":25},"weekly":{"remaining_percent":50},"rate_limit_reset_credits":{"available_count":1,"credits":[],"provenance":{"source":"chat_gpt_api","confidence":"official"}}},"quota_updated_at_ms":1}"#,
         )
         .unwrap();
         fs::write(profile_b_dir.join("auth.json"), auth_with_account("acct_B")).unwrap();
@@ -276,6 +280,15 @@ mod tests {
         let stored = fs::read_to_string(profile_a_dir.join("profile.json")).unwrap();
         assert!(stored.contains(r#""remaining_percent": 89"#));
         assert!(stored.contains(r#""remaining_percent": 88"#));
+        let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            stored["quota"]["rate_limit_reset_credits"]["available_count"],
+            1
+        );
+        assert_eq!(
+            stored["quota"]["rate_limit_reset_credits"]["provenance"]["source"],
+            "chat_gpt_api"
+        );
         assert_eq!(
             fs::read_to_string(get_current_profile_file(Some(&codex_home))).unwrap(),
             "b\n"

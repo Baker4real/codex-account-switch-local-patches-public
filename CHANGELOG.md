@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 账号套餐现在持久化记录来源：官方 `/wham/usage` 的 live `plan_type` 不会再被滞后的 OAuth `id_token` 覆盖，正常刷新只在授权确有需要时轮换 token；较新的本地 session 快照未携带重置卡时，已确认的官方可用卡会被保留，切换写回也不会将其清零。
+- 远端 Windows 桌面部署收紧为严格 OpenSSH/SCP：必须显式提供方向专用私钥和 `known_hosts`，固定非交互、严格主机密钥校验，不再自动接纳主机密钥或回退到密码/askpass 认证。
 - Cockpit phase one 已落地 Windows GUI 的 nvm-windows/fnm/asdf CLI 候选发现、账号搜索与动态套餐筛选、显示数/总数提示，以及 additional/model-specific 配额显示偏好；默认隐藏 Spark 噪声行，筛选和偏好不写入账号凭据。
 - **Breaking:** the supported product boundary is now Windows x64 only. Runtime sources,
   frontend entrypoints, build scripts, CI, and release assets are maintained for the Windows

@@ -75,14 +75,20 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
 - CLI resolver 按手动 override、`install_state`、PATH、nvm-windows、fnm、asdf 和常见
   Windows runtime 顺序探测，每个候选都用 `codex --version` 验证；失效的缓存 shim 不会
   继续使用。版本管理器扫描只读取受限的直接版本目录，不做全盘递归。
-- plan 来自 OAuth `id_token` claims；quota 优先走 ChatGPT Web API，必要时使用
-  app-server `account/rateLimits/read` fallback。UI 显示 provenance 和观测时间，低于阈值
-  只告警，不自动切换。`/wham/usage` 的 5 小时与周额度按 `window_minutes` 或
-  `limit_window_seconds` 的实际窗口时长归位，不依赖 primary/secondary 槽位顺序。
+- plan 持久化来源：官方 `/wham/usage` 的 `plan_type` 是首选 live 值，app-server 返回的套餐
+  只可作为没有官方 API 套餐时的 fallback；OAuth `id_token` claim 只用于初始或没有 live 结果时。
+  已确认的 ChatGPT API 套餐不会被 app-server 或后续 metadata hydration 中滞后的 `id_token` 覆盖。
+  卡片刷新和后台 bulk refresh 保持 OAuth
+  惰性，只在 access token 过期、临近过期或 usage 返回 401 时轮换授权。quota 优先走 ChatGPT
+  Web API，必要时使用 app-server `account/rateLimits/read` fallback。UI 显示 provenance 和
+  观测时间，低于阈值只告警，不自动切换。`/wham/usage` 的 5 小时与周额度按
+  `window_minutes` 或 `limit_window_seconds` 的实际窗口时长归位，不依赖 primary/secondary
+  槽位顺序。
 - `/wham/usage` 提供重置卡可用数量，`/wham/rate-limit-reset-credits` 补充每张卡的
-  `granted_at` / `expires_at`；前端固定按 `Asia/Shanghai` 显示到秒。详情接口失败不丢弃已
-  成功取得的主 quota，401 明确归因为凭证失效或 Authorization header 无效。响应中的卡片
-  ID 不进入模型、缓存或日志。
+  `granted_at` / `expires_at`；前端固定按 `Asia/Shanghai` 显示到秒。较新的 session JSONL
+  快照若未包含这部分，不能覆盖已存的官方重置卡；切换前写回也遵循同一合并规则。详情接口失败
+  不丢弃已成功取得的主 quota，401 明确归因为凭证失效或 Authorization header 无效。响应中的
+  卡片 ID 不进入模型、缓存或日志。
 - 账号页支持本地搜索、动态套餐筛选和显示数/总数；additional/model-specific 配额保留
   unknown/stale 语义，Spark 噪声行默认隐藏，显示偏好只写浏览器 localStorage，不写入账号
   凭据或 profile 配置。服务端没有报告 additional 配额时不显示空占位状态。
@@ -141,6 +147,7 @@ npm run tauri:build:windows:portable
 契约和回滚细节见 [`LOCAL_PATCHES.md`](../LOCAL_PATCHES.md)，设备快照见
 [`windows-dual-host.md`](environments/windows-dual-host.md)。
 
+本地 `npm run deploy:windows:remote-desktop` 默认通过 PATH 中的 `pwsh`（PowerShell 7）执行；
 远端默认通过其 PATH 中的 `pwsh.exe` 执行部署脚本；没有该入口的设备必须显式传入
 `-RemotePowerShellPath`，或设置 `CODEX_SWITCH_REMOTE_POWERSHELL_PATH`。不要把某台设备的
 PowerShell 绝对路径写回通用发布脚本。

@@ -39,6 +39,7 @@ const allowedEmailDomains = new Set([
 
 const deployScriptPath = join(repoRoot, "scripts/deploy-remote-windows-desktop.ps1");
 const buildWorkflowPath = join(repoRoot, ".github/workflows/build.yml");
+const packageJsonPath = join(repoRoot, "package.json");
 
 function toRepoPath(path) {
   return relative(repoRoot, path).replaceAll("\\", "/");
@@ -87,6 +88,7 @@ function isAllowedEmail(email) {
 const failures = [];
 
 const deployScript = read(deployScriptPath);
+const packageJson = JSON.parse(read(packageJsonPath));
 const deployRequirements = [
   {
     pattern:
@@ -115,10 +117,42 @@ const deployRequirements = [
     pattern: /-not\s+\$hadOriginalLoader[\s\S]*Remove-Item\s+-LiteralPath\s+\$targetLoader/i,
     message: "must remove a newly introduced loader when rollback restores an absent loader",
   },
+  {
+    pattern: /StrictHostKeyChecking=yes[\s\S]*UserKnownHostsFile=\$KnownHosts/i,
+    message: "must require strict host-key verification with the supplied known-hosts file",
+  },
+  {
+    pattern: /-i',\s*\$Identity[\s\S]*BatchMode=yes[\s\S]*IdentitiesOnly=yes/i,
+    message: "must use the supplied identity non-interactively",
+  },
+  {
+    pattern: /KnownHostsPath is required[\s\S]*IdentityFile is required/i,
+    message: "must require explicit known-hosts and identity inputs",
+  },
+  {
+    pattern: /PSVersionTable\.PSVersion\.Major\s+-lt\s+7/i,
+    message: "must require PowerShell 7 instead of silently using the legacy host",
+  },
+  {
+    pattern: /function Get-RemotePowerShellCommand[\s\S]*'"\{0\}" -NoLogo -NoProfile -ExecutionPolicy Bypass -EncodedCommand \{1\}'/i,
+    message: "must quote an explicit remote PowerShell path before execution",
+  },
 ];
 
 if (/\.scratch[\s\S]{0,100}run-evidence/i.test(deployScript)) {
   failures.push("scripts/deploy-remote-windows-desktop.ps1 must not fall back to .scratch evidence");
+}
+
+if (/StrictHostKeyChecking=accept-new|AskPassPath|SSH_ASKPASS|BatchMode=no/i.test(deployScript)) {
+  failures.push(
+    "scripts/deploy-remote-windows-desktop.ps1 must not weaken strict SSH with host enrollment or password fallback",
+  );
+}
+
+if (!/^pwsh\s/i.test(packageJson.scripts?.["deploy:windows:remote-desktop"] ?? "")) {
+  failures.push(
+    "package.json deploy:windows:remote-desktop must default to PowerShell 7 (pwsh)",
+  );
 }
 
 for (const requirement of deployRequirements) {
