@@ -150,8 +150,8 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   发放与到期时间来自 `/wham/rate-limit-reset-credits`；详情请求必须复用刷新后的 OAuth
   身份和账号作用域 header，失败时保留主 quota。不得记录 token、cookie、完整账号或卡片
   ID、失败响应正文；前端固定按北京时间显示时间，服务端没有 additional 配额时不显示
-  “接口未报告附加额度”一类空占位。较新的本地 session JSONL 若未包含重置卡，合并和切换写回
-  必须保留已存的官方卡片，不得把可用卡清零。
+  “接口未报告附加额度”一类空占位。本地 session JSONL 只能作为当前 profile 激活后且严格更新的快照；
+  若未包含重置卡，合并和切换写回必须保留已存的官方卡片，不得把可用卡清零。
 - OpenAI 使用统计必须以有效 `base_url` 作为官方来源门禁，不得用
   `model_provider` 反推官方来源；只统计默认官方路径或 HTTPS
   `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建分层 ledger，

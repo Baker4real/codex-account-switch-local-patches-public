@@ -85,9 +85,9 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
   `window_minutes` 或 `limit_window_seconds` 的实际窗口时长归位，不依赖 primary/secondary
   槽位顺序。
 - `/wham/usage` 提供重置卡可用数量，`/wham/rate-limit-reset-credits` 补充每张卡的
-  `granted_at` / `expires_at`；前端固定按 `Asia/Shanghai` 显示到秒。较新的 session JSONL
-  快照若未包含这部分，不能覆盖已存的官方重置卡；切换前写回也遵循同一合并规则。详情接口失败
-  不丢弃已成功取得的主 quota，401 明确归因为凭证失效或 Authorization header 无效。响应中的
+  `granted_at` / `expires_at`；前端固定按 `Asia/Shanghai` 显示到秒。session JSONL 快照只能在当前
+  profile 激活后且严格更新时才能合并；即使它缺少重置卡字段，也不能覆盖已存的官方重置卡。切换前写回遵循同一合并规则。
+  详情接口失败不丢弃已成功取得的主 quota，401 明确归因为凭证失效或 Authorization header 无效。响应中的
   卡片 ID 不进入模型、缓存或日志。
 - 账号页支持本地搜索、动态套餐筛选和显示数/总数；additional/model-specific 配额保留
   unknown/stale 语义，Spark 噪声行默认隐藏，显示偏好只写浏览器 localStorage，不写入账号

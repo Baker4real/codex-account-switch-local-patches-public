@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 use crate::errors::AppResult;
 use crate::models::{CurrentQuotaResponse, ProfileIndexEntry, ProfilesIndex};
 use crate::shared::paths::get_backup_root;
-use crate::shared::profiles::detect_unmanaged_live_account;
+use crate::shared::profiles::{
+    detect_unmanaged_live_account, profile_activated_at_ms, resolve_backup_target,
+};
 
 use super::paths::get_codex_home;
 use super::session_usage::{
-    load_latest_local_quota_snapshot, normalize_quota_summary, LocalQuotaSnapshot,
+    load_latest_local_quota_snapshot_since, normalize_quota_summary, LocalQuotaSnapshot,
 };
 
 pub use crate::shared::profiles_index::{
@@ -36,13 +38,14 @@ fn select_current_quota(
 pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQuotaResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let index: ProfilesIndex = load_profiles_index(Some(&codex_home))?;
-    if detect_unmanaged_live_account(&get_backup_root(Some(&codex_home)), &codex_home).is_some() {
+    let backup_root = get_backup_root(Some(&codex_home));
+    if detect_unmanaged_live_account(&backup_root, &codex_home).is_some() {
         return Ok(CurrentQuotaResponse {
             profile: None,
             quota: None,
         });
     }
-    let Some(current_profile) = index.current_profile.clone() else {
+    let Some(current_profile) = resolve_backup_target(&backup_root, &codex_home) else {
         return Ok(CurrentQuotaResponse {
             profile: None,
             quota: None,
@@ -59,7 +62,8 @@ pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQu
         });
     };
 
-    let live_snapshot = load_latest_local_quota_snapshot(Some(&codex_home));
+    let activated_at_ms = profile_activated_at_ms(&current_profile, &backup_root);
+    let live_snapshot = load_latest_local_quota_snapshot_since(Some(&codex_home), activated_at_ms);
     let quota = normalize_quota_summary(
         Some(select_current_quota(entry, live_snapshot.as_ref())),
         entry.plan_name.as_deref(),
@@ -140,6 +144,47 @@ mod tests {
         let quota = response.quota.expect("expected quota");
         assert_eq!(quota.five_hour.remaining_percent, None);
         assert_eq!(quota.weekly.remaining_percent, None);
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn current_live_quota_ignores_session_written_before_profile_activation() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("ignore-foreign-session-before-activation");
+        let backup_root = codex_home.join("account_backup");
+        let profile_dir = backup_root.join("b");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(backup_root.join(".current_profile"), "b\n").unwrap();
+        fs::write(
+            profile_dir.join("auth.json"),
+            auth_with_account("b@example.com"),
+        )
+        .unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"b","account_label":"b@example.com","quota":{"five_hour":{"remaining_percent":41},"weekly":{"remaining_percent":63}},"quota_updated_at_ms":1}"#,
+        )
+        .unwrap();
+        write_quota_session(
+            codex_home.join("sessions").join("session-001.jsonl"),
+            11.0,
+            12.0,
+        );
+        // A session written before this activation belongs to the account that
+        // was live before the switch, not to profile b.
+        fs::write(
+            profile_dir.join(".active_profile"),
+            "activated_at=2099-01-01T00:00:00Z\n",
+        )
+        .unwrap();
+
+        let response = load_current_live_quota(Some(&codex_home)).unwrap();
+
+        assert_eq!(response.profile.as_deref(), Some("b"));
+        let quota = response.quota.expect("expected quota");
+        assert_eq!(quota.five_hour.remaining_percent, Some(41));
+        assert_eq!(quota.weekly.remaining_percent, Some(63));
 
         let _ = fs::remove_dir_all(&codex_home);
     }

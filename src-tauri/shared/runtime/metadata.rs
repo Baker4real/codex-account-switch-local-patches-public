@@ -658,6 +658,46 @@ pub fn load_profile_metadata(profile_name: &str, codex_home: Option<&Path>) -> P
     hydrate_profile_metadata(metadata, &profile_name, codex_home)
 }
 
+/// Strict metadata load for a pending root-to-profile write-back. A missing
+/// card is a legitimate fresh profile, but a present unreadable or invalid
+/// card must stop the write: treating it as a default would turn a transient
+/// read failure into permanent quota and plan loss.
+pub(crate) fn load_profile_metadata_strict(
+    profile_name: &str,
+    codex_home: Option<&Path>,
+) -> Result<ProfileMetadata, crate::errors::AppError> {
+    let profile_name = validate_profile_name(profile_name)?;
+    let metadata_path = get_profile_metadata_path(&profile_name, codex_home);
+    let metadata = if metadata_path.is_file() {
+        let raw = fs::read_to_string(&metadata_path).map_err(|error| {
+            crate::errors::AppError::new(
+                "PROFILE_METADATA_READ_FAILED",
+                format!("Failed to read {}: {error}", metadata_path.display()),
+            )
+        })?;
+        serde_json::from_str::<ProfileMetadata>(&raw)
+            .ok()
+            .and_then(ProfileMetadata::validate)
+            .ok_or_else(|| {
+                crate::errors::AppError::new(
+                    "PROFILE_METADATA_INVALID",
+                    format!(
+                        "Refusing to overwrite {}: the existing metadata does not parse or validate",
+                        metadata_path.display()
+                    ),
+                )
+            })?
+    } else {
+        ProfileMetadata::with_folder_name(&profile_name)
+    };
+
+    Ok(hydrate_profile_metadata(
+        metadata,
+        &profile_name,
+        codex_home,
+    ))
+}
+
 fn plan_source_may_replace(existing: PlanSource, incoming: PlanSource) -> bool {
     match incoming {
         // The direct ChatGPT API is the authoritative live plan source.
@@ -832,6 +872,32 @@ pub fn save_profile_metadata(
     })
 }
 
+/// Write the live root `profile.json` from a profile-side metadata snapshot.
+/// Callers use this immediately before a root-to-profile write-back so the
+/// frozen switch-in copy cannot overwrite a newer plan or quota card.
+pub(crate) fn write_root_profile_metadata(
+    codex_home: &Path,
+    metadata: &ProfileMetadata,
+) -> Result<(), crate::errors::AppError> {
+    let serialized = serde_json::to_string_pretty(metadata).map_err(|error| {
+        crate::errors::AppError::new(
+            "PROFILE_METADATA_INVALID",
+            format!("Failed to serialize root profile metadata: {error}"),
+        )
+    })?;
+    let root_metadata_path = codex_home.join(PROFILE_METADATA_FILENAME);
+    atomic_write_file(&root_metadata_path, format!("{serialized}\n")).map_err(|error| {
+        crate::errors::AppError::new(
+            "PROFILE_METADATA_WRITE_FAILED",
+            format!(
+                "Failed to write root profile metadata {}: {}",
+                root_metadata_path.display(),
+                error.message
+            ),
+        )
+    })
+}
+
 pub fn sync_root_metadata_if_current_profile(
     profile_name: &str,
     metadata: &ProfileMetadata,
@@ -848,24 +914,7 @@ pub fn sync_root_metadata_if_current_profile(
 
     let mut root_metadata = metadata.clone();
     root_metadata.folder_name = Some(profile_name);
-    let serialized = serde_json::to_string_pretty(&root_metadata).map_err(|error| {
-        crate::errors::AppError::new(
-            "PROFILE_METADATA_INVALID",
-            format!("Failed to serialize current profile metadata: {error}"),
-        )
-    })?;
-
-    let root_metadata_path = codex_home.join(PROFILE_METADATA_FILENAME);
-    atomic_write_file(&root_metadata_path, format!("{serialized}\n")).map_err(|error| {
-        crate::errors::AppError::new(
-            "PROFILE_METADATA_WRITE_FAILED",
-            format!(
-                "Failed to write current profile metadata {}: {}",
-                root_metadata_path.display(),
-                error.message
-            ),
-        )
-    })
+    write_root_profile_metadata(&codex_home, &root_metadata)
 }
 
 #[cfg(test)]

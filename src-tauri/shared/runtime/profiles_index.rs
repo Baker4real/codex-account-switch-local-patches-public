@@ -17,9 +17,9 @@ use super::paths::{
 };
 use super::profiles::{
     build_display_title, compute_subscription_days_left, detect_unmanaged_live_account,
-    resolve_backup_target, resolve_current_profile,
+    profile_activated_at_ms, resolve_backup_target, resolve_current_profile,
 };
-use super::session_usage::{load_latest_local_quota_snapshot, normalize_quota_summary};
+use super::session_usage::{load_latest_local_quota_snapshot_since, normalize_quota_summary};
 
 const PROFILES_INDEX_SCHEMA_VERSION: u32 = 5;
 
@@ -360,30 +360,14 @@ fn build_current_card(entry: &ProfileIndexEntry, codex_home: &Path) -> CurrentCa
     }
 }
 
-fn quota_summary_has_data(quota: &crate::models::QuotaSummary) -> bool {
-    quota.five_hour.remaining_percent.is_some()
-        || quota.five_hour.refresh_at.is_some()
-        || quota.weekly.remaining_percent.is_some()
-        || quota.weekly.refresh_at.is_some()
-        || quota
-            .additional
-            .as_ref()
-            .is_some_and(|entries| !entries.is_empty())
-        || quota.rate_limit_reset_credits.is_some()
-}
-
 fn select_current_quota(
     entry: &ProfileIndexEntry,
     live_snapshot: Option<&super::session_usage::LocalQuotaSnapshot>,
 ) -> crate::models::QuotaSummary {
-    let stored_is_populated = quota_summary_has_data(&entry.stored_quota);
     let stored_updated_at_ms = entry.stored_quota_updated_at_ms.unwrap_or(0);
 
     match live_snapshot {
-        Some(snapshot)
-            if snapshot.source_mtime_ms.unwrap_or(0) > stored_updated_at_ms
-                || !stored_is_populated =>
-        {
+        Some(snapshot) if snapshot.source_mtime_ms.unwrap_or(0) > stored_updated_at_ms => {
             let mut selected = snapshot.quota.clone();
             if selected.rate_limit_reset_credits.is_none() {
                 selected.rate_limit_reset_credits =
@@ -459,7 +443,8 @@ pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQu
         });
     };
 
-    let live_snapshot = load_latest_local_quota_snapshot(Some(&codex_home));
+    let activated_at_ms = profile_activated_at_ms(&current_profile, &backup_root);
+    let live_snapshot = load_latest_local_quota_snapshot_since(Some(&codex_home), activated_at_ms);
     let quota = normalize_quota_summary(
         Some(select_current_quota(entry, live_snapshot.as_ref())),
         entry.plan_name.as_deref(),

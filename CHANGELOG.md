@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 合并公开上游 1.6.1 的 quota 隔离修复：只会读取当前账号激活后写入的 session JSONL，且仅更晚的快照才能覆盖已持久化数据；每次 root 状态回写前都会先同步卡片，避免旧 root `profile.json` 覆盖已刷新的套餐、额度或重置卡。
+- Windows Store 包中的 Codex 宿主已按合并后的 `ChatGPT.exe` 识别；仍严格要求 `OpenAI.Codex` 包身份，消费级 ChatGPT 不会被关闭或重启。
 - 账号套餐现在持久化记录来源：官方 `/wham/usage` 的 live `plan_type` 不会再被滞后的 OAuth `id_token` 覆盖，正常刷新只在授权确有需要时轮换 token；较新的本地 session 快照未携带重置卡时，已确认的官方可用卡会被保留，切换写回也不会将其清零。
 - 远端 Windows 桌面部署收紧为严格 OpenSSH/SCP：必须显式提供方向专用私钥和 `known_hosts`，固定非交互、严格主机密钥校验，不再自动接纳主机密钥或回退到密码/askpass 认证。
 - Cockpit phase one 已落地 Windows GUI 的 nvm-windows/fnm/asdf CLI 候选发现、账号搜索与动态套餐筛选、显示数/总数提示，以及 additional/model-specific 配额显示偏好；默认隐藏 Spark 噪声行，筛选和偏好不写入账号凭据。

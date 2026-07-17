@@ -9,6 +9,9 @@ use super::fs_ops::{
     atomic_write_file, autosave_auth, backup_root_state_to_profile, clear_active_markers,
     overlay_directory_contents, remove_path, set_active_marker,
 };
+use super::metadata::{
+    load_profile_metadata_strict, sync_profile_quota, write_root_profile_metadata,
+};
 use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{
     get_backup_root, get_codex_home, get_current_profile_file, get_openai_usage_attribution_path,
@@ -17,9 +20,11 @@ use super::paths::{
 };
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::{
-    detect_unmanaged_live_account, resolve_backup_target, resolve_current_profile,
+    detect_unmanaged_live_account, profile_activated_at_ms, resolve_backup_target,
+    resolve_current_profile,
 };
 use super::profiles_index::reload_profiles_index_after_mutation;
+use super::session_usage::load_latest_local_quota_snapshot_since;
 
 #[derive(Debug, PartialEq, Eq)]
 struct SwitchFileSnapshot {
@@ -188,6 +193,41 @@ pub(crate) fn acquire_switch_lock(codex_home: Option<&Path>) -> AppResult<Proces
     )
 }
 
+/// Before copying the live root state back to a profile, merge the newest
+/// safely-attributable session quota into that profile and refresh the root
+/// metadata from the result. This prevents a stale switch-in root copy from
+/// reverting plan/quota updates made while the profile was active.
+pub(crate) fn sync_live_quota_and_refresh_root(profile: &str, codex_home: &Path) -> AppResult<()> {
+    let mut metadata = load_profile_metadata_strict(profile, Some(codex_home))?;
+    let backup_root = get_backup_root(Some(codex_home));
+
+    // Session files survive profile switches. Only entries written after this
+    // profile's own activation can be assigned to it; without that boundary we
+    // refresh the root copy but leave the stored card untouched.
+    if let Some(activated_at_ms) = profile_activated_at_ms(profile, &backup_root) {
+        if let Some(snapshot) =
+            load_latest_local_quota_snapshot_since(Some(codex_home), Some(activated_at_ms))
+        {
+            let live_is_newer =
+                snapshot.source_mtime_ms.unwrap_or(0) > metadata.quota_updated_at_ms.unwrap_or(0);
+            if live_is_newer {
+                let mut quota = snapshot.quota;
+                // Session JSONL has no reset-credit-card detail. Do not erase
+                // a confirmed API card merely because a newer session snapshot
+                // omits it.
+                if quota.rate_limit_reset_credits.is_none() {
+                    quota.rate_limit_reset_credits =
+                        metadata.quota.rate_limit_reset_credits.clone();
+                }
+                metadata =
+                    sync_profile_quota(profile, quota, snapshot.source_mtime_ms, Some(codex_home))?;
+            }
+        }
+    }
+
+    write_root_profile_metadata(codex_home, &metadata)
+}
+
 pub(crate) fn switch_profile_with_home_locked<H: PlatformHooks + ?Sized>(
     hooks: &H,
     profile_name: &str,
@@ -243,6 +283,7 @@ pub(crate) fn switch_profile_with_home_locked<H: PlatformHooks + ?Sized>(
     let switch_result = (|| -> AppResult<()> {
         if stability_attempts == 0 {
             if let Some(backup_target) = backup_target.as_deref() {
+                sync_live_quota_and_refresh_root(backup_target, codex_home)?;
                 backup_root_state_to_profile(backup_target, codex_home, &backup_root)?;
             }
             autosave_auth(codex_home)?;
@@ -260,6 +301,7 @@ pub(crate) fn switch_profile_with_home_locked<H: PlatformHooks + ?Sized>(
                         ));
                     }
                     if let Some(backup_target) = backup_target.as_deref() {
+                        sync_live_quota_and_refresh_root(backup_target, codex_home)?;
                         backup_root_state_to_profile(backup_target, codex_home, &backup_root)?;
                     }
                     autosave_auth(codex_home)?;
@@ -352,7 +394,14 @@ pub fn sync_root_state_to_current_profile_with_home(
         return Ok(None);
     };
 
-    if resolve_current_profile(&backup_root).as_deref() != Some(target.as_str()) {
+    // Fold before healing the marker: a drifted target has no marker of its
+    // own, so re-stamping first would incorrectly discard every existing live
+    // session as older than "now".
+    sync_live_quota_and_refresh_root(&target, &codex_home)?;
+
+    if resolve_current_profile(&backup_root).as_deref() != Some(target.as_str())
+        || profile_activated_at_ms(&target, &backup_root).is_none()
+    {
         set_active_marker(&target, &backup_root)?;
     }
 
@@ -373,7 +422,7 @@ mod tests {
     use crate::errors::{AppError, AppResult};
     use crate::platform::hooks::{AppExitObservation, PlatformHooks};
 
-    use super::switch_profile_with_home;
+    use super::{switch_profile_with_home, sync_live_quota_and_refresh_root};
     use crate::shared::paths::{get_current_profile_file, get_profiles_index_path};
 
     #[derive(Clone, Copy)]
@@ -666,6 +715,51 @@ mod tests {
             "{{\"tokens\":{{\"account_id\":{}}}}}",
             serde_json::Value::String(account_id.to_string())
         )
+    }
+
+    fn write_quota_session(path: &Path) {
+        let line = r#"{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":11.0,"resets_at":1730000000,"window_minutes":300},"secondary":{"used_percent":12.0,"resets_at":1730600000,"window_minutes":10080}}}}"#;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, format!("{line}\n")).unwrap();
+    }
+
+    #[test]
+    fn live_quota_sync_refreshes_root_without_erasing_confirmed_reset_cards() {
+        let codex_home = temp_codex_home("live-quota-reset-cards");
+        let profile_dir = codex_home.join("account_backup").join("a");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(profile_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_A","quota":{"five_hour":{"remaining_percent":25},"weekly":{"remaining_percent":50},"rate_limit_reset_credits":{"available_count":1,"credits":[],"provenance":{"source":"chat_gpt_api","confidence":"official"}}},"quota_updated_at_ms":1}"#,
+        )
+        .unwrap();
+        fs::write(
+            profile_dir.join(".active_profile"),
+            "activated_at=2000-01-01T00:00:00Z\n",
+        )
+        .unwrap();
+        write_quota_session(&codex_home.join("sessions").join("session-001.jsonl"));
+
+        sync_live_quota_and_refresh_root("a", &codex_home).unwrap();
+
+        let root: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(codex_home.join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(root["quota"]["five_hour"]["remaining_percent"], 89);
+        assert_eq!(root["quota"]["weekly"]["remaining_percent"], 88);
+        assert_eq!(
+            root["quota"]["rate_limit_reset_credits"]["available_count"],
+            1
+        );
+        assert_eq!(
+            root["quota"]["rate_limit_reset_credits"]["provenance"]["source"],
+            "chat_gpt_api"
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]
@@ -1032,10 +1126,10 @@ mod tests {
             fs::read_to_string(codex_home.join("profile.json")).unwrap(),
             "{\"folder_name\":\"b\"}\n"
         );
-        assert_eq!(
-            fs::read_to_string(profile_a_dir.join("profile.json")).unwrap(),
-            "{\"folder_name\":\"a\"}\n"
-        );
+        let stored_a_metadata: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(profile_a_dir.join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(stored_a_metadata["folder_name"], "a");
         assert_eq!(
             fs::read_to_string(profile_a_skill_dir.join("SKILL.md")).unwrap(),
             "stale profile skill\n"

@@ -55,6 +55,33 @@ pub fn resolve_current_profile(backup_root: &Path) -> Option<String> {
     None
 }
 
+/// One-shot marker for a corrupt activation timestamp. A missing timestamp
+/// deliberately falls back to legacy display behavior, while write-back skips
+/// the unsafe live-session fold until the marker is re-stamped.
+static ACTIVATION_PARSE_WARNING: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+
+/// Epoch milliseconds when this profile became active, recorded by
+/// `set_active_marker`. Session JSONL is shared by profiles, so entries before
+/// this boundary cannot safely be attributed to the active account.
+pub fn profile_activated_at_ms(profile: &str, backup_root: &Path) -> Option<u64> {
+    let marker_path = backup_root.join(profile).join(ACTIVE_MARKER_FILE);
+    let raw = std::fs::read_to_string(&marker_path).ok()?;
+    let parsed = raw
+        .lines()
+        .find_map(|line| line.strip_prefix("activated_at="))
+        .and_then(|value| DateTime::parse_from_rfc3339(value.trim()).ok())
+        .and_then(|value| u64::try_from(value.timestamp_millis()).ok());
+    if parsed.is_none() {
+        ACTIVATION_PARSE_WARNING.get_or_init(|| {
+            eprintln!(
+                "codex_switch: active marker {} has no parseable activated_at; activation scoping is disabled until it is re-stamped",
+                marker_path.display()
+            );
+        });
+    }
+    parsed
+}
+
 /// Decide which profile slot the live `CODEX_HOME` state should be written back
 /// into, verified against the account identity in `auth.json` rather than
 /// blindly trusting `.current_profile`.
