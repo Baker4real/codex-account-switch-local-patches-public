@@ -74,6 +74,24 @@ npm run version:set -- 1.5.12
 npm run version:check
 ```
 
+## 网络代理
+
+账号刷新、`codex login` / `codex app-server` 子进程和官方定价刷新按以下顺序选择代理：
+`CODEX_SWITCH_PROXY_URL` → `HTTPS_PROXY` / `https_proxy` → `ALL_PROXY` / `all_proxy` →
+`HTTP_PROXY` / `http_proxy`；未设置或值为空时使用 `http://127.0.0.1:10808`。如需固定其他端口，
+请设置用户级环境变量并完全退出后重启 Codex Switch：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "CODEX_SWITCH_PROXY_URL",
+  "http://127.0.0.1:19090",
+  "User"
+)
+```
+
+该覆盖只作用于 Rust HTTP 请求和 Codex 子进程；内嵌 WebView 当前仍使用构建时配置的
+`127.0.0.1:10808`。若 WebView 自身也必须使用其他端口，需要同步修改 Tauri 配置并重新构建。
+
 ## 更新与本地补丁
 
 更新检查只读取版本 JSON、显示 release notes 并打开发布页。它不会下载、安装或覆盖公共上游二进制。当前安装版含本地 Windows patch；发现上游新版本时，先把上游 tag 合并到源码、重新保留本地补丁并通过 Windows 验证，再构建和替换安装目录。完整流程见 [`LOCAL_PATCHES.md`](LOCAL_PATCHES.md)。

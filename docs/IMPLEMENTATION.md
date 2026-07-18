@@ -75,6 +75,11 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
 - CLI resolver 按手动 override、`install_state`、PATH、nvm-windows、fnm、asdf 和常见
   Windows runtime 顺序探测，每个候选都用 `codex --version` 验证；失效的缓存 shim 不会
   继续使用。版本管理器扫描只读取受限的直接版本目录，不做全盘递归。
+- ChatGPT API、官方定价刷新以及 `codex login` / `codex app-server` 子进程共用代理解析：
+  `CODEX_SWITCH_PROXY_URL` 优先，其次依次读取大小写形式的 `HTTPS_PROXY`、`ALL_PROXY`、
+  `HTTP_PROXY`；空值跳过，全部缺失时使用 `http://127.0.0.1:10808`。Rust HTTP client
+  收到非法代理 URL 时返回 `CODEX_SWITCH_PROXY_INVALID`，不会静默改为直连。内嵌 WebView
+  的 `--proxy-server` 仍是 `tauri.conf.json` 中的构建时参数，不随该环境变量动态变化。
 - plan 持久化来源：官方 `/wham/usage` 的 `plan_type` 是首选 live 值，app-server 返回的套餐
   只可作为没有官方 API 套餐时的 fallback；OAuth `id_token` claim 只用于初始或没有 live 结果时。
   已确认的 ChatGPT API 套餐不会被 app-server 或后续 metadata hydration 中滞后的 `id_token` 覆盖。

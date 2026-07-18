@@ -135,6 +135,11 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   默认浏览器，并且没有给这个 flow 暴露受支持的浏览器选择参数。
 - 更新检查默认尝试 `pwsh` 再尝试 `powershell`；需要本机固定 PowerShell
   路径时，通过 `CODEX_SWITCH_POWERSHELL` 注入。
+- 账号刷新、官方定价刷新和 Codex 登录/app-server 子进程必须共用代理解析：
+  `CODEX_SWITCH_PROXY_URL` 优先，其次依次使用大小写形式的 `HTTPS_PROXY`、
+  `ALL_PROXY`、`HTTP_PROXY`，全部缺失或为空时回落到
+  `http://127.0.0.1:10808`。不得恢复已失效的 `127.0.0.1:10809` 硬编码；
+  内嵌 WebView 的代理仍由 `tauri.conf.json` 构建时固定，修改默认端口时两处必须同步审查。
 - 更新对话框必须提示：替换前需要先合并本地补丁。
 - Windows real-Codex discovery 必须用 `codex --version` 和 Codex 版本行校验
   缓存路径及用户指定路径，跳过 stale shim，并探测官方 OpenAI versioned
