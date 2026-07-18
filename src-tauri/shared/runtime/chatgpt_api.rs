@@ -40,7 +40,7 @@ use serde_json::Value;
 use crate::errors::{AppError, AppResult};
 use crate::models::{QuotaSummary, QuotaWindow, RateLimitResetCredit, RateLimitResetCredits};
 
-use super::dedicated_proxy::CODEX_SWITCH_PROXY_URL;
+use super::dedicated_proxy::proxy_url;
 use super::fs_ops::atomic_write_file;
 use super::paths::get_backup_root;
 
@@ -389,17 +389,16 @@ fn build_http_client() -> AppResult<Client> {
     if let Some(client) = SHARED_CLIENT.get() {
         return Ok(client.clone());
     }
+    let proxy_url = proxy_url();
     let new_client = Client::builder()
         .timeout(HTTP_TIMEOUT)
         .user_agent(CODEX_USER_AGENT)
-        .proxy(
-            reqwest::Proxy::all(CODEX_SWITCH_PROXY_URL).map_err(|error| {
-                AppError::new(
-                    "CODEX_SWITCH_PROXY_INVALID",
-                    format!("Failed to configure the dedicated Codex Switch proxy: {error}"),
-                )
-            })?,
-        )
+        .proxy(reqwest::Proxy::all(&proxy_url).map_err(|error| {
+            AppError::new(
+                "CODEX_SWITCH_PROXY_INVALID",
+                format!("Failed to configure the dedicated Codex Switch proxy: {error}"),
+            )
+        })?)
         .build()
         .map_err(|error| {
             AppError::new(

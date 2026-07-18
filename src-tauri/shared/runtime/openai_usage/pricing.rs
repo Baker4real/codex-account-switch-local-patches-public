@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::errors::{AppError, AppResult};
-use crate::shared::dedicated_proxy::CODEX_SWITCH_PROXY_URL;
+use crate::shared::dedicated_proxy::proxy_url;
 
 pub const OFFICIAL_PRICING_URL: &str = "https://developers.openai.com/api/docs/pricing";
 pub const OFFICIAL_MODELS_URL: &str = "https://developers.openai.com/api/docs/models/all";
@@ -348,17 +348,16 @@ pub fn conditional_headers(catalog: &PricingCatalog) -> BTreeMap<String, BTreeMa
 pub fn update_from_official(backup_root: &Path) -> AppResult<UpdateResult> {
     let existing = load_snapshot(backup_root, current_time_ms()).catalog;
     let validators = conditional_headers(&existing);
+    let proxy_url = proxy_url();
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .redirect(reqwest::redirect::Policy::none())
-        .proxy(
-            reqwest::Proxy::all(CODEX_SWITCH_PROXY_URL).map_err(|error| {
-                AppError::new(
-                    "CODEX_SWITCH_PROXY_INVALID",
-                    format!("Failed to configure the dedicated Codex Switch proxy: {error}"),
-                )
-            })?,
-        )
+        .proxy(reqwest::Proxy::all(&proxy_url).map_err(|error| {
+            AppError::new(
+                "CODEX_SWITCH_PROXY_INVALID",
+                format!("Failed to configure the dedicated Codex Switch proxy: {error}"),
+            )
+        })?)
         .build()
         .map_err(|error| AppError::new("PRICING_UPDATE_CLIENT_FAILED", error.to_string()))?;
     let urls = [

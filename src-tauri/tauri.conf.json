@@ -20,7 +20,7 @@
         "minHeight": 760,
         "resizable": true,
         "decorations": false,
-        "additionalBrowserArgs": "--proxy-server=http://127.0.0.1:10809 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
+        "additionalBrowserArgs": "--proxy-server=http://127.0.0.1:10808 --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection",
         "dataDirectory": "dedicated-proxy"
       }
     ],
