@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::errors::AppResult;
-use crate::shared::codex_app_server::AppServerSnapshot;
+use crate::shared::codex_app_server::{AppServerSnapshot, DeviceCodePrompt};
 use crate::shared::process_lock::ProcessLockGuard;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -39,6 +39,18 @@ pub trait PlatformHooks: Send + Sync {
         runtime_codex_home: &Path,
         profile_name: Option<&str>,
     ) -> AppResult<()>;
+    fn run_codex_device_code_login(
+        &self,
+        _cli_codex_home: &Path,
+        _runtime_codex_home: &Path,
+        _profile_name: Option<&str>,
+        _show_device_code: &mut dyn FnMut(&DeviceCodePrompt) -> AppResult<()>,
+    ) -> AppResult<()> {
+        Err(crate::errors::AppError::new(
+            "DEVICE_CODE_LOGIN_UNSUPPORTED",
+            "Device-code login is not supported on this platform.",
+        ))
+    }
     /// Drive `codex app-server` to fetch the live account plan + rate
     /// limits without paying for an LLM round-trip. Replaces the
     /// historical `codex exec "Reply with the single word OK."` hack

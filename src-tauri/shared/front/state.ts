@@ -6,6 +6,10 @@ import type {
 import type { Locale } from "@front-shared/i18n";
 import type { ThemeId } from "@front-shared/theme";
 import type { ProfileFilters } from "@front-shared/profile-filters";
+import type {
+  DeviceCodePromptPayload,
+  LoginKind,
+} from "@front-shared/device-code-login";
 import {
   resolveInitialAdditionalQuotaVisibility,
   resolveInitialSparkQuotaVisibility,
@@ -16,6 +20,8 @@ export const state = {
   loading: false,
   refreshActiveProfiles: [] as string[],
   loginActiveProfile: null as string | null,
+  loginActiveKind: null as LoginKind | null,
+  deviceCodePrompt: null as DeviceCodePromptPayload | null,
   currentProfile: null as string | null,
   route: "dashboard" as ShellRoute,
   locale: "en" as Locale,

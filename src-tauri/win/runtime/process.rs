@@ -33,7 +33,8 @@ use crate::errors::{AppError, AppResult};
 use crate::models::CodexCliCandidate;
 use crate::platform::hooks::{AppExitObservation, PlatformHooks};
 use crate::shared::codex_app_server::{
-    fetch_account_snapshot, run_chatgpt_browser_login, AppServerSnapshot,
+    fetch_account_snapshot, run_chatgpt_browser_login, run_chatgpt_device_code_login,
+    AppServerSnapshot, DeviceCodePrompt,
 };
 use crate::shared::codex_cli_path::CodexPathResolver;
 pub use crate::shared::codex_cli_path::{InstallState, RealCodexPathSource};
@@ -921,6 +922,22 @@ pub fn run_codex_login(
     Err(AppError::new("LOGIN_FAILED", message))
 }
 
+pub fn run_codex_device_code_login(
+    cli_codex_home: &Path,
+    runtime_codex_home: &Path,
+    show_device_code: &mut dyn FnMut(&DeviceCodePrompt) -> AppResult<()>,
+) -> AppResult<()> {
+    let Some(real_codex_path) = resolve_real_codex_cli(Some(cli_codex_home)) else {
+        return Err(AppError::new(
+            "REAL_CODEX_NOT_FOUND",
+            "Real Codex CLI path not found. Set the codex CLI location in the dashboard before logging in.",
+        ));
+    };
+
+    let command = build_app_server_command(&real_codex_path, runtime_codex_home);
+    run_chatgpt_device_code_login(command, |prompt| show_device_code(prompt))
+}
+
 /// Validate a user-provided codex CLI path. Resolves Windows extensions
 /// (`.cmd` / `.exe` / etc.) so a user can paste either `C:\...\codex` or
 /// `C:\...\codex.cmd`. Rejects the managed shim because pointing the
@@ -1546,6 +1563,16 @@ impl PlatformHooks for WindowsPlatformHooks {
         profile_name: Option<&str>,
     ) -> AppResult<()> {
         run_codex_login(cli_codex_home, runtime_codex_home, profile_name)
+    }
+
+    fn run_codex_device_code_login(
+        &self,
+        cli_codex_home: &Path,
+        runtime_codex_home: &Path,
+        _profile_name: Option<&str>,
+        show_device_code: &mut dyn FnMut(&DeviceCodePrompt) -> AppResult<()>,
+    ) -> AppResult<()> {
+        run_codex_device_code_login(cli_codex_home, runtime_codex_home, show_device_code)
     }
 
     fn fetch_account_via_app_server(

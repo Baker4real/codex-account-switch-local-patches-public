@@ -17,6 +17,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 - Windows Store 生命周期：切换前按 `OpenAI.Codex_*__2p2nqsd0c76g0` 包身份退出并确认空快照，提交失败会事务回滚，避免半切换状态。
 - plan/quota：优先读取官方 ChatGPT API，必要时使用 Codex app-server fallback；live 套餐不会被滞后的 OAuth `id_token` 覆盖，正常刷新只在授权确有需要时轮换 token。5 小时与周额度按服务端窗口时长归位，界面显示来源和观测时间，不会因为低额度自动切换账号。支持 additional/model-specific 配额与额度重置卡；重置卡逐张显示北京时间的发放、到期时间，较新的本地 session 快照缺卡时仍保留已确认卡片，接口未返回附加额度时不渲染误导性占位文案。未知或过期数据不会伪装成满额，Spark 噪声行默认隐藏。
 - 账号筛选：账号页支持本地搜索、动态套餐筛选、显示数/总数提示和一键清除；筛选不修改账号快照或凭据。
+- 设备码登录：每个 profile 卡片都可显示验证地址和一次性代码，在另一台能够登录 OpenAI 的设备上完成授权；它与浏览器登录共用隔离运行目录、账号身份校验、取消和原子写入流程。
 - 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
 - Codex CLI 自动检测：扫描 PATH、官方 Windows runtime、nvm-windows、fnm、asdf 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。
 - Codex 控制：控制区可直接打开或重启 Codex；重启沿用 Windows Store 包身份校验和稳定退出检查，按钮执行期间会锁定，避免重复触发。
@@ -27,7 +28,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 
 1. 私有补丁仓库已有 Release 时，从 [私有补丁 Releases](https://github.com/Baker4real/codex-account-switch-local-patches/releases/latest) 下载 Windows x64 NSIS 安装包 `codex_switch_<版本>_x64-setup.exe` 并安装；没有私有 Release 时，按下方本地构建命令生成，不要从公共上游下载。
 2. 打开应用，在“设置”确认 Codex CLI 路径；缺失时点击“自动检测”或手动选择可运行的 `codex.exe` / `codex.cmd`。
-3. 在“账号”页添加 profile，点击“登录”完成 ChatGPT OAuth。
+3. 在“账号”页添加 profile；本机浏览器可登录时点击“浏览器”，否则点击“设备码”，再在能够登录 OpenAI 的设备上打开验证页面并输入一次性代码。
 4. 在目标账号卡片点击“切换”。应用会先保存当前账号，再按身份路由写回目标账号；全局 `skills`、插件缓存、sessions、`AGENTS.md`、`rules`、`memories` 等不会被 profile 覆盖。
 5. 需要查看 token 消耗时打开“使用统计”。数据只来自本机文件和已冻结的只读证据，不上传请求内容。
 

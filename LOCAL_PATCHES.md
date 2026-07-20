@@ -121,6 +121,14 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
 
 ## 必须保留的本地补丁
 
+- 每个 profile 卡片都必须保留独立的“设备码”登录入口，通过
+  `codex app-server` 的 `account/login/start` +
+  `type: "chatgptDeviceCode"` 获取验证地址和一次性代码；原有浏览器登录
+  入口继续保留，不能用其中一种覆盖另一种。
+- 设备码与浏览器登录必须共用隔离的登录 `CODEX_HOME`、全局取消/并发锁、
+  写入前账号身份校验和原子 `auth.json` 发布路径。外部服务（包括
+  Sub2API）的专用 OAuth 凭证不得挂载、导入或复用 Account Switch 的
+  A/B/C 等普通 profile 凭证。
 - Windows 定向浏览器登录不再按 profile `b` / `c` 槽位选浏览器。仅当目标
   profile 的 `profile.json` 显式设置 `login_browser` 为 `edge` 时，登录使用
   `codex app-server`，并用用户正常 Edge 状态打开返回的 auth URL。

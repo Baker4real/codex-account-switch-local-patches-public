@@ -1,4 +1,7 @@
-use crate::errors::CommandError;
+use serde::Serialize;
+use tauri::Emitter;
+
+use crate::errors::{AppError, CommandError};
 use crate::models::{
     ActionResponse, AddProfilePayload, CodexCliRedetectResult, CodexCliStatus, OpenUrlPayload,
     ProfilePayload, RenameProfilePayload, SetCodexCliPathPayload, UpdateCheckPayload,
@@ -6,6 +9,16 @@ use crate::models::{
 };
 
 use crate::windows as platform_runtime;
+
+const DEVICE_CODE_PROMPT_EVENT: &str = "codex-device-code-prompt";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceCodePromptEvent {
+    profile: String,
+    verification_url: String,
+    user_code: String,
+}
 
 #[tauri::command]
 pub fn open_codex() -> Result<ActionResponse, CommandError> {
@@ -63,6 +76,45 @@ pub async fn login_profile(payload: ProfilePayload) -> Result<ActionResponse, Co
     Ok(ActionResponse {
         ok: true,
         message: "Logged in profile.".to_string(),
+        path: Some(path),
+    })
+}
+
+#[tauri::command]
+pub async fn login_profile_device_code(
+    app: tauri::AppHandle,
+    payload: ProfilePayload,
+) -> Result<ActionResponse, CommandError> {
+    let profile = payload.profile;
+    let event_profile = profile.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || {
+        platform_runtime::actions::login_profile_device_code(&profile, |prompt| {
+            app.emit(
+                DEVICE_CODE_PROMPT_EVENT,
+                DeviceCodePromptEvent {
+                    profile: event_profile.clone(),
+                    verification_url: prompt.verification_url.clone(),
+                    user_code: prompt.user_code.clone(),
+                },
+            )
+            .map_err(|error| {
+                AppError::new(
+                    "DEVICE_CODE_PROMPT_EMIT_FAILED",
+                    format!("Failed to show the device-code prompt: {error}"),
+                )
+            })
+        })
+    })
+    .await
+    .map_err(|error| {
+        CommandError::new(
+            "LOGIN_FAILED",
+            format!("Device-code login task failed: {error}"),
+        )
+    })??;
+    Ok(ActionResponse {
+        ok: true,
+        message: "Logged in profile with device code.".to_string(),
         path: Some(path),
     })
 }

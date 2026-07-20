@@ -7,10 +7,11 @@ use tauri_plugin_opener::OpenerExt;
 use crate::errors::{AppError, AppResult};
 use crate::models::ProfileMetadata;
 use crate::platform;
+use crate::shared::codex_app_server::DeviceCodePrompt;
 
 use super::config::sync_root_openai_base_url_for_profile;
 use super::fs_ops::{atomic_write_file, remove_path};
-use super::login_runtime::login_profile_with_home;
+use super::login_runtime::{login_profile_with_device_code_with_home, login_profile_with_home};
 use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile_openai_base_url};
 use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{
@@ -78,6 +79,22 @@ pub fn login_profile(profile_name: &str) -> AppResult<String> {
     let runtime_home = get_login_runtime_dir(Some(&codex_home));
     let hooks = platform::current_hooks();
     login_profile_with_home(hooks, profile_name, Some(&codex_home), &runtime_home)
+}
+
+pub fn login_profile_device_code<F>(profile_name: &str, show_device_code: F) -> AppResult<String>
+where
+    F: FnMut(&DeviceCodePrompt) -> AppResult<()>,
+{
+    let codex_home = get_codex_home();
+    let runtime_home = get_login_runtime_dir(Some(&codex_home));
+    let hooks = platform::current_hooks();
+    login_profile_with_device_code_with_home(
+        hooks,
+        profile_name,
+        Some(&codex_home),
+        &runtime_home,
+        show_device_code,
+    )
 }
 
 pub fn login_current_profile() -> AppResult<String> {

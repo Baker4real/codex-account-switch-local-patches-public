@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
+import type { DeviceCodePromptPayload } from "@front-shared/device-code-login";
 import type {
   ActionResponse,
   CodexCliRedetectResult,
@@ -709,6 +711,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
       case "restart_codex":
       case "login_current_profile":
       case "login_profile":
+      case "login_profile_device_code":
       case "refresh_profile":
       case "open_releases":
       case "open_contact":
@@ -821,6 +824,21 @@ export function loginCurrentProfile(): Promise<ActionResponse> {
 
 export function loginProfile(profile: string): Promise<ActionResponse> {
   return invokeCommand<ActionResponse>("login_profile", { payload: { profile } });
+}
+
+export function loginProfileDeviceCode(profile: string): Promise<ActionResponse> {
+  return invokeCommand<ActionResponse>("login_profile_device_code", { payload: { profile } });
+}
+
+export async function listenForDeviceCodePrompts(
+  handler: (payload: DeviceCodePromptPayload) => void,
+): Promise<() => void> {
+  if (!hasTauriRuntime) {
+    return () => {};
+  }
+  return listen<DeviceCodePromptPayload>("codex-device-code-prompt", (event) => {
+    handler(event.payload);
+  });
 }
 
 export function refreshProfile(profile: string): Promise<ActionResponse> {

@@ -511,6 +511,36 @@
       </form>
     </dialog>
 
+    <dialog id="device-code-dialog" class="dialog">
+      <div class="dialog-form">
+        <div class="dialog-copy">
+          <h3 id="device-code-dialog-title">Device-code login</h3>
+          <p id="device-code-dialog-copy">Open the verification page on a device that can sign in, then enter the one-time code.</p>
+        </div>
+
+        <label class="field">
+          <span id="device-code-url-label">Verification page</span>
+          <input
+            id="device-code-url"
+            type="text"
+            readonly
+            spellcheck="false"
+          />
+        </label>
+
+        <div class="device-code-value">
+          <span id="device-code-user-code-label">One-time code</span>
+          <code id="device-code-user-code">----</code>
+        </div>
+
+        <p id="device-code-waiting-copy" class="field-copy">Waiting for authorization. Keep this window open.</p>
+
+        <div class="dialog-actions">
+          <button id="cancel-device-code-login-button" class="ghost-button" type="button">Cancel login</button>
+        </div>
+      </div>
+    </dialog>
+
     <dialog id="codex-cli-dialog" class="dialog">
       <form id="codex-cli-form" class="dialog-form" method="dialog">
         <div class="dialog-copy">

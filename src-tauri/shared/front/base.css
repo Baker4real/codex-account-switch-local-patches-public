@@ -3725,6 +3725,29 @@ button.pager-pill:disabled {
   white-space: nowrap;
 }
 
+.device-code-value {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+  color: var(--text-strong);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.device-code-value code {
+  padding: 16px;
+  border: 1px solid var(--field-border);
+  border-radius: 14px;
+  background: var(--field-background);
+  color: var(--text-strong);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 1.45rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-align: center;
+  user-select: all;
+}
+
 .codex-cli-current {
   display: flex;
   flex-wrap: wrap;

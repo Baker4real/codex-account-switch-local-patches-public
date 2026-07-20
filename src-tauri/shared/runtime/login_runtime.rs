@@ -24,7 +24,7 @@ use crate::platform::hooks::PlatformHooks;
 
 use super::fs_ops::atomic_copy_file;
 use super::metadata::{
-    load_auth_metadata_from_path, sync_profile_metadata_from_auth,
+    load_account_identity_from_path, sync_profile_metadata_from_auth,
     sync_root_metadata_if_current_profile,
 };
 use super::openai_usage::record_current_openai_usage_attribution;
@@ -68,37 +68,40 @@ fn publish_auth_file(src: &Path, dst: &Path) -> AppResult<()> {
     })
 }
 
-fn comparable_account_label(auth_path: &Path) -> Option<String> {
-    load_auth_metadata_from_path(auth_path).and_then(|metadata| {
-        metadata.account_label.and_then(|label| {
-            let trimmed = label.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_ascii_lowercase())
-        })
-    })
-}
-
 fn verify_login_identity_matches_existing_profile(
     profile_auth: &Path,
     runtime_auth: &Path,
 ) -> AppResult<()> {
-    let Some(existing_label) = comparable_account_label(profile_auth) else {
+    let Some(existing_identity) = load_account_identity_from_path(profile_auth) else {
         return Ok(());
     };
-    let Some(next_label) = comparable_account_label(runtime_auth) else {
+    let Some(next_identity) = load_account_identity_from_path(runtime_auth) else {
         return Err(AppError::new(
             "LOGIN_ACCOUNT_IDENTITY_UNKNOWN",
-            "This profile already has a known ChatGPT account, but the new login did not expose a comparable account identity. Confirm the browser is using the expected ChatGPT account and try again.",
+            "This profile already has a known ChatGPT account, but the new login did not expose a comparable account identity. Confirm the authorization device is using the expected ChatGPT workspace and try again.",
         ));
     };
 
-    if existing_label == next_label {
+    let identity_matches = match existing_identity.account_id.as_deref() {
+        Some(existing_account_id) => {
+            next_identity.account_id.as_deref() == Some(existing_account_id)
+        }
+        None => existing_identity.same_account(&next_identity),
+    };
+    if identity_matches {
         return Ok(());
     }
 
+    let existing_label = existing_identity
+        .label()
+        .unwrap_or_else(|| "unknown account".to_string());
+    let next_label = next_identity
+        .label()
+        .unwrap_or_else(|| "unknown account".to_string());
     Err(AppError::new(
         "LOGIN_ACCOUNT_MISMATCH",
         format!(
-            "The browser completed login for `{next_label}`, but this profile already belongs to `{existing_label}`. Switch the browser to the expected ChatGPT account and try again."
+            "The login completed for `{next_label}`, but this profile already belongs to `{existing_label}` or another workspace with that email. Select the expected ChatGPT workspace on the authorization device and try again."
         ),
     ))
 }
@@ -113,6 +116,51 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
     codex_home: Option<&Path>,
     runtime_home: &Path,
 ) -> AppResult<String> {
+    login_profile_with_runner(
+        profile_name,
+        codex_home,
+        runtime_home,
+        |cli_codex_home, runtime_codex_home, profile_name| {
+            hooks.run_codex_login(cli_codex_home, runtime_codex_home, profile_name)
+        },
+    )
+}
+
+pub fn login_profile_with_device_code_with_home<H, F>(
+    hooks: &H,
+    profile_name: &str,
+    codex_home: Option<&Path>,
+    runtime_home: &Path,
+    mut show_device_code: F,
+) -> AppResult<String>
+where
+    H: PlatformHooks + ?Sized,
+    F: FnMut(&crate::shared::codex_app_server::DeviceCodePrompt) -> AppResult<()>,
+{
+    login_profile_with_runner(
+        profile_name,
+        codex_home,
+        runtime_home,
+        |cli_codex_home, runtime_codex_home, profile_name| {
+            hooks.run_codex_device_code_login(
+                cli_codex_home,
+                runtime_codex_home,
+                profile_name,
+                &mut show_device_code,
+            )
+        },
+    )
+}
+
+fn login_profile_with_runner<F>(
+    profile_name: &str,
+    codex_home: Option<&Path>,
+    runtime_home: &Path,
+    run_login: F,
+) -> AppResult<String>
+where
+    F: FnOnce(&Path, &Path, Option<&str>) -> AppResult<()>,
+{
     let codex_home = codex_home
         .map(Path::to_path_buf)
         .unwrap_or_else(get_codex_home);
@@ -152,7 +200,7 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
     // dir. Without this split, a Windows codex shim that does
     // `%CODEX_HOME%\\account_backup\\windows\\codex_switch_cli` would
     // fail to find the script under the empty runtime home.
-    hooks.run_codex_login(&codex_home, runtime_home, Some(&profile_name))?;
+    run_login(&codex_home, runtime_home, Some(&profile_name))?;
 
     let runtime_auth = runtime_home.join(RUNTIME_AUTH_FILENAME);
     if !runtime_auth.is_file() {
@@ -209,6 +257,7 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose, Engine as _};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Mutex;
@@ -282,6 +331,66 @@ mod tests {
         }
     }
 
+    struct FakeDeviceCodeLoginHooks {
+        auth_payload: String,
+    }
+
+    impl PlatformHooks for FakeDeviceCodeLoginHooks {
+        fn open_or_activate_codex_app(&self, _codex_home: Option<&Path>) -> AppResult<String> {
+            unreachable!("not used in login_runtime tests")
+        }
+
+        fn quit_codex_app_if_running(&self) -> AppResult<bool> {
+            unreachable!("not used in login_runtime tests")
+        }
+
+        fn reopen_codex_app_if_needed(
+            &self,
+            _app_was_running: bool,
+            _codex_home: Option<&Path>,
+        ) -> Vec<String> {
+            unreachable!("not used in login_runtime tests")
+        }
+
+        fn run_codex_login(
+            &self,
+            _cli_codex_home: &Path,
+            _runtime_codex_home: &Path,
+            _profile_name: Option<&str>,
+        ) -> AppResult<()> {
+            unreachable!("browser login must not run for a device-code request")
+        }
+
+        fn run_codex_device_code_login(
+            &self,
+            _cli_codex_home: &Path,
+            runtime_codex_home: &Path,
+            _profile_name: Option<&str>,
+            show_device_code: &mut dyn FnMut(
+                &crate::shared::codex_app_server::DeviceCodePrompt,
+            ) -> AppResult<()>,
+        ) -> AppResult<()> {
+            show_device_code(&crate::shared::codex_app_server::DeviceCodePrompt {
+                verification_url: "https://auth.example.invalid/codex/device".to_string(),
+                user_code: "ABCD-1234".to_string(),
+            })?;
+            fs::write(runtime_codex_home.join("auth.json"), &self.auth_payload).unwrap();
+            Ok(())
+        }
+
+        fn fetch_account_via_app_server(
+            &self,
+            _cli_codex_home: &Path,
+            _runtime_codex_home: &Path,
+        ) -> AppResult<crate::shared::codex_app_server::AppServerSnapshot> {
+            unreachable!("not used in login_runtime tests")
+        }
+
+        fn sync_on_window_close(&self) -> AppResult<()> {
+            unreachable!("not used in login_runtime tests")
+        }
+    }
+
     /// Auth payload that satisfies `sync_profile_metadata_from_auth`'s
     /// expectations enough that it doesn't bail on parse. We don't care
     /// about the metadata itself in these tests; we just need the call
@@ -293,6 +402,41 @@ mod tests {
             r#"{{"OPENAI_API_KEY":null,"auth_mode":"chatgpt","tokens":{{"id_token":"","access_token":"","refresh_token":"replace-me","account_id":{}}},"last_refresh":"2026-05-08T00:00:00Z"}}"#,
             serde_json::Value::String(account_id.to_string())
         )
+    }
+
+    fn fake_auth_json_for_identity(account_id: &str, email: &str) -> String {
+        let payload = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::json!({ "email": email }).to_string().as_bytes());
+        let id_token = format!("header.{payload}.signature");
+        serde_json::json!({
+            "OPENAI_API_KEY": null,
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": id_token,
+                "access_token": "",
+                "refresh_token": "replace-me",
+                "account_id": account_id
+            },
+            "last_refresh": "2026-05-08T00:00:00Z"
+        })
+        .to_string()
+    }
+
+    fn fake_auth_json_for_email(email: &str) -> String {
+        let payload = general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::json!({ "email": email }).to_string().as_bytes());
+        let id_token = format!("header.{payload}.signature");
+        serde_json::json!({
+            "OPENAI_API_KEY": null,
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": id_token,
+                "access_token": "",
+                "refresh_token": "replace-me"
+            },
+            "last_refresh": "2026-05-08T00:00:00Z"
+        })
+        .to_string()
     }
 
     fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
@@ -325,6 +469,35 @@ mod tests {
     }
 
     #[test]
+    fn device_code_login_surfaces_prompt_and_commits_to_target_profile() {
+        let (codex_home, profile_dir, runtime_home) = setup("device-code-commit");
+        let hooks = FakeDeviceCodeLoginHooks {
+            auth_payload: FAKE_AUTH_JSON.to_string(),
+        };
+        let mut shown_prompt = None;
+
+        let result = login_profile_with_device_code_with_home(
+            &hooks,
+            "a",
+            Some(&codex_home),
+            &runtime_home,
+            |prompt| {
+                shown_prompt = Some(prompt.clone());
+                Ok(())
+            },
+        )
+        .expect("device-code login should commit");
+
+        assert_eq!(result, profile_dir.to_string_lossy());
+        let prompt = shown_prompt.expect("device-code prompt should be surfaced");
+        assert_eq!(prompt.user_code, "ABCD-1234");
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            FAKE_AUTH_JSON
+        );
+    }
+
+    #[test]
     fn login_profile_rejects_account_mismatch_without_overwriting_auth() {
         let (codex_home, profile_dir, runtime_home) = setup("rejects-account-mismatch");
         let existing_auth = fake_auth_json_for_account("expected-account");
@@ -352,6 +525,83 @@ mod tests {
             fs::read_to_string(codex_home.join("auth.json")).unwrap(),
             "LIVE_STALE\n",
             "mismatched active-profile login must not overwrite live auth"
+        );
+    }
+
+    #[test]
+    fn device_code_login_rejects_same_email_from_a_different_workspace() {
+        let (codex_home, profile_dir, runtime_home) =
+            setup("rejects-same-email-different-workspace");
+        let existing_auth = fake_auth_json_for_identity("workspace-b", "same-user@example.com");
+        let next_auth = fake_auth_json_for_identity("personal-workspace", "same-user@example.com");
+        fs::write(profile_dir.join("auth.json"), &existing_auth).unwrap();
+        fs::write(
+            codex_home.join("account_backup").join(".current_profile"),
+            "a\n",
+        )
+        .unwrap();
+        fs::write(codex_home.join("auth.json"), "LIVE_STALE\n").unwrap();
+        let hooks = FakeDeviceCodeLoginHooks {
+            auth_payload: next_auth,
+        };
+
+        let error = login_profile_with_device_code_with_home(
+            &hooks,
+            "a",
+            Some(&codex_home),
+            &runtime_home,
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.error_code, "LOGIN_ACCOUNT_MISMATCH");
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            existing_auth,
+            "same email must not allow a different workspace to replace the profile auth"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "LIVE_STALE\n",
+            "same-email workspace mismatch must not overwrite live auth"
+        );
+    }
+
+    #[test]
+    fn device_code_login_rejects_missing_workspace_id_for_scoped_profile() {
+        let (codex_home, profile_dir, runtime_home) = setup("rejects-missing-workspace-id");
+        let existing_auth = fake_auth_json_for_identity("workspace-b", "same-user@example.com");
+        let next_auth = fake_auth_json_for_email("same-user@example.com");
+        fs::write(profile_dir.join("auth.json"), &existing_auth).unwrap();
+        fs::write(
+            codex_home.join("account_backup").join(".current_profile"),
+            "a\n",
+        )
+        .unwrap();
+        fs::write(codex_home.join("auth.json"), "LIVE_STALE\n").unwrap();
+        let hooks = FakeDeviceCodeLoginHooks {
+            auth_payload: next_auth,
+        };
+
+        let error = login_profile_with_device_code_with_home(
+            &hooks,
+            "a",
+            Some(&codex_home),
+            &runtime_home,
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.error_code, "LOGIN_ACCOUNT_MISMATCH");
+        assert_eq!(
+            fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
+            existing_auth,
+            "a workspace-scoped profile must reject a login without account_id"
+        );
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "LIVE_STALE\n",
+            "missing workspace identity must not overwrite live auth"
         );
     }
 

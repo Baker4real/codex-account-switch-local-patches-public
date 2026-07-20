@@ -28,6 +28,7 @@ import {
   getCurrentLiveQuota,
   getOpenAiUsageDashboard,
   getProfilesSnapshot,
+  listenForDeviceCodePrompts,
   loginCurrentProfile,
   openCodex,
   restartCodex,
@@ -37,6 +38,7 @@ import {
   openXiaohongshu,
   openProfileFolder,
   loginProfile,
+  loginProfileDeviceCode,
   refreshActiveProfileQuotaSilent,
   refreshAllOauthProfilePlansSilent,
   refreshProfile,
@@ -46,6 +48,16 @@ import {
   switchProfile,
   updateProfileBaseUrl,
 } from "@front-shared/tauri";
+import {
+  promptForActiveDeviceLogin,
+  runDeviceCodeAuthorizationFlow,
+  type DeviceCodePromptPayload,
+} from "@front-shared/device-code-login";
+import {
+  isCurrentLoginAttempt,
+  scheduleLoginCancelRetry,
+  type LoginAttempt,
+} from "@front-shared/login-attempt";
 import type {
   CodexCliCandidate,
   CodexCliRedetectResult,
@@ -102,6 +114,9 @@ function rerenderDashboard(): void {
     handleRefreshProfile,
     handleBaseUrlProfileClick,
     (profile) => {
+      void handleDeviceCodeLogin(profile);
+    },
+    (profile) => {
       void handleLoginProfile(profile);
     },
   );
@@ -121,7 +136,9 @@ let baseUrlSourceProfile: string | null = null;
 let pendingUpdateReleaseUrl: string | null = null;
 let deleteSourceProfile: string | null = null;
 let pendingLoginRetry: (() => Promise<void>) | null = null;
-let cancelledLoginProfile: string | null = null;
+let loginAttemptSequence = 0;
+let activeLoginAttempt: LoginAttempt | null = null;
+let cancelledLoginAttemptId: number | null = null;
 const LOGIN_CANCEL_RETRY_DELAY_MS = 250;
 const LOGIN_CANCEL_RETRY_LIMIT = 6;
 let lastUnmanagedAccountPrompt: string | null = null;
@@ -441,7 +458,7 @@ async function handleLoginProfile(profile: string): Promise<void> {
   // process I just spawned" rather than "start another login". Any other
   // profile holding the lock falls through to the early-return.
   if (state.loginActiveProfile === profile) {
-    void handleCancelLogin(profile);
+    void handleCancelLogin(profile, activeLoginAttempt);
     return;
   }
 
@@ -456,17 +473,22 @@ async function handleLoginProfile(profile: string): Promise<void> {
     return;
   }
 
+  const attempt = { id: ++loginAttemptSequence, profile };
+  activeLoginAttempt = attempt;
   state.loginActiveProfile = profile;
-  cancelledLoginProfile = null;
+  state.loginActiveKind = "browser";
+  cancelledLoginAttemptId = null;
   rerenderDashboard();
   showToast(t(state.locale, "loginStarting", { profile }));
   try {
     await loginProfile(profile);
-    showToast(t(state.locale, "loggedInProfile", { profile }));
+    if (completeLoginAttempt(attempt)) {
+      showToast(t(state.locale, "loggedInProfile", { profile }));
+    }
     await refreshAllData(false);
   } catch (error) {
     const code = loginErrorCode(error);
-    if (cancelledLoginProfile === profile || code === "LOGIN_CANCELLED") {
+    if (cancelledLoginAttemptId === attempt.id || code === "LOGIN_CANCELLED") {
       showToast(t(state.locale, "loginCancelled"));
     } else {
       showToast(loginErrorMessage(profile, error), true);
@@ -475,39 +497,158 @@ async function handleLoginProfile(profile: string): Promise<void> {
       }
     }
   } finally {
-    state.loginActiveProfile = null;
-    cancelledLoginProfile = null;
-    rerenderDashboard();
+    completeLoginAttempt(attempt);
   }
 }
 
-async function handleCancelLogin(profile: string, attempt = 0): Promise<void> {
+function closeDeviceCodeDialog(): void {
+  if (elements.deviceCodeDialog.open) {
+    elements.deviceCodeDialog.close();
+  }
+  elements.deviceCodeUrl.value = "";
+  elements.deviceCodeUserCode.textContent = "----";
+  state.deviceCodePrompt = null;
+}
+
+function handleDeviceCodePrompt(payload: DeviceCodePromptPayload): void {
+  const prompt = promptForActiveDeviceLogin(
+    state.loginActiveKind === "deviceCode" ? state.loginActiveProfile : null,
+    payload,
+  );
+  if (!prompt) {
+    return;
+  }
+
+  state.deviceCodePrompt = prompt;
+  elements.deviceCodeUrl.value = prompt.verificationUrl;
+  elements.deviceCodeUserCode.textContent = prompt.userCode;
+  if (!elements.deviceCodeDialog.open) {
+    elements.deviceCodeDialog.showModal();
+  }
+}
+
+async function handleDeviceCodeLogin(profile: string): Promise<void> {
+  if (
+    state.loginActiveProfile === profile
+    && state.loginActiveKind === "deviceCode"
+  ) {
+    void handleCancelLogin(profile, activeLoginAttempt);
+    return;
+  }
+
+  if (
+    state.loading
+    || state.loginActiveProfile !== null
+    || isRefreshPending(profile)
+  ) {
+    return;
+  }
+
+  const attempt = { id: ++loginAttemptSequence, profile };
+  activeLoginAttempt = attempt;
+  state.loginActiveProfile = profile;
+  state.loginActiveKind = "deviceCode";
+  state.deviceCodePrompt = null;
+  cancelledLoginAttemptId = null;
+  rerenderDashboard();
+  showToast(t(state.locale, "loginStarting", { profile }));
+  try {
+    await runDeviceCodeAuthorizationFlow(
+      () => loginProfileDeviceCode(profile),
+      () => {
+        if (completeLoginAttempt(attempt, true)) {
+          showToast(t(state.locale, "loggedInProfile", { profile }));
+        }
+      },
+      () => refreshAllData(false),
+    );
+  } catch (error) {
+    const code = loginErrorCode(error);
+    if (cancelledLoginAttemptId === attempt.id || code === "LOGIN_CANCELLED") {
+      showToast(t(state.locale, "loginCancelled"));
+    } else {
+      showToast(loginErrorMessage(profile, error), true);
+      if (code === "REAL_CODEX_NOT_FOUND") {
+        void openCodexCliDialog(() => handleDeviceCodeLogin(profile));
+      }
+    }
+  } finally {
+    completeLoginAttempt(attempt, true);
+  }
+}
+
+function completeLoginAttempt(
+  attempt: LoginAttempt,
+  closeDeviceDialogOnCompletion = false,
+): boolean {
+  if (!isCurrentLoginAttempt(activeLoginAttempt, attempt)) {
+    return false;
+  }
+  if (closeDeviceDialogOnCompletion) {
+    closeDeviceCodeDialog();
+  }
+  state.loginActiveProfile = null;
+  state.loginActiveKind = null;
+  activeLoginAttempt = null;
+  if (cancelledLoginAttemptId === attempt.id) {
+    cancelledLoginAttemptId = null;
+  }
+  rerenderDashboard();
+  return true;
+}
+
+async function handleCancelLogin(
+  profile: string,
+  attempt: LoginAttempt | null = activeLoginAttempt,
+  retryIndex = 0,
+): Promise<void> {
+  if (
+    attempt === null
+    || attempt.profile !== profile
+    || !isCurrentLoginAttempt(activeLoginAttempt, attempt)
+  ) {
+    return;
+  }
   // Set the flag eagerly so the in-flight loginProfile rejection — which
   // can settle on the same task tick — sees it and shows "已取消登录"
   // instead of LOGIN_FAILED. If the backend reports nothing was actually
   // cancelled (login already completed/failed), we roll the flag back so
   // the real toast still surfaces.
-  cancelledLoginProfile = profile;
+  cancelledLoginAttemptId = attempt.id;
   try {
     const cancelled = await cancelCodexLogin();
     if (!cancelled) {
-      if (state.loginActiveProfile === profile && attempt < LOGIN_CANCEL_RETRY_LIMIT) {
-        window.setTimeout(() => {
-          void handleCancelLogin(profile, attempt + 1);
-        }, LOGIN_CANCEL_RETRY_DELAY_MS);
+      if (
+        isCurrentLoginAttempt(activeLoginAttempt, attempt)
+        && retryIndex < LOGIN_CANCEL_RETRY_LIMIT
+      ) {
+        scheduleLoginCancelRetry(
+          attempt,
+          () => activeLoginAttempt,
+          () => {
+            void handleCancelLogin(profile, attempt, retryIndex + 1);
+          },
+          LOGIN_CANCEL_RETRY_DELAY_MS,
+        );
         return;
       }
-      cancelledLoginProfile = null;
-      if (state.loginActiveProfile === profile) {
+      if (cancelledLoginAttemptId === attempt.id) {
+        cancelledLoginAttemptId = null;
+      }
+      if (isCurrentLoginAttempt(activeLoginAttempt, attempt)) {
         showToast(t(state.locale, "loginCancelFailed"), true);
       }
     }
   } catch (error) {
-    cancelledLoginProfile = null;
-    showToast(
-      error instanceof Error ? error.message : t(state.locale, "loginCancelFailed"),
-      true,
-    );
+    if (cancelledLoginAttemptId === attempt.id) {
+      cancelledLoginAttemptId = null;
+    }
+    if (isCurrentLoginAttempt(activeLoginAttempt, attempt)) {
+      showToast(
+        error instanceof Error ? error.message : t(state.locale, "loginCancelFailed"),
+        true,
+      );
+    }
   }
 }
 
@@ -1088,6 +1229,12 @@ export function bootstrap(): void {
   applyTheme(state.theme);
   applyLocale();
   renderShellRoute();
+  void listenForDeviceCodePrompts(handleDeviceCodePrompt).catch((error) => {
+    showToast(
+      error instanceof Error ? error.message : t(state.locale, "failedToLogin"),
+      true,
+    );
+  });
   usageWorkspace = replaceUsageWorkspace(usageWorkspace, () =>
     mountUsageWorkspace({
       loadDashboard: getOpenAiUsageDashboard,
@@ -1176,6 +1323,25 @@ export function bootstrap(): void {
   });
   elements.cancelBaseUrlButton.addEventListener("click", () => {
     closeBaseUrlDialog();
+  });
+  elements.cancelDeviceCodeLoginButton.addEventListener("click", () => {
+    if (
+      state.loginActiveProfile !== null
+      && state.loginActiveKind === "deviceCode"
+    ) {
+      void handleCancelLogin(state.loginActiveProfile, activeLoginAttempt);
+    } else {
+      closeDeviceCodeDialog();
+    }
+  });
+  elements.deviceCodeDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    if (
+      state.loginActiveProfile !== null
+      && state.loginActiveKind === "deviceCode"
+    ) {
+      void handleCancelLogin(state.loginActiveProfile, activeLoginAttempt);
+    }
   });
   elements.cancelDeleteProfileButton?.addEventListener("click", () => {
     closeDeleteProfileDialog();

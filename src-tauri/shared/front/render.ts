@@ -29,6 +29,7 @@ import {
   buildAdditionalQuotaPresentation,
   buildRateLimitResetCreditsPresentation,
 } from "@front-shared/quota-view-model";
+import { deviceCodeButtonState } from "@front-shared/device-code-login";
 
 const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "usage", "settings", "guide"];
 const LOW_QUOTA_THRESHOLD_PERCENT = 20;
@@ -143,6 +144,17 @@ export const elements = {
   baseUrlDialogError: requiredElement<HTMLParagraphElement>("base-url-dialog-error"),
   cancelBaseUrlButton: requiredElement<HTMLButtonElement>("cancel-base-url-button"),
   submitBaseUrlButton: requiredElement<HTMLButtonElement>("submit-base-url-button"),
+  deviceCodeDialog: requiredElement<HTMLDialogElement>("device-code-dialog"),
+  deviceCodeDialogTitle: requiredElement<HTMLHeadingElement>("device-code-dialog-title"),
+  deviceCodeDialogCopy: requiredElement<HTMLParagraphElement>("device-code-dialog-copy"),
+  deviceCodeUrlLabel: requiredElement<HTMLSpanElement>("device-code-url-label"),
+  deviceCodeUrl: requiredElement<HTMLInputElement>("device-code-url"),
+  deviceCodeUserCodeLabel: requiredElement<HTMLSpanElement>("device-code-user-code-label"),
+  deviceCodeUserCode: requiredElement<HTMLElement>("device-code-user-code"),
+  deviceCodeWaitingCopy: requiredElement<HTMLParagraphElement>("device-code-waiting-copy"),
+  cancelDeviceCodeLoginButton: requiredElement<HTMLButtonElement>(
+    "cancel-device-code-login-button",
+  ),
   settingsCodexCliLabel: requiredElement<HTMLElement>("settings-codex-cli-label"),
   settingsCodexCliValue: requiredElement<HTMLParagraphElement>("settings-codex-cli-value"),
   settingsCodexCliButton: requiredElement<HTMLButtonElement>("settings-codex-cli-button"),
@@ -999,6 +1011,7 @@ export function renderProfiles(
   onSwitch: (profile: string) => void,
   onRefresh: (profile: string) => void,
   onBaseUrl: (profile: string) => void,
+  onDeviceCodeLogin: (profile: string) => void,
   onLogin: (profile: string) => void,
 ): void {
   if (!dashboard.profiles.length) {
@@ -1011,11 +1024,12 @@ export function renderProfiles(
     .map((profile) => {
       const refreshRunning = state.refreshActiveProfiles.includes(profile.folder_name);
       const refreshPending = refreshRunning;
-      const loginRunning = state.loginActiveProfile === profile.folder_name;
+      const loginOnThisCard = state.loginActiveProfile === profile.folder_name;
+      const browserLoginRunning = loginOnThisCard && state.loginActiveKind === "browser";
       // Any in-flight login (on this card or any other) blocks new logins
       // because the OAuth port and `.switch.lock` are global resources.
       const loginPending = state.loginActiveProfile !== null;
-      const cardBusy = refreshPending || loginRunning;
+      const cardBusy = refreshPending || loginOnThisCard;
       const deleteDisabled =
         state.loading || cardBusy || profile.status === "current";
       const renameDisabled =
@@ -1032,9 +1046,16 @@ export function renderProfiles(
           ? t(state.locale, "profileRefreshDisabled")
           : t(state.locale, "profileRefreshReady");
 
-      const loginDisabled = loginRunning
+      const loginDisabled = browserLoginRunning
         ? false
         : state.loading || refreshPending || loginPending;
+      const deviceLogin = deviceCodeButtonState(
+        profile.folder_name,
+        state.loading,
+        refreshPending,
+        state.loginActiveProfile,
+        state.loginActiveKind,
+      );
       const unavailable = isProfileUnavailable(profile);
 
       const planTooltip = planFreshnessTitle(profile.plan_name, profile.last_plan_check_ms);
@@ -1096,14 +1117,38 @@ export function renderProfiles(
               class="profile-action-button"
               type="button"
               title="${
-                loginRunning
+                deviceLogin.running
+                  ? t(state.locale, "profileDeviceCodeCancelHint")
+                  : deviceLogin.disabled
+                    ? t(state.locale, "profileDeviceCodeDisabled")
+                    : t(state.locale, "profileDeviceCodeReady")
+              }"
+              aria-label="${
+                deviceLogin.running
+                  ? t(state.locale, "profileDeviceCodeCancelAria", { profile: profile.folder_name })
+                  : t(state.locale, "profileDeviceCodeReadyAria", { profile: profile.folder_name })
+              }"
+              data-device-code-login-profile="${profile.folder_name}"
+              ${deviceLogin.disabled ? "disabled" : ""}
+            >
+              ${
+                deviceLogin.running
+                  ? `<span class="button-spinner" aria-hidden="true"></span><span class="button-cancel-label">${t(state.locale, "cancel")}</span>`
+                  : t(state.locale, "deviceCodeLoginButton")
+              }
+            </button>
+            <button
+              class="profile-action-button"
+              type="button"
+              title="${
+                browserLoginRunning
                   ? t(state.locale, "profileLoginCancelHint")
                   : loginDisabled
                     ? t(state.locale, "profileLoginDisabled")
                     : t(state.locale, "profileLoginReady")
               }"
               aria-label="${
-                loginRunning
+                browserLoginRunning
                   ? t(state.locale, "profileLoginCancelAria", { profile: profile.folder_name })
                   : t(state.locale, "profileLoginReadyAria", { profile: profile.folder_name })
               }"
@@ -1111,9 +1156,9 @@ export function renderProfiles(
               ${loginDisabled ? "disabled" : ""}
             >
               ${
-                loginRunning
+                browserLoginRunning
                   ? `<span class="button-spinner" aria-hidden="true"></span><span class="button-cancel-label">${t(state.locale, "cancel")}</span>`
-                  : t(state.locale, "loginButton")
+                  : t(state.locale, "browserLoginButton")
               }
             </button>
             <button
@@ -1153,6 +1198,7 @@ export function renderProfiles(
   }
   bindProfileButtons("data-rename-profile", onRename);
   bindProfileButtons("data-refresh-profile", onRefresh);
+  bindProfileButtons("data-device-code-login-profile", onDeviceCodeLogin);
   bindProfileButtons("data-login-profile", onLogin);
   bindProfileButtons("data-base-url-profile", onBaseUrl);
   bindProfileButtons("data-switch-profile", onSwitch);
@@ -1235,6 +1281,15 @@ export function applyLocale(): void {
   elements.submitRenameProfileButton.textContent = t(state.locale, "rename");
   elements.cancelBaseUrlButton.textContent = t(state.locale, "cancel");
   elements.submitBaseUrlButton.textContent = t(state.locale, "save");
+  elements.deviceCodeDialogTitle.textContent = t(state.locale, "deviceCodeDialogTitle");
+  elements.deviceCodeDialogCopy.textContent = t(state.locale, "deviceCodeDialogCopy");
+  elements.deviceCodeUrlLabel.textContent = t(state.locale, "deviceCodeUrlLabel");
+  elements.deviceCodeUserCodeLabel.textContent = t(state.locale, "deviceCodeUserCodeLabel");
+  elements.deviceCodeWaitingCopy.textContent = t(state.locale, "deviceCodeWaitingCopy");
+  elements.cancelDeviceCodeLoginButton.textContent = t(
+    state.locale,
+    "deviceCodeCancelButton",
+  );
   elements.codexCliDialogTitle.textContent = t(state.locale, "codexCliDialogTitle");
   elements.codexCliDialogCopy.textContent = t(state.locale, "codexCliDialogCopy");
   elements.codexCliCurrentLabel.textContent = t(state.locale, "codexCliCurrentLabel");

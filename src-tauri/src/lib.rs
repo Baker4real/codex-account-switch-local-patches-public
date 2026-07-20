@@ -56,6 +56,7 @@ pub fn run() {
             commands::actions::restart_codex,
             commands::actions::login_current_profile,
             commands::actions::login_profile,
+            commands::actions::login_profile_device_code,
             commands::actions::refresh_profile,
             commands::actions::rename_profile,
             commands::actions::delete_profile,

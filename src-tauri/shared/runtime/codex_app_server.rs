@@ -70,6 +70,12 @@ pub struct AppServerSnapshot {
     pub quota: Option<QuotaSummary>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceCodePrompt {
+    pub verification_url: String,
+    pub user_code: String,
+}
+
 /// Drive a one-shot JSON-RPC session against `codex app-server`.
 /// Caller-provided `command` must already point at the resolved real
 /// codex binary (callers also typically set `CODEX_HOME` and any
@@ -109,6 +115,25 @@ where
     })?;
 
     drive_cancellable_login_session(child, open_auth_url)
+}
+
+/// Start a ChatGPT device-code login through `codex app-server`.
+/// The callback receives the verification URL and one-time user code while
+/// the app-server session remains alive waiting for authorization.
+pub fn run_chatgpt_device_code_login<F>(mut command: Command, show_device_code: F) -> AppResult<()>
+where
+    F: FnOnce(&DeviceCodePrompt) -> AppResult<()>,
+{
+    configure_app_server_command(&mut command);
+
+    let child = command.spawn().map_err(|error| {
+        AppError::new(
+            "APP_SERVER_SPAWN_FAILED",
+            format!("Failed to spawn `codex app-server`: {error}"),
+        )
+    })?;
+
+    drive_cancellable_device_code_login_session(child, show_device_code)
 }
 
 fn configure_app_server_command(command: &mut Command) {
@@ -199,6 +224,21 @@ where
     ))
 }
 
+fn drive_cancellable_device_code_login_session<F>(
+    mut child: Child,
+    show_device_code: F,
+) -> AppResult<()>
+where
+    F: FnOnce(&DeviceCodePrompt) -> AppResult<()>,
+{
+    let mut session = open_session(&mut child, LOGIN_SESSION_TIMEOUT)?;
+    register_login_child(child);
+    finish_cancellable_login(drive_device_code_login_session_with_open_session(
+        &mut session,
+        show_device_code,
+    ))
+}
+
 fn drive_login_session_with_open_session<F>(
     session: &mut Session,
     open_auth_url: F,
@@ -209,6 +249,19 @@ where
     handshake(session)?;
     let (login_id, auth_url) = start_chatgpt_browser_login(session)?;
     open_auth_url(&auth_url)?;
+    wait_for_chatgpt_login_completed(session, &login_id)
+}
+
+fn drive_device_code_login_session_with_open_session<F>(
+    session: &mut Session,
+    show_device_code: F,
+) -> AppResult<()>
+where
+    F: FnOnce(&DeviceCodePrompt) -> AppResult<()>,
+{
+    handshake(session)?;
+    let (login_id, prompt) = start_chatgpt_device_code_login(session)?;
+    show_device_code(&prompt)?;
     wait_for_chatgpt_login_completed(session, &login_id)
 }
 
@@ -412,6 +465,15 @@ fn start_chatgpt_browser_login(session: &mut Session) -> AppResult<(String, Stri
     parse_login_start_response(&result)
 }
 
+fn start_chatgpt_device_code_login(session: &mut Session) -> AppResult<(String, DeviceCodePrompt)> {
+    let result = session.call(
+        "account/login/start",
+        Some(json!({ "type": "chatgptDeviceCode" })),
+        LOGIN_START_TIMEOUT,
+    )?;
+    parse_device_code_login_start_response(&result)
+}
+
 fn parse_login_start_response(result: &Value) -> AppResult<(String, String)> {
     let login_id = result
         .get("loginId")
@@ -436,6 +498,30 @@ fn parse_login_start_response(result: &Value) -> AppResult<(String, String)> {
             )
         })?;
     Ok((login_id.to_string(), auth_url.to_string()))
+}
+
+fn parse_device_code_login_start_response(result: &Value) -> AppResult<(String, DeviceCodePrompt)> {
+    let required = |field: &str| {
+        result
+            .get(field)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                AppError::new(
+                    "APP_SERVER_LOGIN_START_INVALID",
+                    format!("codex app-server did not return a {field}."),
+                )
+            })
+    };
+
+    let login_id = required("loginId")?;
+    let prompt = DeviceCodePrompt {
+        verification_url: required("verificationUrl")?,
+        user_code: required("userCode")?,
+    };
+    Ok((login_id, prompt))
 }
 
 fn wait_for_chatgpt_login_completed(session: &mut Session, login_id: &str) -> AppResult<()> {
@@ -631,6 +717,7 @@ fn map_rpc_error(method: &str, error: &Value) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::login_cancel::login_slot_test_guard;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -797,6 +884,7 @@ mod tests {
 
     #[test]
     fn browser_login_registers_app_server_child_for_cancel() {
+        let _guard = login_slot_test_guard();
         let script = write_fake_login_app_server_script();
         let command = fake_login_app_server_command(&script);
         let opened = Arc::new(AtomicBool::new(false));
@@ -825,6 +913,70 @@ mod tests {
         assert!(cancelled, "cancel should find the app-server login child");
         let error = result.expect_err("cancelled login should return an error");
         assert_eq!(error.error_code, "LOGIN_CANCELLED");
+    }
+
+    #[test]
+    fn device_code_login_surfaces_verification_prompt_before_completion() {
+        let _guard = login_slot_test_guard();
+        let script = write_fake_device_code_login_app_server_script();
+        let command = fake_login_app_server_command(&script);
+        let shown = Arc::new(AtomicBool::new(false));
+        let shown_for_login = Arc::clone(&shown);
+
+        run_chatgpt_device_code_login(command, move |prompt| {
+            assert_eq!(
+                prompt.verification_url,
+                "https://auth.example.invalid/codex/device"
+            );
+            assert_eq!(prompt.user_code, "ABCD-1234");
+            shown_for_login.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .expect("device-code login should complete");
+
+        let _ = std::fs::remove_file(&script);
+        assert!(
+            shown.load(Ordering::SeqCst),
+            "the device-code prompt must be surfaced to the frontend"
+        );
+    }
+
+    #[cfg(windows)]
+    fn write_fake_device_code_login_app_server_script() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "codex-switch-fake-device-login-app-server-{}.cmd",
+            unique_test_suffix()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "@echo off\r\n",
+                "echo {\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}\r\n",
+                "echo {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"type\":\"chatgptDeviceCode\",\"loginId\":\"device-login-123\",\"verificationUrl\":\"https://auth.example.invalid/codex/device\",\"userCode\":\"ABCD-1234\"}}\r\n",
+                "echo {\"jsonrpc\":\"2.0\",\"method\":\"account/login/completed\",\"params\":{\"loginId\":\"device-login-123\",\"success\":true,\"error\":null}}\r\n",
+            ),
+        )
+        .expect("write fake device-code app-server cmd");
+        path
+    }
+
+    #[cfg(unix)]
+    fn write_fake_device_code_login_app_server_script() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "codex-switch-fake-device-login-app-server-{}.sh",
+            unique_test_suffix()
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "#!/bin/sh\n",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{}}'\n",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"type\":\"chatgptDeviceCode\",\"loginId\":\"device-login-123\",\"verificationUrl\":\"https://auth.example.invalid/codex/device\",\"userCode\":\"ABCD-1234\"}}'\n",
+                "printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"account/login/completed\",\"params\":{\"loginId\":\"device-login-123\",\"success\":true,\"error\":null}}'\n",
+            ),
+        )
+        .expect("write fake device-code app-server shell");
+        path
     }
 
     #[cfg(windows)]

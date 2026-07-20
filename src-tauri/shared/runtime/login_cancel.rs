@@ -51,6 +51,8 @@ use std::os::windows::process::CommandExt;
 use crate::errors::{AppError, AppResult};
 
 static CURRENT_LOGIN: OnceLock<Mutex<Option<Child>>> = OnceLock::new();
+#[cfg(test)]
+static LOGIN_SLOT_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 pub type PipeObserver = Arc<dyn Fn(&[u8]) + Send + Sync + 'static>;
 
 #[cfg(windows)]
@@ -69,6 +71,14 @@ fn slot() -> &'static Mutex<Option<Child>> {
 
 fn lock() -> MutexGuard<'static, Option<Child>> {
     slot().lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+#[cfg(test)]
+pub(crate) fn login_slot_test_guard() -> MutexGuard<'static, ()> {
+    LOGIN_SLOT_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Kill a child and reap it. Both calls are best-effort: `kill` may
@@ -317,16 +327,8 @@ pub fn cancel_login_in_progress() -> bool {
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Instant;
-
-    /// Tests in this module touch a process-wide static slot, so they
-    /// must serialize even though `cargo test` runs them in parallel by
-    /// default.
-    fn test_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     fn spawn_sleep(seconds: &str) -> Child {
         // Use the absolute path; some test runners (and the `cargo test`
@@ -346,14 +348,14 @@ mod tests {
 
     #[test]
     fn cancel_returns_false_when_no_login_in_progress() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
         assert!(!cancel_login_in_progress());
     }
 
     #[test]
     fn cancel_kills_registered_child_and_clears_slot() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let child = spawn_sleep("30");
@@ -376,7 +378,7 @@ mod tests {
 
     #[test]
     fn second_cancel_after_first_is_a_noop() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let child = spawn_sleep("30");
@@ -388,7 +390,7 @@ mod tests {
 
     #[test]
     fn peek_returns_cancelled_after_cancel() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let child = spawn_sleep("30");
@@ -404,7 +406,7 @@ mod tests {
 
     #[test]
     fn peek_returns_exited_after_natural_exit_and_drains_slot() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         // Sleep 0 exits immediately; on macOS / Linux this is a few ms.
@@ -435,7 +437,7 @@ mod tests {
 
     #[test]
     fn wait_for_login_or_cancel_returns_output_on_natural_exit() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let child = Command::new("/bin/sh")
@@ -453,7 +455,7 @@ mod tests {
 
     #[test]
     fn register_login_child_replaces_and_reaps_previous_occupant() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         // Stage a long-lived "leftover" child as if a prior login had
@@ -487,7 +489,7 @@ mod tests {
         // on write forever. Push 256 KiB through stdout and confirm
         // wait_for_login_or_cancel still returns Ok with the full
         // payload.
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         // Absolute paths sidestep PATH manipulation that other parallel
@@ -518,7 +520,7 @@ mod tests {
 
     #[test]
     fn wait_for_login_or_cancel_observes_stdout_chunks() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -556,7 +558,7 @@ mod tests {
         // the LOGIN_FAILED toast when codex login itself errors out.
         // 256 KiB is well past any pipe buffer the kernels we ship to
         // can hold without explicit fcntl resizing.
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let target_bytes: usize = 256 * 1024;
@@ -583,7 +585,7 @@ mod tests {
 
     #[test]
     fn wait_for_login_or_cancel_returns_login_cancelled_when_killed_by_another_thread() {
-        let _guard = test_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _guard = login_slot_test_guard();
         drain_slot();
 
         let child = Command::new("/bin/sleep")

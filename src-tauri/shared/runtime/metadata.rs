@@ -387,18 +387,15 @@ pub struct AccountIdentity {
 }
 
 impl AccountIdentity {
-    /// Two identities refer to the same OpenAI account when they share a
-    /// non-empty `account_id` or a non-empty `email`.
+    /// `account_id` is workspace-scoped and authoritative when both sides
+    /// provide it. Email is only a compatibility fallback when at least one
+    /// side lacks an account id.
     pub fn same_account(&self, other: &AccountIdentity) -> bool {
         if let (Some(left), Some(right)) = (&self.account_id, &other.account_id) {
-            if left == right {
-                return true;
-            }
+            return left == right;
         }
         if let (Some(left), Some(right)) = (&self.email, &other.email) {
-            if left.eq_ignore_ascii_case(right) {
-                return true;
-            }
+            return left.eq_ignore_ascii_case(right);
         }
         false
     }
@@ -928,6 +925,25 @@ mod tests {
             has_plan_claims: true,
             ..AuthDerivedMetadata::default()
         }
+    }
+
+    #[test]
+    fn account_identity_rejects_same_email_when_workspace_ids_conflict() {
+        let workspace_b = AccountIdentity {
+            account_id: Some("workspace-b".to_string()),
+            email: Some("same-user@example.com".to_string()),
+        };
+        let personal_workspace = AccountIdentity {
+            account_id: Some("personal-workspace".to_string()),
+            email: Some("SAME-USER@example.com".to_string()),
+        };
+        let legacy_email_only = AccountIdentity {
+            account_id: None,
+            email: Some("same-user@example.com".to_string()),
+        };
+
+        assert!(!workspace_b.same_account(&personal_workspace));
+        assert!(workspace_b.same_account(&legacy_email_only));
     }
 
     #[test]

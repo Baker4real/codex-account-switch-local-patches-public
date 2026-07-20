@@ -16,7 +16,8 @@ pub use crate::shared::{
 pub mod actions {
     pub use super::profile_actions::{
         add_profile, clear_profile_account, delete_profile, login_current_profile, login_profile,
-        open_codex_app, rename_profile, restart_codex_app, update_profile_base_url,
+        login_profile_device_code, open_codex_app, rename_profile, restart_codex_app,
+        update_profile_base_url,
     };
     #[cfg(not(test))]
     pub use super::profile_actions::{
