@@ -25,6 +25,7 @@ function profile(
     plan_name,
     subscription_days_left: null,
     openai_base_url: null,
+    last_authorization_method: null,
     quota: {
       five_hour: { remaining_percent: null, refresh_at: null, reset_at_timestamp: null },
       weekly: { remaining_percent: null, refresh_at: null, reset_at_timestamp: null },

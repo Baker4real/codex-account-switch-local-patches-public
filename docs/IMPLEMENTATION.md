@@ -71,6 +71,10 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
 - `login_browser: "edge"` 是唯一的定向浏览器开关：通过 `codex app-server` 打开用户正常
   Edge 状态，不传 `--user-data-dir` / `--new-window`，写入前必须比较 OAuth 身份，防止
   浏览器当前账号覆盖已知 profile。
+- 浏览器或设备码授权成功后把实际路径写入 `last_authorization_method`，账号卡片据此显示
+  最近授权方式。该字段只在成功提交后更新；旧 metadata 缺字段时保持未知，不能从
+  `login_browser` 反推；可取得 `account_id` 时同时绑定 workspace，避免同邮箱的身份漂移
+  沿用旧徽标。
 - 未设置 Edge metadata 的 profile 使用普通 `codex login`，保留上游默认行为。
 - CLI resolver 按手动 override、`install_state`、PATH、nvm-windows、fnm、asdf 和常见
   Windows runtime 顺序探测，每个候选都用 `codex --version` 验证；失效的缓存 shim 不会

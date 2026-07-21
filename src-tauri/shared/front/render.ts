@@ -1067,12 +1067,20 @@ export function renderProfiles(
         .filter((value): value is string => value != null)
         .join(" ");
       const profileTitle = profileDisplayTitle(profile);
+      const authorizationMethodLabel = profile.last_authorization_method === "browser"
+        ? t(state.locale, "authorizationMethodBrowser")
+        : profile.last_authorization_method === "device_code"
+          ? t(state.locale, "authorizationMethodDeviceCode")
+          : null;
 
       return `
         <article class="profile-card status-${profile.status}${unavailable ? " is-unavailable-card" : ""}">
           <div class="profile-title-wrap">
             <p class="profile-title-account" title="${escapeHtml(profileTitle)}">${escapeHtml(profileTitle)}</p>
             <p class="${planClasses}"${planTooltip ? ` title="${escapeHtml(planTooltip)}"` : ""}>${escapeHtml(planLine(profile.plan_name, profile.subscription_days_left))}</p>
+            ${authorizationMethodLabel
+              ? `<span class="profile-authorization-method" title="${escapeHtml(t(state.locale, "authorizationMethodTitle", { method: authorizationMethodLabel }))}">${escapeHtml(authorizationMethodLabel)}</span>`
+              : ""}
           </div>
 
           ${buildProfileQuotaMarkup(profile)}

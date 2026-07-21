@@ -163,6 +163,13 @@ impl QuotaSummary {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorizationMethod {
+    Browser,
+    DeviceCode,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct ProfileMetadata {
@@ -176,6 +183,13 @@ pub struct ProfileMetadata {
     pub subscription_expires_at: Option<String>,
     pub openai_base_url: Option<String>,
     pub login_browser: Option<String>,
+    /// How the most recent successful authorization completed. This is
+    /// separate from `login_browser`, which configures a future login route.
+    pub last_authorization_method: Option<AuthorizationMethod>,
+    /// Workspace binding for `last_authorization_method`. Kept out of the
+    /// card model; it only prevents same-email workspace drift from reusing
+    /// an authorization badge that belongs to another account ID.
+    pub last_authorization_account_id: Option<String>,
     pub quota: QuotaSummary,
     pub quota_updated_at_ms: Option<u64>,
     /// Wall-clock millis at the most recent confirmed plan check (any
@@ -265,6 +279,7 @@ pub struct ProfileCard {
     pub plan_name: Option<String>,
     pub subscription_days_left: Option<i64>,
     pub openai_base_url: Option<String>,
+    pub last_authorization_method: Option<AuthorizationMethod>,
     pub quota: QuotaSummary,
     /// Surfaces plan freshness to the front-end so the dashboard can
     /// render a hover-time tooltip and a stale indicator without
@@ -296,6 +311,7 @@ pub struct ProfileIndexEntry {
     pub plan_name: Option<String>,
     pub subscription_expires_at: Option<String>,
     pub openai_base_url: Option<String>,
+    pub last_authorization_method: Option<AuthorizationMethod>,
     pub auth_present: bool,
     pub stored_quota: QuotaSummary,
     pub stored_quota_updated_at_ms: Option<u64>,

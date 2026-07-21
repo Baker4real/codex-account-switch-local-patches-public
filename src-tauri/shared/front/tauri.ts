@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import type { DeviceCodePromptPayload } from "@front-shared/device-code-login";
 import type {
   ActionResponse,
+  AuthorizationMethod,
   CodexCliRedetectResult,
   CodexCliStatus,
   CommandError,
@@ -112,6 +113,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Pro plan",
     subscription_days_left: 18,
     openai_base_url: null,
+    last_authorization_method: "browser",
     quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 30 * 60 * 1000, 1),
     last_plan_check_ms: Date.now() - 30 * 60 * 1000,
     refresh_token_status: refreshStatus(),
@@ -126,6 +128,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Plus plan",
     subscription_days_left: 12,
     openai_base_url: null,
+    last_authorization_method: "device_code",
     quota: quota(18, "1小时后刷新", 42, "4天6小时后刷新", "codex_app_server", "fallback", 3 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 4 * 60 * 60 * 1000,
     refresh_token_status: refreshStatus({
@@ -143,6 +146,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: null,
     subscription_days_left: null,
     openai_base_url: null,
+    last_authorization_method: null,
     quota: quota(null, "6小时后刷新", null, "7天2小时后刷新", "unknown", "unknown", null),
     last_plan_check_ms: null,
     refresh_token_status: refreshStatus({
@@ -164,6 +168,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Custom endpoint",
     subscription_days_left: 31,
     openai_base_url: "https://example.com/v1",
+    last_authorization_method: null,
     quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新", "session_jsonl", "local_observation", 26 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 8 * 24 * 60 * 60 * 1000,
     refresh_token_status: refreshStatus({
@@ -182,6 +187,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Pro plan",
     subscription_days_left: 18,
     openai_base_url: null,
+    last_authorization_method: "browser",
     quota: quota(84, "3小时后刷新", 61, "2天4小时后刷新", "chat_gpt_api", "official", 2 * 24 * 60 * 60 * 1000),
     last_plan_check_ms: Date.now() - 2 * 24 * 60 * 60 * 1000,
     refresh_token_status: refreshStatus({
@@ -199,6 +205,7 @@ const previewProfiles: ProfileCard[] = [
     plan_name: "Custom endpoint",
     subscription_days_left: 31,
     openai_base_url: "https://example.com/v1",
+    last_authorization_method: null,
     quota: quota(73, "2小时后刷新", 88, "1天9小时后刷新", "codex_app_server", "fallback", 8 * 24 * 60 * 60 * 1000),
     last_plan_check_ms: null,
     refresh_token_status: refreshStatus({
@@ -503,6 +510,18 @@ function refreshPreviewSnapshot(): void {
   };
 }
 
+function setPreviewAuthorizationMethod(
+  profileName: string,
+  authorizationMethod: AuthorizationMethod,
+): void {
+  previewSnapshot.profiles = previewSnapshot.profiles.map((profile) =>
+    profile.folder_name === profileName
+      ? { ...profile, last_authorization_method: authorizationMethod }
+      : profile,
+  );
+  refreshPreviewSnapshot();
+}
+
 function toError(error: unknown): Error {
   if (typeof error === "string") {
     return new Error(error);
@@ -618,6 +637,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
             plan_name: "Pro plan",
             subscription_days_left: 30,
             openai_base_url: payload.openai_base_url ?? null,
+            last_authorization_method: null,
             quota: quota(52, "5小时后刷新", 67, "3天后刷新"),
             last_plan_check_ms: Date.now(),
             refresh_token_status: refreshStatus({
@@ -666,6 +686,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
                   plan_name: null,
                   subscription_days_left: null,
                   openai_base_url: null,
+                  last_authorization_method: null,
                   quota: quota(null, null, null, null),
                 }
               : entry,
@@ -706,12 +727,23 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
         }) as Promise<T>;
       case "cancel_codex_login":
         return Promise.resolve(true) as Promise<T>;
+      case "login_current_profile":
+        setPreviewAuthorizationMethod(previewCurrentCard.folder_name, "browser");
+        return mockAction(`${command} completed in preview mode`) as Promise<T>;
+      case "login_profile":
+      case "login_profile_device_code": {
+        const payload = args?.payload as { profile?: string } | undefined;
+        if (payload?.profile) {
+          setPreviewAuthorizationMethod(
+            payload.profile,
+            command === "login_profile" ? "browser" : "device_code",
+          );
+        }
+        return mockAction(`${command} completed in preview mode`) as Promise<T>;
+      }
       case "open_profile_folder":
       case "open_codex":
       case "restart_codex":
-      case "login_current_profile":
-      case "login_profile":
-      case "login_profile_device_code":
       case "refresh_profile":
       case "open_releases":
       case "open_contact":

@@ -129,6 +129,11 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   写入前账号身份校验和原子 `auth.json` 发布路径。外部服务（包括
   Sub2API）的专用 OAuth 凭证不得挂载、导入或复用 Account Switch 的
   A/B/C 等普通 profile 凭证。
+- 授权成功后必须把实际完成路径写入 profile metadata 的
+  `last_authorization_method`（`browser` / `device_code`），并在账号卡片显示；
+  取消、身份拒绝或其他失败不得改写旧值。`login_browser` 只控制未来浏览器
+  路由，不能用来推断历史；有 `account_id` 时把授权记录绑定到该 workspace，
+  同邮箱 workspace 漂移不得沿用徽标。旧 profile 缺字段时保持未知，账号身份清空时一并清除。
 - Windows 定向浏览器登录不再按 profile `b` / `c` 槽位选浏览器。仅当目标
   profile 的 `profile.json` 显式设置 `login_browser` 为 `edge` 时，登录使用
   `codex app-server`，并用用户正常 Edge 状态打开返回的 auth URL。

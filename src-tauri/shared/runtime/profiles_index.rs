@@ -21,7 +21,7 @@ use super::profiles::{
 };
 use super::session_usage::{load_latest_local_quota_snapshot_since, normalize_quota_summary};
 
-const PROFILES_INDEX_SCHEMA_VERSION: u32 = 5;
+const PROFILES_INDEX_SCHEMA_VERSION: u32 = 6;
 
 /// How long a freshly-rebuilt index lives in the in-process cache
 /// before the next `load_profiles_index` call re-reads the disk.
@@ -171,6 +171,7 @@ fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIn
         plan_name: metadata.plan_name,
         subscription_expires_at: metadata.subscription_expires_at,
         openai_base_url: metadata.openai_base_url,
+        last_authorization_method: metadata.last_authorization_method,
         auth_present: auth_path.is_file(),
         stored_quota: metadata.quota,
         stored_quota_updated_at_ms: metadata.quota_updated_at_ms,
@@ -332,6 +333,7 @@ fn build_profile_card(entry: &ProfileIndexEntry, current_profile: Option<&str>) 
             entry.subscription_expires_at.as_deref(),
         ),
         openai_base_url: entry.openai_base_url.clone(),
+        last_authorization_method: entry.last_authorization_method,
         quota: normalize_quota_summary(
             Some(entry.stored_quota.clone()),
             entry.plan_name.as_deref(),
@@ -460,7 +462,9 @@ pub fn load_current_live_quota(codex_home: Option<&Path>) -> AppResult<CurrentQu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{QuotaSummary, RateLimitResetCredits, RefreshTokenHealth};
+    use crate::models::{
+        AuthorizationMethod, QuotaSummary, RateLimitResetCredits, RefreshTokenHealth,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct TestCacheGuard;
@@ -517,6 +521,28 @@ mod tests {
             .expect("expected one profile")
             .refresh_token_status
             .health
+    }
+
+    #[test]
+    fn snapshot_surfaces_last_authorization_method_from_profile_metadata() {
+        let codex_home = temp_codex_home("authorization-method");
+        let profile_dir = get_backup_root(Some(&codex_home)).join("a");
+        fs::create_dir_all(&profile_dir).unwrap();
+        fs::write(profile_dir.join("auth.json"), auth_with_account("acct_A")).unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_A","last_authorization_method":"device_code"}"#,
+        )
+        .unwrap();
+
+        let snapshot = load_profiles_snapshot(Some(&codex_home)).unwrap();
+
+        assert_eq!(
+            snapshot.profiles[0].last_authorization_method,
+            Some(AuthorizationMethod::DeviceCode)
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]

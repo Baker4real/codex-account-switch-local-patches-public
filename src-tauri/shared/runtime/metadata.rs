@@ -5,8 +5,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::models::{
-    PlanSource, ProfileMetadata, QuotaProvenance, QuotaSummary, RefreshTokenHealth,
-    RefreshTokenStatus,
+    AuthorizationMethod, PlanSource, ProfileMetadata, QuotaProvenance, QuotaSummary,
+    RefreshTokenHealth, RefreshTokenStatus,
 };
 
 use super::fs_ops::atomic_write_file;
@@ -93,6 +93,15 @@ pub(super) fn profile_metadata_matches_identity(
         return false;
     }
 
+    if let (Some(stored_account_id), AuthIdentityEvidence::Bound(auth_identity)) = (
+        metadata.last_authorization_account_id.as_deref(),
+        &auth_identity,
+    ) {
+        if let Some(account_id) = auth_identity.account_id.as_deref() {
+            return account_id == stored_account_id;
+        }
+    }
+
     match auth_identity {
         AuthIdentityEvidence::Missing => true,
         AuthIdentityEvidence::Bound(auth_identity) => metadata
@@ -125,6 +134,8 @@ fn metadata_has_identity_bound_fields(metadata: &ProfileMetadata) -> bool {
         || metadata.plan_name.is_some()
         || metadata.plan_source != PlanSource::Unknown
         || metadata.subscription_expires_at.is_some()
+        || metadata.last_authorization_method.is_some()
+        || metadata.last_authorization_account_id.is_some()
         || metadata.quota_updated_at_ms.is_some()
         || metadata.last_plan_check_ms.is_some()
         || quota_window_has_data(&metadata.quota.five_hour)
@@ -141,6 +152,8 @@ fn clear_identity_bound_metadata(metadata: &mut ProfileMetadata) {
     metadata.plan_name = None;
     metadata.plan_source = PlanSource::Unknown;
     metadata.subscription_expires_at = None;
+    metadata.last_authorization_method = None;
+    metadata.last_authorization_account_id = None;
     metadata.quota = QuotaSummary::default();
     metadata.quota_updated_at_ms = None;
     metadata.last_plan_check_ms = None;
@@ -505,7 +518,7 @@ fn load_stored_profile_metadata(
         .join(profile_name)
         .join("auth.json");
     let auth_identity = load_account_identity_from_path(&auth_path);
-    let auth_identity = if auth_path.is_file() {
+    let auth_evidence = if auth_path.is_file() {
         auth_identity
             .as_ref()
             .map(AuthIdentityEvidence::Bound)
@@ -513,9 +526,18 @@ fn load_stored_profile_metadata(
     } else {
         AuthIdentityEvidence::Missing
     };
-    if !profile_metadata_matches_identity(&metadata, profile_name, auth_identity) {
+    if !profile_metadata_matches_identity(&metadata, profile_name, auth_evidence) {
         clear_identity_bound_metadata(&mut metadata);
         metadata.folder_name = Some(profile_name.to_string());
+    } else if let (Some(stored_account_id), Some(auth_identity)) = (
+        metadata.last_authorization_account_id.as_deref(),
+        auth_identity.as_ref(),
+    ) {
+        if auth_identity.account_id.as_deref() == Some(stored_account_id) {
+            if let Some(account_label) = auth_identity.label() {
+                metadata.account_label = Some(account_label);
+            }
+        }
     }
     Some(metadata)
 }
@@ -914,6 +936,46 @@ pub fn sync_root_metadata_if_current_profile(
     write_root_profile_metadata(&codex_home, &root_metadata)
 }
 
+/// Commit the successful login method to both profile and live metadata.
+/// If the live write fails, restore the profile snapshot so the two stay aligned.
+pub fn commit_profile_authorization_method(
+    profile_name: &str,
+    previous_metadata: &ProfileMetadata,
+    authorization_method: AuthorizationMethod,
+    codex_home: Option<&Path>,
+) -> Result<ProfileMetadata, crate::errors::AppError> {
+    let profile_name = validate_profile_name(profile_name)?;
+    let authorization_account_id = load_account_identity_from_path(
+        &get_backup_root(codex_home)
+            .join(&profile_name)
+            .join("auth.json"),
+    )
+    .and_then(|identity| identity.account_id);
+    let mut updated_metadata = previous_metadata.clone();
+    updated_metadata.last_authorization_method = Some(authorization_method);
+    updated_metadata.last_authorization_account_id = authorization_account_id;
+    save_profile_metadata(&profile_name, &updated_metadata, codex_home)?;
+
+    if let Err(commit_error) =
+        sync_root_metadata_if_current_profile(&profile_name, &updated_metadata, codex_home)
+    {
+        if let Err(rollback_error) =
+            save_profile_metadata(&profile_name, previous_metadata, codex_home)
+        {
+            return Err(crate::errors::AppError::new(
+                "PROFILE_AUTHORIZATION_METHOD_ROLLBACK_FAILED",
+                format!(
+                    "Failed to commit authorization method for profile {profile_name}: {}; rollback failed: {}",
+                    commit_error.message, rollback_error.message
+                ),
+            ));
+        }
+        return Err(commit_error);
+    }
+
+    Ok(updated_metadata)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -925,6 +987,43 @@ mod tests {
             has_plan_claims: true,
             ..AuthDerivedMetadata::default()
         }
+    }
+
+    #[test]
+    fn authorization_method_commit_rolls_back_profile_when_root_write_fails() {
+        let codex_home = temp_dir("authorization-method-rollback");
+        let backup_root = get_backup_root(Some(&codex_home));
+        let profile_dir = backup_root.join("a");
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(backup_root.join(".current_profile"), "a\n").unwrap();
+
+        let previous_metadata = ProfileMetadata {
+            folder_name: Some("a".to_string()),
+            account_label: Some("acct_A".to_string()),
+            last_authorization_method: Some(AuthorizationMethod::DeviceCode),
+            last_authorization_account_id: Some("acct_A".to_string()),
+            ..ProfileMetadata::default()
+        };
+        save_profile_metadata("a", &previous_metadata, Some(&codex_home)).unwrap();
+        let before = std::fs::read_to_string(profile_dir.join("profile.json")).unwrap();
+        std::fs::create_dir_all(codex_home.join(PROFILE_METADATA_FILENAME)).unwrap();
+
+        let error = commit_profile_authorization_method(
+            "a",
+            &previous_metadata,
+            AuthorizationMethod::Browser,
+            Some(&codex_home),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_METADATA_WRITE_FAILED");
+        assert_eq!(
+            std::fs::read_to_string(profile_dir.join("profile.json")).unwrap(),
+            before
+        );
+        assert!(codex_home.join(PROFILE_METADATA_FILENAME).is_dir());
+
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     #[test]
@@ -992,6 +1091,7 @@ mod tests {
             let mut stored = serde_json::json!({
                 "account_label": "acct_C",
                 "plan_name": "prolite",
+                "last_authorization_method": "browser",
                 "openai_base_url": "https://example.invalid/v1",
                 "quota": {"five_hour": {"remaining_percent": 12}}
             });
@@ -1009,6 +1109,7 @@ mod tests {
             assert_eq!(metadata.folder_name.as_deref(), Some("b"));
             assert_eq!(metadata.account_label.as_deref(), Some("acct_B"));
             assert_eq!(metadata.plan_name, None);
+            assert_eq!(metadata.last_authorization_method, None);
             assert_eq!(metadata.quota.five_hour.remaining_percent, None);
             assert_eq!(
                 metadata.openai_base_url.as_deref(),
@@ -1097,6 +1198,94 @@ mod tests {
 
             let _ = std::fs::remove_dir_all(&codex_home);
         }
+    }
+
+    #[test]
+    fn load_profile_metadata_clears_authorization_method_when_bound_workspace_changes() {
+        let codex_home = temp_dir("authorization-workspace-drift");
+        let profile_dir = get_profile_metadata_path("b", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let payload =
+            general_purpose::URL_SAFE_NO_PAD.encode(r#"{"email":"user@example.com"}"#.as_bytes());
+        let token = format!("header.{payload}.signature");
+        std::fs::write(
+            profile_dir.join("auth.json"),
+            serde_json::json!({
+                "tokens": {
+                    "account_id": "workspace_B",
+                    "id_token": token
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            profile_dir.join("profile.json"),
+            serde_json::json!({
+                "folder_name": "b",
+                "account_label": "user@example.com",
+                "last_authorization_method": "browser",
+                "last_authorization_account_id": "workspace_A"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let metadata = load_profile_metadata("b", Some(&codex_home));
+
+        assert_eq!(metadata.last_authorization_method, None);
+
+        let _ = std::fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn load_profile_metadata_keeps_authorization_method_when_bound_workspace_email_changes() {
+        let codex_home = temp_dir("authorization-email-change");
+        let profile_dir = get_profile_metadata_path("b", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        let payload =
+            general_purpose::URL_SAFE_NO_PAD.encode(r#"{"email":"new@example.com"}"#.as_bytes());
+        let token = format!("header.{payload}.signature");
+        std::fs::write(
+            profile_dir.join("auth.json"),
+            serde_json::json!({
+                "tokens": {
+                    "account_id": "workspace_A",
+                    "id_token": token
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            profile_dir.join("profile.json"),
+            serde_json::json!({
+                "folder_name": "b",
+                "account_label": "old@example.com",
+                "last_authorization_method": "browser",
+                "last_authorization_account_id": "workspace_A",
+                "quota": {"five_hour": {"remaining_percent": 73}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let metadata = load_profile_metadata("b", Some(&codex_home));
+
+        assert_eq!(
+            metadata.last_authorization_method,
+            Some(AuthorizationMethod::Browser)
+        );
+        assert_eq!(metadata.quota.five_hour.remaining_percent, Some(73));
+        assert_eq!(metadata.account_label.as_deref(), Some("new@example.com"));
+
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     fn quota_with_five_hour() -> QuotaSummary {

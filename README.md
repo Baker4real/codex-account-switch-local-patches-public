@@ -19,6 +19,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 - 账号筛选：账号页支持本地搜索、动态套餐筛选、显示数/总数提示和一键清除；筛选不修改账号快照或凭据。
 - 设备码登录：每个 profile 卡片都可显示验证地址和一次性代码，在另一台能够登录 OpenAI 的设备上完成授权；它与浏览器登录共用隔离运行目录、账号身份校验、取消和原子写入流程。
 - 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
+- 授权方式标记：浏览器或设备码授权成功后，账号卡片显示最近一次实际授权方式；旧 profile 没有可靠历史时不显示，也不会根据 `login_browser` 猜测。
 - Codex CLI 自动检测：扫描 PATH、官方 Windows runtime、nvm-windows、fnm、asdf 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。
 - Codex 控制：控制区可直接打开或重启 Codex；重启沿用 Windows Store 包身份校验和稳定退出检查，按钮执行期间会锁定，避免重复触发。
 - Usage 统计：从本机 session JSONL 和冻结的只读证据增量维护 `%CODEX_HOME%\account_backup\openai_usage.sqlite`，严格区分官方、历史归因和未归属候选；token 自动以万/亿等紧凑单位显示。模型费用从 OpenAI 官方页面异步刷新并使用已验证的最后可用目录，未知模型或无法确认的长上下文只显示 token，不伪造 `$0` 费用。

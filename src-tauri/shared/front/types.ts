@@ -60,6 +60,8 @@ export type RefreshTokenHealth =
   | "not_refreshable"
   | "missing_auth";
 
+export type AuthorizationMethod = "browser" | "device_code";
+
 export interface RefreshTokenStatus {
   health: RefreshTokenHealth;
   can_refresh: boolean;
@@ -81,6 +83,7 @@ export interface ProfileCard {
   plan_name: string | null;
   subscription_days_left: number | null;
   openai_base_url: string | null;
+  last_authorization_method: AuthorizationMethod | null;
   quota: QuotaSummary;
   last_plan_check_ms: number | null;
   refresh_token_status: RefreshTokenStatus;

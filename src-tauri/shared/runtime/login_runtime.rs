@@ -19,19 +19,21 @@
 use std::path::Path;
 
 use crate::errors::{AppError, AppResult};
-use crate::models::PlanSource;
+use crate::models::{AuthorizationMethod, PlanSource};
 use crate::platform::hooks::PlatformHooks;
 
 use super::fs_ops::atomic_copy_file;
 use super::metadata::{
-    load_account_identity_from_path, sync_profile_metadata_from_auth,
-    sync_root_metadata_if_current_profile,
+    commit_profile_authorization_method, load_account_identity_from_path,
+    sync_profile_metadata_from_auth, sync_root_metadata_if_current_profile,
 };
 use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
-use super::profiles_index::reload_profiles_index_after_mutation;
+use super::profiles_index::{
+    invalidate_profiles_index_cache, reload_profiles_index_after_mutation,
+};
 use super::runtime_isolation::{
     clear_runtime_auth_state, prune_runtime_extra_features, seed_runtime_shared_assets,
     RUNTIME_AUTH_FILENAME,
@@ -120,6 +122,7 @@ pub fn login_profile_with_home<H: PlatformHooks + ?Sized>(
         profile_name,
         codex_home,
         runtime_home,
+        AuthorizationMethod::Browser,
         |cli_codex_home, runtime_codex_home, profile_name| {
             hooks.run_codex_login(cli_codex_home, runtime_codex_home, profile_name)
         },
@@ -141,6 +144,7 @@ where
         profile_name,
         codex_home,
         runtime_home,
+        AuthorizationMethod::DeviceCode,
         |cli_codex_home, runtime_codex_home, profile_name| {
             hooks.run_codex_device_code_login(
                 cli_codex_home,
@@ -156,6 +160,7 @@ fn login_profile_with_runner<F>(
     profile_name: &str,
     codex_home: Option<&Path>,
     runtime_home: &Path,
+    authorization_method: AuthorizationMethod,
     run_login: F,
 ) -> AppResult<String>
 where
@@ -241,6 +246,15 @@ where
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
         record_current_openai_usage_attribution(Some(&codex_home))?;
     }
+    // Commit the method last so a failed login command never records a new
+    // authorization method as though the whole workflow succeeded.
+    commit_profile_authorization_method(
+        &profile_name,
+        &metadata,
+        authorization_method,
+        Some(&codex_home),
+    )?;
+    invalidate_profiles_index_cache(Some(&codex_home));
 
     // Best-effort: keep the runtime dir around so the next login on this
     // machine re-uses the seeded models_cache / version pin and skips
@@ -466,6 +480,17 @@ mod tests {
             FAKE_AUTH_JSON,
             "profile auth.json should contain the freshly written payload"
         );
+        let metadata: crate::models::ProfileMetadata =
+            serde_json::from_str(&fs::read_to_string(profile_dir.join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            metadata.last_authorization_method,
+            Some(crate::models::AuthorizationMethod::Browser)
+        );
+        assert_eq!(
+            metadata.last_authorization_account_id.as_deref(),
+            Some("acct_login_test")
+        );
     }
 
     #[test]
@@ -494,6 +519,17 @@ mod tests {
         assert_eq!(
             fs::read_to_string(profile_dir.join("auth.json")).unwrap(),
             FAKE_AUTH_JSON
+        );
+        let metadata: crate::models::ProfileMetadata =
+            serde_json::from_str(&fs::read_to_string(profile_dir.join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            metadata.last_authorization_method,
+            Some(crate::models::AuthorizationMethod::DeviceCode)
+        );
+        assert_eq!(
+            metadata.last_authorization_account_id.as_deref(),
+            Some("acct_login_test")
         );
     }
 
@@ -639,6 +675,39 @@ mod tests {
             Some("stale@example.com"),
             "active-profile login should also refresh ~/.codex/profile.json"
         );
+    }
+
+    #[test]
+    fn login_profile_keeps_previous_authorization_method_when_root_metadata_write_fails() {
+        let (codex_home, profile_dir, runtime_home) = setup("metadata-commit-failure");
+        fs::write(
+            codex_home.join("account_backup").join(".current_profile"),
+            "a\n",
+        )
+        .unwrap();
+        fs::write(codex_home.join("auth.json"), "LIVE_STALE\n").unwrap();
+        fs::write(profile_dir.join("auth.json"), FAKE_AUTH_JSON).unwrap();
+        fs::write(
+            profile_dir.join("profile.json"),
+            r#"{"folder_name":"a","account_label":"acct_login_test","last_authorization_method":"device_code"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(codex_home.join("profile.json")).unwrap();
+        let hooks = FakeLoginHooks::new(FAKE_AUTH_JSON);
+
+        let error =
+            login_profile_with_home(&hooks, "a", Some(&codex_home), &runtime_home).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_METADATA_WRITE_FAILED");
+        let stored: crate::models::ProfileMetadata =
+            serde_json::from_str(&fs::read_to_string(profile_dir.join("profile.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            stored.last_authorization_method,
+            Some(crate::models::AuthorizationMethod::DeviceCode)
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]

@@ -424,6 +424,19 @@ button.pager-pill:hover:not(:disabled) {
   line-height: 1.25;
 }
 
+.profile-authorization-method {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid rgba(111, 153, 168, 0.45);
+  border-radius: 6px;
+  background: rgba(225, 239, 242, 0.7);
+  color: #47646e;
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
 .profile-card.is-unavailable-card .profile-title-account,
 .profile-card.is-unavailable-card .profile-plan {
   color: #727684;
