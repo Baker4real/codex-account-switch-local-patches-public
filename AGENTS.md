@@ -3,7 +3,7 @@
 ## Platform Isolation
 
 - This product is Windows x64 only. Keep the active runtime, frontend entry, assets, build, CI, and release paths Windows-specific.
-- Keep `src-tauri/shared/**` limited to unavoidable neutral contracts such as on-disk formats, protocol models, and shared account/Usage logic; Windows process, login, window, and install behavior belongs under `src-tauri/win/**`.
+- Keep `src-tauri/shared/**` limited to unavoidable neutral contracts such as on-disk formats, protocol models, and shared account/quota logic; Windows process, login, window, and install behavior belongs under `src-tauri/win/**`.
 - Do not reintroduce retired non-Windows source trees, package scripts, release assets, or platform-specific build commands. Historical changelog entries are evidence only, not support promises.
 - Use Windows-only compile, check, test, and build commands. Do not add validation paths for retired platforms.
 - Windows Vite/Tauri build commands should be run with escalation by default. In this repository, sandboxed builds are known to fail with `spawn EPERM` while starting `esbuild` from the Vite/Tauri `beforeBuildCommand`.
