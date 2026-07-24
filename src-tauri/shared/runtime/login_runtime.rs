@@ -27,7 +27,6 @@ use super::metadata::{
     commit_profile_authorization_method, load_account_identity_from_path,
     sync_profile_metadata_from_auth, sync_root_metadata_if_current_profile,
 };
-use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{get_backup_root, get_codex_home, validate_profile_name};
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::resolve_current_profile;
@@ -243,9 +242,6 @@ where
     )?;
     sync_root_metadata_if_current_profile(&profile_name, &metadata, Some(&codex_home))?;
     reload_profiles_index_after_mutation(Some(&codex_home))?;
-    if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
-        record_current_openai_usage_attribution(Some(&codex_home))?;
-    }
     // Commit the method last so a failed login command never records a new
     // authorization method as though the whole workflow succeeded.
     commit_profile_authorization_method(

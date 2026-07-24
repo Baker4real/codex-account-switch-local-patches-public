@@ -31,13 +31,17 @@
           <nav class="route-tabs" aria-label="Primary navigation">
             <a class="route-tab" href="#dashboard" data-route-tab="dashboard" data-i18n-key="navDashboard">Dashboard</a>
             <a class="route-tab" href="#profiles" data-route-tab="profiles" data-i18n-key="navProfiles">Profiles</a>
-            <a class="route-tab" href="#usage" data-route-tab="usage" data-i18n-key="navUsage">Usage</a>
             <a class="route-tab" href="#settings" data-route-tab="settings" data-i18n-key="navSettings">Settings</a>
             <a class="route-tab" href="#guide" data-route-tab="guide" data-i18n-key="navGuide">Guide</a>
           </nav>
         </section>
 
         <section class="page active" id="page-dashboard" data-page="dashboard">
+          <div class="dashboard-heading-row">
+            <h2 class="section-title" data-i18n-key="dashboardOverviewTitle">Dashboard</h2>
+            <button id="restart-codex-button" class="control-button control-button--restart dashboard-restart-button" type="button">Restart Codex</button>
+          </div>
+
           <div class="dashboard-grid">
             <article class="rail-card current-account-card current-account-card--hero">
               <div class="current-account-topbar">
@@ -72,10 +76,6 @@
             </article>
 
             <section class="overview-panel">
-              <div class="page-title-block">
-                <h2 class="section-title" data-i18n-key="dashboardOverviewTitle">Dashboard</h2>
-              </div>
-
               <div class="status-grid">
                 <article class="status-card status-card--active-profile">
                   <span data-i18n-key="metricActiveProfile">Active profile</span>
@@ -101,7 +101,6 @@
                 </div>
 
                 <div class="control-stack control-stack--grid">
-                  <button id="restart-codex-button" class="control-button control-button--restart" type="button">Restart Codex</button>
                   <button id="add-profiles-button" class="control-button" type="button">Add Profiles</button>
                   <button id="open-codex-button" class="control-button" type="button">Open Codex</button>
                   <button id="star-button" class="control-button" type="button">Star</button>
@@ -157,77 +156,6 @@
 
               <div id="profiles-grid" class="profiles-grid"></div>
             </section>
-          </section>
-        </section>
-
-        <section class="page" id="page-usage" data-page="usage">
-          <section class="usage-stage">
-            <div class="usage-header">
-              <div>
-                <p class="page-kicker" data-i18n-key="navUsage">Usage</p>
-                <h2 class="section-title" data-i18n-key="usageTitle">Usage Statistics</h2>
-                <p class="page-copy" data-i18n-key="usageSubtitle">Official OpenAI token and estimated cost, grouped by account.</p>
-              </div>
-              <button id="usage-refresh-button" class="pager-pill usage-refresh-button" type="button" data-i18n-key="usageRefresh">Refresh usage</button>
-            </div>
-
-            <div class="usage-control-bar">
-              <div id="usage-range-picker" class="usage-range-picker">
-                <button
-                  id="usage-range-button"
-                  class="usage-range-trigger"
-                  type="button"
-                  aria-haspopup="dialog"
-                  aria-expanded="false"
-                  title="Time range"
-                >
-                  <span class="usage-range-trigger-icon" aria-hidden="true"></span>
-                  <span id="usage-range-label" class="usage-range-trigger-label">Last 24 hours</span>
-                  <span class="usage-range-trigger-chevron" aria-hidden="true"></span>
-                </button>
-                <div
-                  id="usage-range-popover"
-                  class="usage-range-popover"
-                  role="dialog"
-                  aria-label="Time range"
-                  hidden
-                ></div>
-              </div>
-              <label class="usage-control">
-                <span data-i18n-key="usageScopeFilter">Scope</span>
-                <select id="usage-scope-select">
-                  <option value="strict" data-i18n-key="usageScopeStrict">Strict proven</option>
-                  <option value="legacy" data-i18n-key="usageScopeLegacy">Legacy profile estimate</option>
-                  <option value="combined_attributed" data-i18n-key="usageScopeCombined">Strict + legacy</option>
-                  <option value="candidate" data-i18n-key="usageScopeCandidate">Unattributed candidates</option>
-                  <option value="excluded" data-i18n-key="usageScopeExcluded">Excluded evidence</option>
-                </select>
-              </label>
-              <label class="usage-control">
-                <span data-i18n-key="usageAccountFilter">Account</span>
-                <select id="usage-account-filter"></select>
-              </label>
-              <label class="usage-control">
-                <span data-i18n-key="usageModelFilter">Model</span>
-                <select id="usage-model-filter"></select>
-              </label>
-              <label class="usage-control">
-                <span data-i18n-key="usageRefreshInterval">Refresh</span>
-                <select id="usage-refresh-interval-select">
-                  <option value="0" data-i18n-key="usageRefreshOff">Off</option>
-                  <option value="1000">1s</option>
-                  <option value="5000">5s</option>
-                  <option value="10000">10s</option>
-                  <option value="30000" selected>30s</option>
-                  <option value="60000">60s</option>
-                </select>
-              </label>
-            </div>
-
-            <div id="usage-account-panel" class="usage-account-panel"></div>
-            <div id="usage-summary-panel" class="usage-summary-panel"></div>
-            <div id="usage-trend-panel" class="usage-trend-panel"></div>
-            <div id="usage-detail-panel" class="usage-detail-panel"></div>
           </section>
         </section>
 

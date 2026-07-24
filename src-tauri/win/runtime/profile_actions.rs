@@ -13,7 +13,6 @@ use super::config::sync_root_openai_base_url_for_profile;
 use super::fs_ops::{atomic_write_file, remove_path};
 use super::login_runtime::{login_profile_with_device_code_with_home, login_profile_with_home};
 use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile_openai_base_url};
-use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{
     get_backup_root, get_codex_home, get_login_runtime_dir, validate_profile_name,
     ACTIVE_MARKER_FILE,
@@ -136,7 +135,6 @@ pub fn update_profile_base_url(profile_name: &str, openai_base_url: &str) -> App
     sync_profile_openai_base_url(&profile_name, normalized_base_url, Some(&codex_home))?;
     if resolve_current_profile(&backup_root).as_deref() == Some(profile_name.as_str()) {
         sync_root_openai_base_url_for_profile(&profile_name, Some(&codex_home))?;
-        record_current_openai_usage_attribution(Some(&codex_home))?;
     }
     super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 

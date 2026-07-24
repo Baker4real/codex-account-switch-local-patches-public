@@ -6,7 +6,7 @@
   <a href="https://github.com/Baker4real/codex-account-switch-local-patches/releases">私有补丁 Releases</a>
 </p>
 
-Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号管理器。它为每个账号保存独立的 `auth.json` 与 `profile.json`，支持安全切换、plan/quota 查看、Codex CLI 路径检测和本机 Usage 统计。
+Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号管理器。它为每个账号保存独立的 `auth.json` 与 `profile.json`，支持安全切换、plan/quota 查看、Codex CLI 路径检测和 Codex 控制。
 
 当前产品契约只有 Windows x64。仓库中的运行时、前端入口、构建、CI 和发布流程都以 Windows MSVC 为准；不再提供其他操作系统的安装包或运行路径。
 
@@ -21,8 +21,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 - 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
 - 授权方式标记：浏览器或设备码授权成功后，账号卡片显示最近一次实际授权方式；旧 profile 没有可靠历史时不显示，也不会根据 `login_browser` 猜测。
 - Codex CLI 自动检测：扫描 PATH、官方 Windows runtime、nvm-windows、fnm、asdf 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。
-- Codex 控制：控制区可直接打开或重启 Codex；重启沿用 Windows Store 包身份校验和稳定退出检查，按钮执行期间会锁定，避免重复触发。
-- Usage 统计：从本机 session JSONL 和冻结的只读证据增量维护 `%CODEX_HOME%\account_backup\openai_usage.sqlite`，严格区分官方、历史归因和未归属候选；token 自动以万/亿等紧凑单位显示。模型费用从 OpenAI 官方页面异步刷新并使用已验证的最后可用目录，未知模型或无法确认的长上下文只显示 token，不伪造 `$0` 费用。
+- Codex 控制：仪表盘前列可直接重启 Codex，控制区仍可打开 Codex；重启沿用 Windows Store 包身份校验和稳定退出检查，按钮执行期间会锁定，避免重复触发。
 - Custom Base URL：每个账号可单独配置第三方 OpenAI 兼容地址；它与 ChatGPT OAuth 账号互斥。
 
 ## 安装与使用
@@ -31,8 +30,6 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 2. 打开应用，在“设置”确认 Codex CLI 路径；缺失时点击“自动检测”或手动选择可运行的 `codex.exe` / `codex.cmd`。
 3. 在“账号”页添加 profile；本机浏览器可登录时点击“浏览器”，否则点击“设备码”，再在能够登录 OpenAI 的设备上打开验证页面并输入一次性代码。
 4. 在目标账号卡片点击“切换”。应用会先保存当前账号，再按身份路由写回目标账号；全局 `skills`、插件缓存、sessions、`AGENTS.md`、`rules`、`memories` 等不会被 profile 覆盖。
-5. 需要查看 token 消耗时打开“使用统计”。数据只来自本机文件和已冻结的只读证据，不上传请求内容。
-
 Windows SmartScreen 可能提示未签名；确认来源后可选择“更多信息 → 仍要运行”。账号凭据和 OAuth token 只写入本机，请勿把 `auth.json` 上传到公共位置。
 
 历史版本说明：旧版仓库曾发布过 macOS/Linux 资产，那些 Release 只用于保留历史记录，当前不再支持；不要安装旧平台或公共上游二进制。
@@ -40,7 +37,7 @@ Windows SmartScreen 可能提示未签名；确认来源后可选择“更多信
 ## 仓库结构
 
 - `src-tauri/win/`：Windows Tauri 前端壳与原生 runtime。
-- `src-tauri/shared/`：账号生命周期、身份路由、Usage ledger、ChatGPT API、app-server 和前端桥接；只保留必要的中性契约。
+- `src-tauri/shared/`：账号生命周期、身份路由、ChatGPT API、app-server 和前端桥接；只保留必要的中性契约。
 - `scripts/`：版本同步、Windows MSVC 构建、发布卫生检查和远端桌面部署。
 - `examples/account_backup/demo/`：账号目录模板。
 - `docs/`：实现说明、Windows 双主机部署和研究/设计记录。
@@ -62,7 +59,7 @@ npm run check:windows-release-hygiene
 前端生产构建输出到 ignored 的 `dist\web\`。Windows MSVC 便携构建使用已验证脚本：
 
 ```powershell
-npm run build -- --mode windows
+npm run build
 npm run tauri:build:windows:portable
 ```
 
@@ -78,7 +75,7 @@ npm run version:check
 
 ## 网络代理
 
-账号刷新、`codex login` / `codex app-server` 子进程和官方定价刷新按以下顺序选择代理：
+账号刷新和 `codex login` / `codex app-server` 子进程按以下顺序选择代理：
 `CODEX_SWITCH_PROXY_URL` → `HTTPS_PROXY` / `https_proxy` → `ALL_PROXY` / `all_proxy` →
 `HTTP_PROXY` / `http_proxy`；未设置或值为空时使用 `http://127.0.0.1:10808`。如需固定其他端口，
 请设置用户级环境变量并完全退出后重启 Codex Switch：
@@ -105,10 +102,10 @@ npm run version:check
 - Codex 当前账号：`%CODEX_HOME%\auth.json`、`%CODEX_HOME%\profile.json`。
 - Profile 备份：`%CODEX_HOME%\account_backup\<profile>\`。
 - Windows runtime：`%CODEX_HOME%\account_backup\windows\`（安装状态、quota cache、login/refresh runtime）。
-- Usage ledger：`%CODEX_HOME%\account_backup\openai_usage.sqlite`。
-- 外部只读证据：`%CODEX_HOME%\usage_evidence\`，不会被列为账号 profile。
+- 已停用统计功能的历史文件可能仍位于 `account_backup\openai_usage.sqlite`、归因 JSONL 和
+  `%CODEX_HOME%\usage_evidence\`；当前应用不会读取、更新或自动删除它们，也不会把这些目录列为账号 profile。
 
-切换只管理账号态文件，不整棵复制 profile。更新、plan/quota 和 OAuth 流程不向第三方中转；Usage 仅读取本机证据。该项目不是 OpenAI 官方项目。
+切换只管理账号态文件，不整棵复制 profile。更新、plan/quota 和 OAuth 流程不向第三方中转。该项目不是 OpenAI 官方项目。
 
 ## 许可证
 

@@ -424,6 +424,19 @@ button.pager-pill:hover:not(:disabled) {
   line-height: 1.25;
 }
 
+.dashboard-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.dashboard-restart-button {
+  min-width: 148px;
+  justify-content: center;
+}
+
 .profile-authorization-method {
   flex: 0 0 auto;
   padding: 2px 6px;
@@ -796,6 +809,17 @@ button.pager-pill:disabled {
   border-color: rgba(162, 170, 196, 0.98);
   background: rgba(246, 243, 249, 0.98);
   color: var(--text-strong);
+}
+
+@media (max-width: 560px) {
+  .dashboard-heading-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dashboard-restart-button {
+    width: 100%;
+  }
 }
 
 .empty-state {

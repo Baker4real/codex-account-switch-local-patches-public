@@ -2,7 +2,9 @@
 
 ## Unreleased
 
-- 修复账号卡刷新在本机代理端口变化后可能返回 `/wham/usage` 网络错误的问题：ChatGPT API、官方定价刷新和 Codex 子进程不再硬编码失效的 `127.0.0.1:10809`，会优先读取 `CODEX_SWITCH_PROXY_URL` 及标准代理环境变量，默认回落到 `127.0.0.1:10808`。
+- 移除使用统计页面、前端刷新、Tauri IPC、归因采集和本机 ledger/定价实现；现有 `openai_usage.sqlite`、归因 JSONL 与 evidence 目录保持原样，不自动删除。账号套餐、5 小时/周额度和 additional quota 不受影响。
+- “重启 Codex”从控制区提升到仪表盘顶层标题栏，保留执行锁、busy 状态和失败提示，并为窄窗口提供整行按钮布局。
+- 修复账号卡刷新在本机代理端口变化后可能返回 `/wham/usage` 网络错误的问题：ChatGPT API 和 Codex 子进程不再硬编码失效的 `127.0.0.1:10809`，会优先读取 `CODEX_SWITCH_PROXY_URL` 及标准代理环境变量，默认回落到 `127.0.0.1:10808`。
 - 合并公开上游 1.6.1 的 quota 隔离修复：只会读取当前账号激活后写入的 session JSONL，且仅更晚的快照才能覆盖已持久化数据；每次 root 状态回写前都会先同步卡片，避免旧 root `profile.json` 覆盖已刷新的套餐、额度或重置卡。
 - Windows Store 包中的 Codex 宿主已按合并后的 `ChatGPT.exe` 识别；仍严格要求 `OpenAI.Codex` 包身份，消费级 ChatGPT 不会被关闭或重启。
 - 账号套餐现在持久化记录来源：官方 `/wham/usage` 的 live `plan_type` 不会再被滞后的 OAuth `id_token` 覆盖，正常刷新只在授权确有需要时轮换 token；较新的本地 session 快照未携带重置卡时，已确认的官方可用卡会被保留，切换写回也不会将其清零。

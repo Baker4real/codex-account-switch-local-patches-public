@@ -32,14 +32,14 @@ CI release、GNU/MinGW 诊断或上游对比，不要先试裸 `tauri build`、
 ```powershell
 $repo = if ($env:CODEX_SWITCH_REPO) { $env:CODEX_SWITCH_REPO } else { (Get-Location).Path }
 Set-Location -LiteralPath $repo
-npm run build -- --mode windows
+npm run build
 npm run tauri:build:windows:portable
 ```
 
 - 前提是 Rust 已安装 `x86_64-pc-windows-msvc` target，且 Visual Studio Build
   Tools 的 C++ 工具链和 Windows SDK 可用；如果 Git for Windows 的 `link.exe`
   抢先进入 `PATH`，从 VS developer shell 运行，或确保 MSVC `link.exe` 优先。
-- `npm run build -- --mode windows` 是前端 Windows mode 预检，输出到 ignored
+- `npm run build` 是前端 Windows 生产构建预检，输出到 ignored
   的 `dist\web\`。
 - `npm run tauri:build:windows:portable` 是本机替换安装版的主路径。该 wrapper
   默认使用当前环境或系统 `rustup`；需要固定工具链时，通过
@@ -80,8 +80,8 @@ Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dl
 远端桌面覆盖入口使用显式参数；下面是通用形状，尖括号内容必须替换为真实值：
 
 ```powershell
-npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -IdentityFile '<direction-private-key>' -KnownHostsPath '<direction-known-hosts>' -EvidenceRoot '<local-evidence-root>' -InspectOnly
-npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -IdentityFile '<direction-private-key>' -KnownHostsPath '<direction-known-hosts>' -RemoteStageRoot '<remote-stage-root>' -EvidenceRoot '<local-evidence-root>'
+npm run deploy:windows:remote-desktop -- -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -IdentityFile '<direction-private-key>' -KnownHostsPath '<direction-known-hosts>' -EvidenceRoot '<local-evidence-root>' -InspectOnly
+npm run deploy:windows:remote-desktop -- -- -RemoteTarget '<user>@<host>' -RemoteDesktopLink '<remote-desktop-link>' -IdentityFile '<direction-private-key>' -KnownHostsPath '<direction-known-hosts>' -RemoteStageRoot '<remote-stage-root>' -EvidenceRoot '<local-evidence-root>'
 ```
 
 - `RemoteTarget` 与 `RemoteDesktopLink` 对 inspect 和 deploy 都是必填项，可分别由
@@ -148,7 +148,7 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   默认浏览器，并且没有给这个 flow 暴露受支持的浏览器选择参数。
 - 更新检查默认尝试 `pwsh` 再尝试 `powershell`；需要本机固定 PowerShell
   路径时，通过 `CODEX_SWITCH_POWERSHELL` 注入。
-- 账号刷新、官方定价刷新和 Codex 登录/app-server 子进程必须共用代理解析：
+- 账号刷新和 Codex 登录/app-server 子进程必须共用代理解析：
   `CODEX_SWITCH_PROXY_URL` 优先，其次依次使用大小写形式的 `HTTPS_PROXY`、
   `ALL_PROXY`、`HTTP_PROXY`，全部缺失或为空时回落到
   `http://127.0.0.1:10808`。不得恢复已失效的 `127.0.0.1:10809` 硬编码；
@@ -170,39 +170,11 @@ npm run deploy:windows:remote-desktop -- -RemoteTarget '<user>@<host>' -RemoteDe
   ID、失败响应正文；前端固定按北京时间显示时间，服务端没有 additional 配额时不显示
   “接口未报告附加额度”一类空占位。本地 session JSONL 只能作为当前 profile 激活后且严格更新的快照；
   若未包含重置卡，合并和切换写回必须保留已存的官方卡片，不得把可用卡清零。
-- OpenAI 使用统计必须以有效 `base_url` 作为官方来源门禁，不得用
-  `model_provider` 反推官方来源；只统计默认官方路径或 HTTPS
-  `api.openai.com`。`account_backup\openai_usage.sqlite` 是可重建分层 ledger，
-  保存 evidence、facts 和 strict accepted events。默认总额、趋势和日志只读
-  strict proven；历史槽位归因只能进入 `legacy_profile_attributed` 估算层；
-  `candidate_unattributed` 必须作为单独对账层可见，方便核对 cc-switch
-  session-only 差额，但 candidate / rejected / superseded 不得进入费用总额。source signature 必须覆盖
-  session JSONL、归属记录、profile metadata、active marker 和 schema/layer/backfill，
-  确保历史归属变化后能重新同步。模型价格使用独立、版本化的官方目录；价格变化必须在
-  单个 SQLite 事务中只重算费用与 pricing metadata，不得重新解析 session 或改变 token。
-  未知模型 token 可以展示，但费用必须保持未定价，不得显示为 `$0`；无法验证长上下文
-  档位时必须标记 `unpriced_long_context`，不得套用短上下文价格。
-- Usage 热路径必须保留 session 文件 offset/parser checkpoint 和 cc-switch 内容 checkpoint；
-  只有追加且边界可证明安全时才走增量事务，更新、删除、VACUUM、schema 漂移或同时变化时
-  回退全量重建。前端相同意图的刷新必须合并，后台页不得重复读取。
 - 手动“重启 Codex”必须复用账号切换的 Windows Store 包作用域生命周期锁：先验证并稳定
   退出受管包进程，再且仅再启动一次；不得退化为按镜像名 `taskkill`。执行期间前端按钮必须
   禁用并设置 busy 状态，成功或失败后恢复。
-- 使用统计账号/模型 facet 必须按当前时间范围重算：账号候选清除账号自身筛选
-  但保留时间、模型和状态筛选；模型候选清除模型自身筛选但保留时间、账号和
-  状态筛选。账号分类表应位于时间选择下方、摘要卡片前，选择一个账号后不能
-  让其他同范围账号从下拉中消失。账号筛选使用 `account_group_key`，不是单个
-  profile；账号实体按相同的非空 `account_id` 或规范化后相同的 email 建立传递
-  闭包；不存在上述身份别名路径的两个已确认组件不能仅凭 label 合并。缺少身份的
-  历史事件只能归到同一 profile 中事件时间之前最近的已确认账号，绝不使用当前
-  快照或未来身份；同毫秒、候选
-  歧义或缺少此前证据时必须回落到 unknown。旧 ledger 身份只有在旧版 v1 key 或
-  alias 可验证时才允许桥接；strict proven 与 `legacy_profile_attributed` 必须分账。
-- 使用统计自定义时间范围必须使用应用内日历和分钟级文本输入；不要恢复原生
-  `date` / `time` 输入控件，避免系统日期浮层压住应用内弹层和统计卡片。
-- cc-switch 等外部只读证据冻结副本必须写到 `%CODEX_HOME%\usage_evidence\`，
-  不得写入 `account_backup`。`account_backup\usage_evidence` 是系统目录污染，
-  必须迁出或排除，不能出现在账号列表、Usage 账号表或 profile 扫描中。
+- 已停用的统计功能遗留 `openai_usage.sqlite`、归因 JSONL 和 `usage_evidence` 目录只作为
+  历史数据保留；应用不得继续采集，也不得自动删除。历史系统目录仍必须从 profile 扫描中排除。
 - 本地 Windows MSVC 构建必须使用 `npm run tauri:build:windows:portable`；
   该 wrapper 默认使用环境或系统 `rustup`，需要本机固定路径时通过
   `CODEX_SWITCH_RUSTUP_BIN` / `CODEX_SWITCH_CARGO_HOME` /

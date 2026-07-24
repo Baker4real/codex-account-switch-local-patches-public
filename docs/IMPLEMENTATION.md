@@ -15,20 +15,20 @@
 - Windows runtime：`account_backup\windows\`，包括 `install_state.json`、
   `quota_cache.json`、`login_runtime`、`refresh_runtime` 和 `codex_switch_cli.exe`。
 - Windows 命令 shim：`%CODEX_HOME%\bin\codex.cmd`。
-- Usage ledger：`account_backup\openai_usage.sqlite`；外部只读证据冻结到
-  `%CODEX_HOME%\usage_evidence\`，不属于 profile。
+- 已停用统计功能的历史数据可能仍位于 `account_backup\openai_usage.sqlite`、归因 JSONL
+  和 `%CODEX_HOME%\usage_evidence\`。当前运行时不读取、不更新也不自动删除这些文件；
+  历史系统目录仍从 profile 扫描中排除。
 
 `account_backup\macos` 仍被 `paths.rs` 排除，是为了让旧数据目录不会重新显示为账号；
 它是兼容旧数据的过滤项，不是当前运行时目录，也不会被创建或写入。
 
 ## 运行时边界
 
-- Windows UI 壳位于 `src-tauri/win/front/`，共享前端桥接和 Usage workspace 位于
-  `src-tauri/shared/front/`。
+- Windows UI 壳位于 `src-tauri/win/front/`，共享前端桥接位于 `src-tauri/shared/front/`。
 - Windows runtime adapter 位于 `src-tauri/win/runtime/`，负责安装、CLI spawn、登录、
   Store 进程生命周期和窗口控制。
 - `src-tauri/shared/runtime/` 负责 profile、metadata、路径、ChatGPT API、app-server、
-  quota cache、Usage ledger 和错误模型；`src-tauri/shared/commands/` 是 Tauri command
+  quota cache 和错误模型；`src-tauri/shared/commands/` 是 Tauri command
   边界。
 - 应用不启动本地 HTTP backend；更新检查使用 Windows PowerShell 请求版本 JSON。
 
@@ -52,8 +52,8 @@ shim 当成真实 CLI。
 2. 读取 live `auth.json` 身份，按 `account_id` / 规范化 email 查找实际所属 profile。
    marker 只有在身份匹配、或确实是空占位槽位时才可使用；身份已知但未管理时拒绝写回并
    清理活动提示。
-3. 快照 root 的 `auth.json`、`profile.json`、`config.toml`、markers、profiles index、
-   Usage attribution 和目标 profile 的受管文件。
+3. 快照 root 的 `auth.json`、`profile.json`、`config.toml`、markers、profiles index 和
+   目标 profile 的受管文件。
 4. 把旧账号态写回身份解析出的 profile，保存时间戳 autosave；再把目标 profile 的
    `auth.json` / `profile.json` 覆盖到 live root，并同步其 Base URL 和 markers。
 5. 提交后再次观察 Store 进程。若进程在提交期间重现，在有界重试内重新静默并写入目标态；
@@ -79,7 +79,7 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
 - CLI resolver 按手动 override、`install_state`、PATH、nvm-windows、fnm、asdf 和常见
   Windows runtime 顺序探测，每个候选都用 `codex --version` 验证；失效的缓存 shim 不会
   继续使用。版本管理器扫描只读取受限的直接版本目录，不做全盘递归。
-- ChatGPT API、官方定价刷新以及 `codex login` / `codex app-server` 子进程共用代理解析：
+- ChatGPT API 以及 `codex login` / `codex app-server` 子进程共用代理解析：
   `CODEX_SWITCH_PROXY_URL` 优先，其次依次读取大小写形式的 `HTTPS_PROXY`、`ALL_PROXY`、
   `HTTP_PROXY`；空值跳过，全部缺失时使用 `http://127.0.0.1:10808`。Rust HTTP client
   收到非法代理 URL 时返回 `CODEX_SWITCH_PROXY_INVALID`，不会静默改为直连。内嵌 WebView
@@ -112,28 +112,9 @@ profile 切换只管理 `auth.json`、`profile.json` 和按 profile 配置的 Ba
 tag 合并到本地源码、保留补丁并重新构建，再替换已安装文件。应用没有 updater 依赖，不
 下载公共 exe，不安装或覆盖上游二进制。
 
-## Usage ledger
-
-`openai_usage.sqlite` 是可重建的本机事实表，不是不可变账单。ingestion 冻结本机 session
-JSONL 和外部只读证据，并以持久化 checkpoint 对可证明安全的追加变化执行增量事务；检测到
-更新、删除、VACUUM、schema 漂移或不安全边界时回退全量重建。官方价格目录独立刷新，
-价格变化只在 SQLite 事务中重算费用与 pricing metadata，不重新解析 session。
-
-- `openai_usage_evidence` 保存 accepted、candidate、rejected、superseded 证据。
-- `openai_usage_facts` 投影可计量层；`openai_usage_events` 保持 strict accepted-only
-  兼容表。
-- 默认摘要、趋势和日志只读 strict proven；历史槽位归因单独显示，未归属候选用于对账，
-  都不冒充官方账单。
-- 只有可证明的官方 OpenAI `base_url` 才进入严格统计；未知模型保留 token，但费用保持未
-  定价，不显示为 `$0`。
-- token 摘要使用万/亿等紧凑单位；同一刷新意图在前端合并，非活动页面不触发重复读取。
-- 价格目录后台读取 OpenAI 官方 Pricing、Models 目录和必需详情页；候选目录全量验证成功后
-  才原子发布，失败继续使用最后一次验证成功的目录。无法确认的 GPT-5.6 长上下文记录保持
-  `unpriced_long_context`。
-
 ## Codex 手动重启
 
-控制区的“重启 Codex”与账号切换共用 Windows Store 包作用域生命周期锁。后端先验证并退出
+仪表盘前列的“重启 Codex”与账号切换共用 Windows Store 包作用域生命周期锁。后端先验证并退出
 受管包进程，确认稳定空快照后只启动一次，并等待受管进程重新出现；任一步失败都返回明确错误。
 前端执行期间禁用按钮并设置 busy 状态，防止重复点击。
 
@@ -142,7 +123,7 @@ JSONL 和外部只读证据，并以持久化 checkpoint 对可证明安全的�
 本机替换安装版的主路径是：
 
 ```powershell
-npm run build -- --mode windows
+npm run build
 npm run tauri:build:windows:portable
 ```
 

@@ -59,22 +59,4 @@ describe("account display text", () => {
     expect(mediumLayout).toMatch(/"title"\s*"quotas"\s*"actions"/s);
   });
 
-  it("Windows 控制区把重启 Codex 放在首位并突出显示", () => {
-    const windowsMarkup = String(readFileSync(
-      new URL("../../win/front/index.html", import.meta.url),
-      "utf8",
-    ));
-    const windowsStyles = String(readFileSync(
-      new URL("../../win/front/styles.css", import.meta.url),
-      "utf8",
-    ));
-    const controls = windowsMarkup.match(/<div class="control-stack control-stack--grid">([\s\S]*?)<\/div>/)?.[1] ?? "";
-    expect(controls.indexOf('id="restart-codex-button"')).toBeGreaterThanOrEqual(0);
-    expect(controls.indexOf('id="restart-codex-button"')).toBeLessThan(controls.indexOf('id="open-codex-button"'));
-    expect(controls).toMatch(/id="restart-codex-button" class="[^"]*control-button--restart/);
-    const restartRules = windowsStyles.match(/\.control-button--restart\s*\{([^}]*)\}/s)?.[1] ?? "";
-    expect(restartRules).toMatch(/color:\s*var\(--text-strong\)/);
-    expect(restartRules).not.toMatch(/height:/);
-    expect(restartRules).not.toMatch(/grid-column:/);
-  });
 });

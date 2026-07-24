@@ -31,7 +31,7 @@ import {
 } from "@front-shared/quota-view-model";
 import { deviceCodeButtonState } from "@front-shared/device-code-login";
 
-const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "usage", "settings", "guide"];
+const shellRoutes: readonly ShellRoute[] = ["dashboard", "profiles", "settings", "guide"];
 const LOW_QUOTA_THRESHOLD_PERCENT = 20;
 
 function isShellRoute(value: string): value is ShellRoute {

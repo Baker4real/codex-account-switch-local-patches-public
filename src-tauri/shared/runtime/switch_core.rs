@@ -12,11 +12,9 @@ use super::fs_ops::{
 use super::metadata::{
     load_profile_metadata_strict, sync_profile_quota, write_root_profile_metadata,
 };
-use super::openai_usage::record_current_openai_usage_attribution;
 use super::paths::{
-    get_backup_root, get_codex_home, get_current_profile_file, get_openai_usage_attribution_path,
-    get_profiles_index_path, is_profile_dir, list_profile_dirs, validate_profile_name,
-    ACTIVE_MARKER_FILE,
+    get_backup_root, get_codex_home, get_current_profile_file, get_profiles_index_path,
+    is_profile_dir, list_profile_dirs, validate_profile_name, ACTIVE_MARKER_FILE,
 };
 use super::process_lock::{acquire_process_lock, ProcessLockGuard};
 use super::profiles::{
@@ -80,7 +78,6 @@ impl SwitchStateSnapshot {
             codex_home.join("config.toml"),
             get_current_profile_file(Some(codex_home)),
             get_profiles_index_path(Some(codex_home)),
-            get_openai_usage_attribution_path(Some(codex_home)),
         ];
         if let Some(profile) = backup_target {
             paths.extend(
@@ -320,8 +317,7 @@ pub(crate) fn switch_profile_with_home_locked<H: PlatformHooks + ?Sized>(
                 ));
             }
         }
-
-        record_current_openai_usage_attribution(Some(codex_home))
+        Ok(())
     })();
 
     if let Err(error) = switch_result {
@@ -407,7 +403,6 @@ pub fn sync_root_state_to_current_profile_with_home(
 
     backup_root_state_to_profile(&target, &codex_home, &backup_root)?;
     reload_profiles_index_after_mutation(Some(&codex_home))?;
-    record_current_openai_usage_attribution(Some(&codex_home))?;
     Ok(Some(target))
 }
 

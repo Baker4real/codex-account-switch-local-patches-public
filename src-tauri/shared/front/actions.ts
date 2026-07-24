@@ -26,7 +26,6 @@ import {
   deleteProfile,
   getCodexCliStatus,
   getCurrentLiveQuota,
-  getOpenAiUsageDashboard,
   getProfilesSnapshot,
   listenForDeviceCodePrompts,
   loginCurrentProfile,
@@ -65,11 +64,6 @@ import type {
   CurrentQuotaResponse,
 } from "@front-shared/types";
 import {
-  mountUsageWorkspace,
-  replaceUsageWorkspace,
-  type UsageWorkspace,
-} from "@front-shared/usage";
-import {
   applyLocale,
   elements,
   renderCurrentCard,
@@ -98,11 +92,6 @@ function rerenderDashboard(): void {
     renderProfileFilters(null);
     renderPaging({ has_previous: false, has_next: false, page: 1, total_pages: 1 });
     renderShellOverview(null);
-    void usageWorkspace?.dispatch({
-      type: "set-context",
-      active: state.route === "usage",
-      locale: state.locale,
-    });
     return;
   }
 
@@ -124,11 +113,6 @@ function rerenderDashboard(): void {
   renderPaging(dashboard.paging);
   renderProfileFilters(dashboard.profile_counts);
   renderShellOverview(dashboard);
-  void usageWorkspace?.dispatch({
-    type: "set-context",
-    active: state.route === "usage",
-    locale: state.locale,
-  });
 }
 
 let renameSourceProfile: string | null = null;
@@ -142,7 +126,6 @@ let cancelledLoginAttemptId: number | null = null;
 const LOGIN_CANCEL_RETRY_DELAY_MS = 250;
 const LOGIN_CANCEL_RETRY_LIMIT = 6;
 let lastUnmanagedAccountPrompt: string | null = null;
-let usageWorkspace: UsageWorkspace | null = null;
 
 function isRefreshPending(profile: string): boolean {
   return state.refreshActiveProfiles.includes(profile);
@@ -333,7 +316,6 @@ async function refreshAllData(showError = true): Promise<void> {
 
     applySnapshot(snapshot);
     applyCurrentQuota(currentQuota);
-    await usageWorkspace?.dispatch({ type: "refresh", mode: "initial" });
     await reconcileSnapshotAfterCurrentQuota(currentQuota);
     rerenderDashboard();
     maybePromptUnmanagedAccount(state.snapshot?.unmanaged_live_account ?? null);
@@ -1235,16 +1217,6 @@ export function bootstrap(): void {
       true,
     );
   });
-  usageWorkspace = replaceUsageWorkspace(usageWorkspace, () =>
-    mountUsageWorkspace({
-      loadDashboard: getOpenAiUsageDashboard,
-      getContext: () => ({ active: state.route === "usage", locale: state.locale }),
-      onError: (error, notifyUser) => {
-        if (notifyUser) showToast(error.message, true);
-      },
-    }),
-  );
-
   window.addEventListener("hashchange", () => {
     rerenderDashboard();
   });
