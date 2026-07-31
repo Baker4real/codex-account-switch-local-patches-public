@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Windows 双机部署环境"
+tags: [project-docs, reference]
+intent: "Windows 双机部署环境"
+---
+
 # Windows 双机部署环境
 
 > 状态：设备专属配置快照；核对日期为 2026-07-17。本文不保存密码或私钥，通用传输规则以 `D:\Codex\.codex\docs\agent-guidance\ssh-mesh.md` 为准。

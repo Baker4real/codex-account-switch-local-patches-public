@@ -1,3 +1,10 @@
+---
+type: reference
+title: 本地补丁更新流程
+tags: [local-patches, windows, upstream-sync, ownership]
+intent: 维护 Windows 本地补丁、上游同步与私有发布边界。
+---
+
 # 本地补丁更新流程
 
 当前安装版是 Windows x64 本地补丁构建。更新检查提示有新版上游发布时，不要直接用

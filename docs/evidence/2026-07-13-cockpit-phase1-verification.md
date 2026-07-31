@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Cockpit 第一组能力验收证据"
+tags: [project-docs, reference]
+intent: "Cockpit 第一组能力验收证据"
+---
+
 # Cockpit 第一组能力验收证据
 
 日期：2026-07-13/14

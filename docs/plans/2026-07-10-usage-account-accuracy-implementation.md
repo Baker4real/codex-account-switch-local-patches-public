@@ -1,3 +1,10 @@
+---
+type: report
+title: "Usage 统计账号准确性实施计划"
+tags: [project-docs, report]
+intent: "Usage 统计账号准确性实施计划"
+---
+
 # Usage 统计账号准确性实施计划
 
 > 状态：已完成并归档（2026-07-14）；Usage 账号归属准确性实现、全链路验证、浏览器验收与 Windows 远端部署均已完成。

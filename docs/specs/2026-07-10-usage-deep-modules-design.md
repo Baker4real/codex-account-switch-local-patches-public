@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Usage deep modules 设计"
+tags: [project-docs, reference]
+intent: "Usage deep modules 设计"
+---
+
 # Usage deep modules 设计
 
 ## 状态

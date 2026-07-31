@@ -1,3 +1,10 @@
+---
+type: readme
+title: "Codex 账号切换工具（Windows）"
+tags: [project-docs, readme]
+intent: "Codex 账号切换工具（Windows）"
+---
+
 # Codex 账号切换工具（Windows）
 
 <p align="center">

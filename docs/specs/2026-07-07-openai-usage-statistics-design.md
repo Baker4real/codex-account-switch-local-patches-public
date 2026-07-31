@@ -1,3 +1,10 @@
+---
+type: reference
+title: "OpenAI 官方 Token 使用统计设计"
+tags: [project-docs, reference]
+intent: "OpenAI 官方 Token 使用统计设计"
+---
+
 # OpenAI 官方 Token 使用统计设计
 
 > 状态：已实现并归档。基础统计于 2026-07-07 落地，后续 evidence ledger 与 CC Switch parity 设计在保持官方来源门禁的前提下扩展了本文方案。

@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Windows-only 裁剪前基线"
+tags: [project-docs, reference]
+intent: "Windows-only 裁剪前基线"
+---
+
 # Windows-only 裁剪前基线
 
 日期：2026-07-13

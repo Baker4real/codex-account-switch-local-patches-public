@@ -1,0 +1,31 @@
+{
+  "include": [
+    "*.md",
+    "docs/**/*.md"
+  ],
+  "exclude": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    "SKILL.md",
+    "task_plan.md",
+    "findings.md",
+    "progress.md",
+    "docs/**/AGENTS.md",
+    "docs/**/CLAUDE.md",
+    "docs/**/GEMINI.md",
+    "docs/**/SKILL.md",
+    "docs/**/.scratch/**",
+    "docs/**/.planning/**",
+    "docs/**/.gsd/**"
+  ],
+  "allowed_types": [
+    "wiki-chapter",
+    "adr",
+    "index",
+    "reference",
+    "report",
+    "readme"
+  ],
+  "link_validation": "warn"
+}

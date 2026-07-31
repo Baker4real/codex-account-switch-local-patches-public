@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Windows 安全边界"
+tags: [project-docs, reference]
+intent: "Windows 安全边界"
+---
+
 # Windows 安全边界
 
 ## 敏感文件

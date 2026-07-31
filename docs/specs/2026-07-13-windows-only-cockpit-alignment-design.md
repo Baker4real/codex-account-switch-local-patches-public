@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Windows-only 裁剪与 Cockpit Tools 功能对齐设计"
+tags: [project-docs, reference]
+intent: "Windows-only 裁剪与 Cockpit Tools 功能对齐设计"
+---
+
 # Windows-only 裁剪与 Cockpit Tools 功能对齐设计
 
 > 状态（2026-07-14）：阶段一 Windows-only 裁剪与阶段二第一组能力均已完成。实现计划见 [`docs/plans/2026-07-13-cockpit-phase1.md`](../plans/2026-07-13-cockpit-phase1.md)，验收证据见 [`docs/evidence/2026-07-13-cockpit-phase1-verification.md`](../evidence/2026-07-13-cockpit-phase1-verification.md)；后续候选能力仍须单独设计和验收。

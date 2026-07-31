@@ -1,3 +1,10 @@
+---
+type: report
+title: "src-tauri Layout Reorganization Implementation Plan"
+tags: [project-docs, report]
+intent: "src-tauri Layout Reorganization Implementation Plan"
+---
+
 # src-tauri Layout Reorganization Implementation Plan
 
 > 状态：已完成并归档。当前源码已经按 `src-tauri/win/`、`src-tauri/mac/` 与 `src-tauri/shared/` 分组；本文仅保留为历史实施记录。

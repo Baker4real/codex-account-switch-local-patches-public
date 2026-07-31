@@ -1,3 +1,10 @@
+---
+type: report
+title: "Changelog"
+tags: [project-docs, report]
+intent: "Changelog"
+---
+
 # Changelog
 
 ## Unreleased

@@ -1,3 +1,10 @@
+---
+type: reference
+title: "OpenAI Usage Evidence Ledger v2 设计"
+tags: [project-docs, reference]
+intent: "OpenAI Usage Evidence Ledger v2 设计"
+---
+
 # OpenAI Usage Evidence Ledger v2 设计
 
 日期：2026-07-07

@@ -1,3 +1,10 @@
+---
+type: reference
+title: "OpenAI 官方模型定价目录调研"
+tags: [project-docs, reference]
+intent: "OpenAI 官方模型定价目录调研"
+---
+
 # OpenAI 官方模型定价目录调研
 
 调研日期：2026-07-15  

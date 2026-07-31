@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Windows 实现说明"
+tags: [project-docs, reference]
+intent: "Windows 实现说明"
+---
+
 # Windows 实现说明
 
 本文描述当前私有补丁版的 Windows x64 运行契约。仓库只构建和发布

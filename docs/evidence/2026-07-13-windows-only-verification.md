@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Windows-only 裁剪最终验证证据"
+tags: [project-docs, reference]
+intent: "Windows-only 裁剪最终验证证据"
+---
+
 # Windows-only 裁剪最终验证证据
 
 日期：2026-07-13

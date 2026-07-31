@@ -1,3 +1,10 @@
+---
+type: report
+title: "Frontend Move Into src-tauri Implementation Plan"
+tags: [project-docs, report]
+intent: "Frontend Move Into src-tauri Implementation Plan"
+---
+
 # Frontend Move Into src-tauri Implementation Plan
 
 > 状态：已完成并归档。当前源码布局已经采用本文目标结构；本文仅保留为历史实施记录，不再作为待执行计划。

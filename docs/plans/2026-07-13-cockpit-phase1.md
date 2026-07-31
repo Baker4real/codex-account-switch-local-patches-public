@@ -1,3 +1,10 @@
+---
+type: report
+title: "Cockpit Tools 第一组能力实施计划"
+tags: [project-docs, report]
+intent: "Cockpit Tools 第一组能力实施计划"
+---
+
 # Cockpit Tools 第一组能力实施计划
 
 > 状态：已完成并归档（2026-07-13）；实现、测试、构建和部署证据见 [`docs/evidence/2026-07-13-cockpit-phase1-verification.md`](../evidence/2026-07-13-cockpit-phase1-verification.md)。

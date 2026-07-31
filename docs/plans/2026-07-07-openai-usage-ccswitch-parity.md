@@ -1,3 +1,10 @@
+---
+type: report
+title: "OpenAI Usage CC Switch Parity Implementation Plan"
+tags: [project-docs, report]
+intent: "OpenAI Usage CC Switch Parity Implementation Plan"
+---
+
 # OpenAI Usage CC Switch Parity Implementation Plan
 
 > 状态：已完成并归档；所有实施任务已勾选，本文保留功能、约束和验收记录。

@@ -1,3 +1,10 @@
+---
+type: report
+title: "Active-profile plan detection — improvement plan"
+tags: [project-docs, report]
+intent: "Active-profile plan detection — improvement plan"
+---
+
 # Active-profile plan detection — improvement plan
 
 > 状态：已完成并归档。Phase A–D 已分别通过 PR #19–#22 落地，后续 PR #25 补齐了 plan 降级语义；本文只保留历史审计和决策上下文。

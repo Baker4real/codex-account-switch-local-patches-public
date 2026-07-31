@@ -1,3 +1,10 @@
+---
+type: report
+title: "Windows-only Platform Retirement Implementation Plan"
+tags: [project-docs, report]
+intent: "Windows-only Platform Retirement Implementation Plan"
+---
+
 # Windows-only Platform Retirement Implementation Plan
 
 > 状态：已完成并归档（2026-07-13）。Windows-only 源码裁剪、构建/发布收敛、文档更新、CodeGraph 同步和远端部署证据均已落地；本文仅保留为历史实施记录。

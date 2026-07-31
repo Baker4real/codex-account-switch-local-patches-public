@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Cockpit Tools 功能差距研究（2026-07-13）"
+tags: [project-docs, reference]
+intent: "Cockpit Tools 功能差距研究（2026-07-13）"
+---
+
 # Cockpit Tools 功能差距研究（2026-07-13）
 
 ## 结论先行

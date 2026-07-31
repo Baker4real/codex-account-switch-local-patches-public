@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Issue tracker: GitHub Issues"
+tags: [project-docs, reference]
+intent: "Issue tracker: GitHub Issues"
+---
+
 # Issue tracker: GitHub Issues
 
 本仓库的 agent-ready issues 跟踪在私有 GitHub 仓库：

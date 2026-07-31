@@ -1,3 +1,10 @@
+---
+type: reference
+title: "当前账号显示一致性设计"
+tags: [project-docs, reference]
+intent: "当前账号显示一致性设计"
+---
+
 # 当前账号显示一致性设计
 
 日期：2026-07-13

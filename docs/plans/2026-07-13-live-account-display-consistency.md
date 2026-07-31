@@ -1,3 +1,10 @@
+---
+type: report
+title: "当前账号显示一致性 Implementation Plan"
+tags: [project-docs, report]
+intent: "当前账号显示一致性 Implementation Plan"
+---
+
 # 当前账号显示一致性 Implementation Plan
 
 > 状态：已完成并归档（2026-07-14）；实现、Windows 回归、远端部署、独立探针和成对哈希核验均已通过。

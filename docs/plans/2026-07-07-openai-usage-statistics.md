@@ -1,3 +1,10 @@
+---
+type: report
+title: "OpenAI 官方 Token 使用统计 Implementation Plan"
+tags: [project-docs, report]
+intent: "OpenAI 官方 Token 使用统计 Implementation Plan"
+---
+
 # OpenAI 官方 Token 使用统计 Implementation Plan
 
 > 状态：已完成并归档；所有实施任务已勾选，本文保留功能、约束和验收记录。

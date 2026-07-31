@@ -1,3 +1,10 @@
+---
+type: reference
+title: "Usage 统计、账号归并与刷新状态设计"
+tags: [project-docs, reference]
+intent: "Usage 统计、账号归并与刷新状态设计"
+---
+
 # Usage 统计、账号归并与刷新状态设计
 
 日期：2026-07-10

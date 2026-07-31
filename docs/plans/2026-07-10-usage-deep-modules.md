@@ -1,3 +1,10 @@
+---
+type: report
+title: "Usage Deep Modules 实施计划"
+tags: [project-docs, report]
+intent: "Usage Deep Modules 实施计划"
+---
+
 # Usage Deep Modules 实施计划
 
 > 状态：已完成并归档；所有实施任务与最终集成步骤已勾选，本文仅保留实施和审查记录。
