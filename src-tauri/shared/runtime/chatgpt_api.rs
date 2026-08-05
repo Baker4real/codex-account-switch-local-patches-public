@@ -299,15 +299,21 @@ pub fn refresh_profile_via_api_with_options_detailed(
     let subscription_expires_at =
         read_subscription_expiry_from_id_token(&usage_result.auth.id_token);
     let mut quota = quota_summary_from_payload(&usage_payload);
-    if let Some(reset_credit_cards) = reset_credit_cards {
-        let summary = quota.get_or_insert_with(QuotaSummary::default);
-        let reset_credits = summary
-            .rate_limit_reset_credits
-            .get_or_insert_with(RateLimitResetCredits::default);
-        if reset_credits.available_count.is_none() {
-            reset_credits.available_count = u32::try_from(reset_credit_cards.len()).ok();
+    match reset_credit_cards {
+        Some(reset_credit_cards) => {
+            let summary = quota.get_or_insert_with(QuotaSummary::default);
+            let reset_credits = summary
+                .rate_limit_reset_credits
+                .get_or_insert_with(RateLimitResetCredits::default);
+            if reset_credits.available_count.is_none() {
+                reset_credits.available_count = u32::try_from(reset_credit_cards.len()).ok();
+            }
+            reset_credits.credits = reset_credit_cards;
         }
-        reset_credits.credits = reset_credit_cards;
+        None => {
+            let stored = super::metadata::load_profile_metadata(profile_name, Some(codex_home));
+            backfill_reset_credits_from_stored(&mut quota, &stored.quota);
+        }
     }
 
     Ok(ChatGptApiSnapshot {
@@ -579,6 +585,24 @@ fn reset_credits_from_payload(payload: &Value) -> Option<Vec<RateLimitResetCredi
             })
             .collect(),
     )
+}
+
+fn backfill_reset_credits_from_stored(
+    quota: &mut Option<QuotaSummary>,
+    stored_quota: &QuotaSummary,
+) {
+    if quota
+        .as_ref()
+        .is_some_and(|summary| summary.rate_limit_reset_credits.is_some())
+    {
+        return;
+    }
+    let Some(stored) = stored_quota.rate_limit_reset_credits.clone() else {
+        return;
+    };
+    quota
+        .get_or_insert_with(QuotaSummary::default)
+        .rate_limit_reset_credits = Some(stored);
 }
 
 fn timestamp_seconds(value: &Value) -> Option<i64> {
@@ -1068,6 +1092,80 @@ mod tests {
         assert_eq!(error.error_code, "RESET_CREDITS_UNAUTHORIZED");
         assert!(error.message.contains("凭证已失效"));
         assert!(error.message.contains("Authorization header"));
+    }
+
+    fn stored_quota_with_credits() -> QuotaSummary {
+        QuotaSummary {
+            rate_limit_reset_credits: Some(RateLimitResetCredits {
+                available_count: Some(2),
+                credits: vec![RateLimitResetCredit {
+                    granted_at: Some(1_783_890_765),
+                    expires_at: Some(1_786_482_765),
+                }],
+                ..RateLimitResetCredits::default()
+            }),
+            ..QuotaSummary::default()
+        }
+    }
+
+    #[test]
+    fn backfill_restores_stored_reset_credits_when_detail_fetch_fails() {
+        let mut quota = Some(QuotaSummary {
+            five_hour: QuotaWindow {
+                remaining_percent: Some(80),
+                ..QuotaWindow::default()
+            },
+            ..QuotaSummary::default()
+        });
+
+        backfill_reset_credits_from_stored(&mut quota, &stored_quota_with_credits());
+
+        let summary = quota.expect("quota kept");
+        assert_eq!(summary.five_hour.remaining_percent, Some(80));
+        let credits = summary.rate_limit_reset_credits.expect("stored credits");
+        assert_eq!(credits.available_count, Some(2));
+        assert_eq!(credits.credits[0].expires_at, Some(1_786_482_765));
+    }
+
+    #[test]
+    fn backfill_keeps_fresh_usage_count_over_stale_stored_cards() {
+        let mut quota = Some(QuotaSummary {
+            rate_limit_reset_credits: Some(RateLimitResetCredits {
+                available_count: Some(1),
+                ..RateLimitResetCredits::default()
+            }),
+            ..QuotaSummary::default()
+        });
+
+        backfill_reset_credits_from_stored(&mut quota, &stored_quota_with_credits());
+
+        let credits = quota
+            .expect("quota kept")
+            .rate_limit_reset_credits
+            .expect("fresh count kept");
+        assert_eq!(credits.available_count, Some(1));
+        assert!(credits.credits.is_empty());
+    }
+
+    #[test]
+    fn backfill_creates_summary_when_snapshot_has_no_quota() {
+        let mut quota = None;
+
+        backfill_reset_credits_from_stored(&mut quota, &stored_quota_with_credits());
+
+        let summary = quota.expect("summary created for stored credits");
+        assert!(summary.five_hour.remaining_percent.is_none());
+        let credits = summary.rate_limit_reset_credits.expect("stored credits");
+        assert_eq!(credits.available_count, Some(2));
+    }
+
+    #[test]
+    fn backfill_is_a_no_op_without_stored_credits() {
+        let mut quota = None;
+
+        backfill_reset_credits_from_stored(&mut quota, &QuotaSummary::default());
+
+        assert!(quota.is_none());
     }
 
     #[test]
