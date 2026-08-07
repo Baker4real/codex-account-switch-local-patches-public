@@ -6,7 +6,7 @@
 
 1. 涉及代码、上游同步、构建、安装或发布时，先读 `LOCAL_PATCHES.md` 中与任务相关的章节；它是必须保留补丁、Windows 构建路径、身份/生命周期合同和私有发布边界的真源。
 2. 只加载当前分支需要的文档：
-   - **远端 Windows 部署**：读 `LOCAL_PATCHES.md` 的部署合同、`docs/environments/windows-dual-host.md` 和 `D:\Codex\.codex\docs\agent-guidance\ssh-mesh.md`；先运行只读 inspect，现场解析快捷方式目标、身份、host key 和哈希。
+   - **远端 Windows 部署**：读 `LOCAL_PATCHES.md` 的部署合同、`docs/environments/windows-dual-host.md` 和 `%CODEX_HOME%\docs\agent-guidance\ssh-mesh.md`；先运行只读 inspect，现场解析快捷方式目标、身份、host key 和哈希。
    - **Issue、PRD 或 triage**：读 `docs/agents/issue-tracker.md` 与 `docs/agents/triage-labels.md`。
    - **领域词汇或架构决策**：读 `docs/agents/domain.md`，再按其中规则读取仓库内实际存在且相关的决策记录；缺失的可选上下文文件不构成创建文档的理由。
 3. 命令、环境变量、产物路径和测试入口以 `package.json`、当前脚本及其帮助输出为真源。Windows Vite/Tauri 构建需要允许 `esbuild` 创建子进程；出现 `spawn EPERM` 时修复执行环境，再运行现役 wrapper。
