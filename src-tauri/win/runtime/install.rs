@@ -17,6 +17,8 @@ use super::profiles::resolve_current_profile;
 
 const AUTH_TEMPLATE: &str = include_str!("../../../examples/account_backup/demo/auth.json.example");
 const CLI_RUNTIME_FILENAME: &str = "codex_switch_cli.exe";
+pub const RESTART_SHORTCUT_FILENAME: &str = "重启 Codex.lnk";
+const CREATE_RESTART_SHORTCUT_COMMAND: &str = "$ErrorActionPreference = 'Stop'; $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($env:CODEX_SWITCH_SHORTCUT_PATH); $shortcut.TargetPath = $env:CODEX_SWITCH_SHORTCUT_TARGET; $shortcut.Arguments = 'restart'; $shortcut.IconLocation = ($env:CODEX_SWITCH_SHORTCUT_TARGET + ',0'); $shortcut.Save()";
 
 #[allow(dead_code)]
 pub struct InstallSummary {
@@ -35,6 +37,7 @@ pub struct UninstallSummary {
     pub removed_install_state: bool,
     pub removed_runtime_cli: bool,
     pub removed_path_entry: bool,
+    pub removed_restart_shortcut: bool,
     pub managed_shim_path: PathBuf,
     pub install_state_path: PathBuf,
     pub runtime_cli_path: PathBuf,
@@ -503,6 +506,7 @@ fn uninstall_with_path_hook(
     remove_script: bool,
     codex_home: Option<&Path>,
     remove_dir_from_user_path_hook: impl Fn(&Path) -> AppResult<bool>,
+    resolve_desktop_dir: impl FnOnce() -> AppResult<PathBuf>,
 ) -> AppResult<UninstallSummary> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
     let runtime_dir = get_runtime_dir(Some(&codex_home));
@@ -564,11 +568,25 @@ fn uninstall_with_path_hook(
         let _ = fs::remove_dir(&runtime_dir);
     }
 
+    let removed_restart_shortcut = match resolve_desktop_dir() {
+        Ok(desktop_dir) => {
+            let shortcut_path = desktop_dir.join(RESTART_SHORTCUT_FILENAME);
+            if shortcut_path.exists() {
+                remove_path(&shortcut_path)?;
+                true
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    };
+
     Ok(UninstallSummary {
         removed_shim,
         removed_install_state,
         removed_runtime_cli,
         removed_path_entry,
+        removed_restart_shortcut,
         managed_shim_path,
         install_state_path,
         runtime_cli_path,
@@ -576,7 +594,130 @@ fn uninstall_with_path_hook(
 }
 
 pub fn uninstall(remove_script: bool, codex_home: Option<&Path>) -> AppResult<UninstallSummary> {
-    uninstall_with_path_hook(remove_script, codex_home, remove_dir_from_user_path)
+    uninstall_with_path_hook(
+        remove_script,
+        codex_home,
+        remove_dir_from_user_path,
+        resolve_user_desktop_dir,
+    )
+}
+
+fn resolve_user_desktop_dir() -> AppResult<PathBuf> {
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-Command",
+        "[Environment]::GetFolderPath('Desktop')",
+    ]);
+
+    let output = hide_console_window(&mut command).output().map_err(|error| {
+        AppError::new(
+            "DESKTOP_PATH_UNAVAILABLE",
+            format!("Failed to resolve the Desktop directory: {error}"),
+        )
+    })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(AppError::new(
+            "DESKTOP_PATH_UNAVAILABLE",
+            if stderr.is_empty() {
+                "Failed to resolve the Desktop directory.".to_string()
+            } else {
+                stderr
+            },
+        ));
+    }
+
+    let desktop = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if desktop.is_empty() {
+        return Err(AppError::new(
+            "DESKTOP_PATH_UNAVAILABLE",
+            "Failed to resolve the Desktop directory.",
+        ));
+    }
+
+    Ok(PathBuf::from(desktop))
+}
+
+fn run_shortcut_command(mut command: Command) -> AppResult<()> {
+    let output = command.output().map_err(|error| {
+        AppError::new(
+            "SHORTCUT_CREATE_FAILED",
+            format!("Failed to create desktop shortcut: {error}"),
+        )
+    })?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(AppError::new(
+        "SHORTCUT_CREATE_FAILED",
+        if stderr.is_empty() {
+            "Failed to create desktop shortcut.".to_string()
+        } else {
+            stderr
+        },
+    ))
+}
+
+fn install_restart_shortcut_with_hooks(
+    codex_home: Option<&Path>,
+    resolve_desktop_dir: impl FnOnce() -> AppResult<PathBuf>,
+    run_command: impl FnOnce(Command) -> AppResult<()>,
+) -> AppResult<PathBuf> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let target_path = runtime_cli_path(&codex_home);
+    if !target_path.is_file() {
+        return Err(AppError::new(
+            "RUNTIME_CLI_NOT_FOUND",
+            format!(
+                "Runtime CLI not found at {}. Run `codex_switch_cli install` first.",
+                target_path.display()
+            ),
+        ));
+    }
+
+    let desktop_dir = resolve_desktop_dir()?;
+    if !desktop_dir.is_dir() {
+        return Err(AppError::new(
+            "DESKTOP_PATH_UNAVAILABLE",
+            format!(
+                "Desktop directory is unavailable: {}",
+                desktop_dir.display()
+            ),
+        ));
+    }
+
+    let shortcut_path = desktop_dir.join(RESTART_SHORTCUT_FILENAME);
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-Command", CREATE_RESTART_SHORTCUT_COMMAND]);
+    command.env("CODEX_SWITCH_SHORTCUT_PATH", &shortcut_path);
+    command.env("CODEX_SWITCH_SHORTCUT_TARGET", &target_path);
+    hide_console_window(&mut command);
+    run_command(command)?;
+
+    if !shortcut_path.is_file() {
+        return Err(AppError::new(
+            "SHORTCUT_CREATE_FAILED",
+            format!(
+                "Desktop shortcut was not created at {}.",
+                shortcut_path.display()
+            ),
+        ));
+    }
+
+    Ok(shortcut_path)
+}
+
+pub fn install_restart_shortcut(codex_home: Option<&Path>) -> AppResult<PathBuf> {
+    install_restart_shortcut_with_hooks(
+        codex_home,
+        resolve_user_desktop_dir,
+        run_shortcut_command,
+    )
 }
 
 #[cfg(test)]
@@ -587,14 +728,14 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        ensure_dir_on_path_entries, install_from_with_path_hook, read_user_path_value_with_command,
-        refresh_install_state, remove_dir_from_path_entries, uninstall_with_path_hook,
-        CLI_RUNTIME_FILENAME,
+        ensure_dir_on_path_entries, install_from_with_path_hook, install_restart_shortcut_with_hooks,
+        normalize_windows_path_entry, read_user_path_value_with_command, refresh_install_state,
+        remove_dir_from_path_entries, uninstall_with_path_hook, CLI_RUNTIME_FILENAME,
     };
     use crate::errors::AppError;
     use crate::windows::{
         env_guard,
-        process::{load_install_state, InstallState},
+        process::{hide_console_window, load_install_state, InstallState},
         write_runnable_codex_cmd, EnvVarGuard,
     };
 
@@ -828,12 +969,331 @@ mod tests {
         fs::write(runtime_dir.join(CLI_RUNTIME_FILENAME), "cli").unwrap();
         fs::write(bin_dir.join("codex.cmd"), "shim").unwrap();
 
-        let summary = uninstall_with_path_hook(true, Some(&codex_home), |_| Ok(false)).unwrap();
+        let summary = uninstall_with_path_hook(
+            true,
+            Some(&codex_home),
+            |_| Ok(false),
+            || Ok(codex_home.join("missing-desktop")),
+        )
+        .unwrap();
 
         assert!(summary.removed_shim);
         assert!(summary.removed_install_state);
         assert!(summary.removed_runtime_cli);
+        assert!(!summary.removed_restart_shortcut);
         assert!(!runtime_dir.exists());
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    fn plant_uninstallable_layout(codex_home: &std::path::Path) {
+        let runtime_dir = codex_home.join("account_backup").join("windows");
+        let bin_dir = codex_home.join("bin");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::write(
+            runtime_dir.join("install_state.json"),
+            "{\n  \"path_added_by_installer\": false\n}\n",
+        )
+        .unwrap();
+        fs::write(runtime_dir.join(CLI_RUNTIME_FILENAME), "cli").unwrap();
+        fs::write(bin_dir.join("codex.cmd"), "shim").unwrap();
+    }
+
+    #[test]
+    fn uninstall_removes_fixed_restart_shortcut_from_injected_desktop() {
+        let codex_home = temp_codex_home("uninstall-shortcut-present");
+        let desktop_dir = temp_codex_home("uninstall-shortcut-present-desktop");
+        plant_uninstallable_layout(&codex_home);
+        fs::create_dir_all(&desktop_dir).unwrap();
+        let shortcut_path = desktop_dir.join("重启 Codex.lnk");
+        fs::write(&shortcut_path, "shortcut").unwrap();
+        fs::write(desktop_dir.join("unrelated.txt"), "keep").unwrap();
+        fs::write(desktop_dir.join("其他.lnk"), "other").unwrap();
+
+        let summary = uninstall_with_path_hook(
+            true,
+            Some(&codex_home),
+            |_| Ok(false),
+            || Ok(desktop_dir.clone()),
+        )
+        .unwrap();
+
+        assert!(summary.removed_restart_shortcut);
+        assert!(!shortcut_path.exists());
+        assert!(desktop_dir.join("unrelated.txt").is_file());
+        assert!(desktop_dir.join("其他.lnk").is_file());
+        assert!(summary.removed_shim);
+        assert!(summary.removed_install_state);
+        assert!(summary.removed_runtime_cli);
+        assert!(!codex_home.join("account_backup").join("windows").exists());
+
+        let _ = fs::remove_dir_all(&codex_home);
+        let _ = fs::remove_dir_all(&desktop_dir);
+    }
+
+    #[test]
+    fn uninstall_succeeds_when_restart_shortcut_is_absent() {
+        let codex_home = temp_codex_home("uninstall-shortcut-absent");
+        let desktop_dir = temp_codex_home("uninstall-shortcut-absent-desktop");
+        plant_uninstallable_layout(&codex_home);
+        fs::create_dir_all(&desktop_dir).unwrap();
+        fs::write(desktop_dir.join("unrelated.txt"), "keep").unwrap();
+        fs::write(desktop_dir.join("其他.lnk"), "other").unwrap();
+
+        let summary = uninstall_with_path_hook(
+            true,
+            Some(&codex_home),
+            |_| Ok(false),
+            || Ok(desktop_dir.clone()),
+        )
+        .unwrap();
+
+        assert!(!summary.removed_restart_shortcut);
+        assert!(!desktop_dir.join("重启 Codex.lnk").exists());
+        assert!(desktop_dir.join("unrelated.txt").is_file());
+        assert!(desktop_dir.join("其他.lnk").is_file());
+        assert_eq!(lnk_count(&desktop_dir), 1);
+        assert!(summary.removed_shim);
+        assert!(summary.removed_install_state);
+        assert!(summary.removed_runtime_cli);
+        assert!(!codex_home.join("account_backup").join("windows").exists());
+
+        let _ = fs::remove_dir_all(&codex_home);
+        let _ = fs::remove_dir_all(&desktop_dir);
+    }
+
+    #[test]
+    fn uninstall_succeeds_when_desktop_dir_cannot_be_resolved() {
+        let codex_home = temp_codex_home("uninstall-desktop-fail");
+        plant_uninstallable_layout(&codex_home);
+
+        let summary = uninstall_with_path_hook(
+            true,
+            Some(&codex_home),
+            |_| Ok(false),
+            || {
+                Err(AppError::new(
+                    "DESKTOP_PATH_UNAVAILABLE",
+                    "synthetic desktop lookup failure",
+                ))
+            },
+        )
+        .unwrap();
+
+        assert!(!summary.removed_restart_shortcut);
+        assert!(summary.removed_shim);
+        assert!(summary.removed_install_state);
+        assert!(summary.removed_runtime_cli);
+
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    fn planted_runtime_cli(codex_home: &std::path::Path) -> PathBuf {
+        let runtime_cli = codex_home
+            .join("account_backup")
+            .join("windows")
+            .join(CLI_RUNTIME_FILENAME);
+        fs::create_dir_all(runtime_cli.parent().unwrap()).unwrap();
+        fs::write(&runtime_cli, "cli").unwrap();
+        runtime_cli
+    }
+
+    fn run_hook_command(mut command: Command) -> Result<(), AppError> {
+        let output = hide_console_window(&mut command).output().map_err(|error| {
+            AppError::new(
+                "SHORTCUT_CREATE_FAILED",
+                format!("Failed to create desktop shortcut: {error}"),
+            )
+        })?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(AppError::new(
+            "SHORTCUT_CREATE_FAILED",
+            if stderr.is_empty() {
+                "Failed to create desktop shortcut.".to_string()
+            } else {
+                stderr
+            },
+        ))
+    }
+
+    fn read_shortcut(path: &std::path::Path) -> (String, String, String) {
+        let mut command = Command::new("powershell");
+        command.args([
+            "-NoProfile",
+            "-Command",
+            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:CODEX_SWITCH_SHORTCUT_PATH); Write-Output ('T=' + $s.TargetPath); Write-Output ('A=' + $s.Arguments); Write-Output ('I=' + $s.IconLocation)",
+        ]);
+        command.env("CODEX_SWITCH_SHORTCUT_PATH", path);
+        let output = hide_console_window(&mut command)
+            .output()
+            .expect("read shortcut properties");
+        assert!(
+            output.status.success(),
+            "failed to read shortcut: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut target = String::new();
+        let mut arguments = String::new();
+        let mut icon = String::new();
+        for line in stdout.lines() {
+            if let Some(value) = line.strip_prefix("T=") {
+                target = value.to_string();
+            } else if let Some(value) = line.strip_prefix("A=") {
+                arguments = value.to_string();
+            } else if let Some(value) = line.strip_prefix("I=") {
+                icon = value.to_string();
+            }
+        }
+        (target, arguments, icon)
+    }
+
+    fn lnk_count(dir: &std::path::Path) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .ok()
+                    .and_then(|value| value.path().extension().map(|ext| ext == "lnk"))
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    #[test]
+    fn install_restart_shortcut_writes_target_path_and_restart_argument() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("shortcut-create");
+        let desktop_dir = temp_codex_home("shortcut-create-desktop");
+        fs::create_dir_all(&desktop_dir).unwrap();
+        let runtime_cli = planted_runtime_cli(&codex_home);
+
+        let shortcut_path = install_restart_shortcut_with_hooks(
+            Some(&codex_home),
+            || Ok(desktop_dir.clone()),
+            run_hook_command,
+        )
+        .unwrap();
+
+        assert_eq!(
+            shortcut_path.file_name().and_then(|name| name.to_str()),
+            Some("重启 Codex.lnk")
+        );
+        assert_eq!(shortcut_path, desktop_dir.join("重启 Codex.lnk"));
+        assert!(shortcut_path.is_file());
+        assert_eq!(lnk_count(&desktop_dir), 1);
+
+        let (target, arguments, icon) = read_shortcut(&shortcut_path);
+        assert_eq!(
+            normalize_windows_path_entry(&target),
+            normalize_windows_path_entry(runtime_cli.to_string_lossy())
+        );
+        assert_eq!(arguments, "restart");
+        assert!(
+            icon.contains(CLI_RUNTIME_FILENAME) && icon.contains(",0"),
+            "shortcut icon should use the runtime CLI exe: {icon}"
+        );
+
+        let _ = fs::remove_dir_all(&codex_home);
+        let _ = fs::remove_dir_all(&desktop_dir);
+    }
+
+    #[test]
+    fn install_restart_shortcut_overwrites_existing_shortcut_in_place() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("shortcut-overwrite");
+        let desktop_dir = temp_codex_home("shortcut-overwrite-desktop");
+        fs::create_dir_all(&desktop_dir).unwrap();
+        let runtime_cli = planted_runtime_cli(&codex_home);
+        let shortcut_path = desktop_dir.join("重启 Codex.lnk");
+        fs::write(&shortcut_path, "stale-shortcut").unwrap();
+        fs::write(desktop_dir.join("unrelated.txt"), "keep").unwrap();
+
+        install_restart_shortcut_with_hooks(
+            Some(&codex_home),
+            || Ok(desktop_dir.clone()),
+            run_hook_command,
+        )
+        .unwrap();
+        install_restart_shortcut_with_hooks(
+            Some(&codex_home),
+            || Ok(desktop_dir.clone()),
+            run_hook_command,
+        )
+        .unwrap();
+
+        assert_eq!(lnk_count(&desktop_dir), 1);
+        assert!(desktop_dir.join("unrelated.txt").is_file());
+        assert!(shortcut_path.is_file());
+        let (target, arguments, _) = read_shortcut(&shortcut_path);
+        assert_eq!(
+            normalize_windows_path_entry(&target),
+            normalize_windows_path_entry(runtime_cli.to_string_lossy())
+        );
+        assert_eq!(arguments, "restart");
+
+        let _ = fs::remove_dir_all(&codex_home);
+        let _ = fs::remove_dir_all(&desktop_dir);
+    }
+
+    #[test]
+    fn install_restart_shortcut_fails_closed_when_runtime_cli_is_missing() {
+        let codex_home = temp_codex_home("shortcut-missing-cli");
+        let desktop_dir = temp_codex_home("shortcut-missing-cli-desktop");
+        fs::create_dir_all(&desktop_dir).unwrap();
+
+        let error = install_restart_shortcut_with_hooks(
+            Some(&codex_home),
+            || Ok(desktop_dir.clone()),
+            |_| panic!("shortcut command must not run when runtime CLI is missing"),
+        )
+        .expect_err("missing runtime CLI must fail closed");
+
+        assert_eq!(error.error_code, "RUNTIME_CLI_NOT_FOUND");
+        assert!(
+            error.message.contains("install"),
+            "error should tell the user to run install first: {}",
+            error.message
+        );
+        assert_eq!(lnk_count(&desktop_dir), 0);
+        assert_eq!(fs::read_dir(&desktop_dir).unwrap().count(), 0);
+
+        let _ = fs::remove_dir_all(&codex_home);
+        let _ = fs::remove_dir_all(&desktop_dir);
+    }
+
+    #[test]
+    fn install_restart_shortcut_fails_closed_when_desktop_dir_cannot_be_resolved() {
+        let codex_home = temp_codex_home("shortcut-desktop-fail");
+        planted_runtime_cli(&codex_home);
+
+        let error = install_restart_shortcut_with_hooks(
+            Some(&codex_home),
+            || {
+                Err(AppError::new(
+                    "DESKTOP_PATH_UNAVAILABLE",
+                    "synthetic desktop lookup failure",
+                ))
+            },
+            |_| panic!("shortcut command must not run when desktop resolution fails"),
+        )
+        .expect_err("desktop lookup failure must fail closed");
+
+        assert_eq!(error.error_code, "DESKTOP_PATH_UNAVAILABLE");
+        assert!(error.message.contains("synthetic desktop lookup failure"));
+        assert!(!codex_home.join("重启 Codex.lnk").exists());
+        assert!(!codex_home
+            .join("account_backup")
+            .join("windows")
+            .join("重启 Codex.lnk")
+            .exists());
+
         let _ = fs::remove_dir_all(&codex_home);
     }
 }

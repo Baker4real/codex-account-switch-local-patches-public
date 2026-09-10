@@ -26,7 +26,8 @@ use windows_sys::Win32::System::Threading::{
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE,
+    EnumWindows, GetWindowThreadProcessId, MessageBoxW, PostMessageW, MB_ICONERROR, MB_OK,
+    MB_SETFOREGROUND, WM_CLOSE,
 };
 
 use crate::errors::{AppError, AppResult};
@@ -79,6 +80,28 @@ pub struct WindowsPlatformHooks;
 
 pub fn platform_hooks() -> &'static dyn PlatformHooks {
     &WINDOWS_PLATFORM_HOOKS
+}
+
+/// Blocking error dialog for windowed CLI builds, which have no console.
+pub fn show_restart_error_dialog(error: &AppError) {
+    #[cfg(target_os = "windows")]
+    {
+        let title: Vec<u16> = "Codex restart failed\0".encode_utf16().collect();
+        let body = format!("{}\n\n{}", error.error_code, error.message);
+        let body: Vec<u16> = body.encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            let _ = MessageBoxW(
+                std::ptr::null_mut(),
+                body.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            );
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = error;
+    }
 }
 
 pub fn load_install_state(codex_home: Option<&Path>) -> InstallState {

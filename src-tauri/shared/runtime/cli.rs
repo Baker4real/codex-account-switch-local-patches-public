@@ -4,7 +4,7 @@ use crate::errors::AppError;
 
 use crate::windows as native;
 
-const USAGE: &str = "Usage:\n  codex_switch_cli install\n  codex_switch_cli uninstall [--remove-script]\n  codex_switch_cli shim switch <profile>\n  codex_switch_cli shim switch list\n  codex_switch_cli shim <codex args...>";
+const USAGE: &str = "Usage:\n  codex_switch_cli install\n  codex_switch_cli install-shortcut\n  codex_switch_cli uninstall [--remove-script]\n  codex_switch_cli restart\n  codex_switch_cli shim switch <profile>\n  codex_switch_cli shim switch list\n  codex_switch_cli shim <codex args...>";
 
 fn print_usage() {
     eprintln!("{USAGE}");
@@ -104,6 +104,10 @@ fn print_uninstall_summary(summary: &native::install::UninstallSummary, codex_ho
         println!("Removed PATH entry: {}", codex_home.join("bin").display());
         println!("Reopen your terminal to refresh PATH.");
     }
+
+    if summary.removed_restart_shortcut {
+        println!("removed_restart_shortcut: true");
+    }
 }
 
 fn ensure_shim_ready(codex_home: &Path) -> Result<(), AppError> {
@@ -136,6 +140,22 @@ fn run_uninstall(args: &[String], codex_home: Option<PathBuf>) -> Result<i32, Ap
     let summary = native::install::uninstall(remove_script, Some(&codex_home))?;
     print_uninstall_summary(&summary, &codex_home);
     Ok(0)
+}
+
+fn run_install_shortcut(codex_home: Option<PathBuf>) -> Result<i32, AppError> {
+    let shortcut_path = native::install::install_restart_shortcut(codex_home.as_deref())?;
+    println!("Created desktop shortcut: {}", shortcut_path.display());
+    Ok(0)
+}
+
+fn run_restart() -> Result<i32, AppError> {
+    match native::actions::restart_codex_app() {
+        Ok(_) => Ok(0),
+        Err(error) => {
+            native::process::show_restart_error_dialog(&error);
+            Err(error)
+        }
+    }
 }
 
 fn run_shim(args: &[String], codex_home: Option<PathBuf>) -> Result<i32, AppError> {
@@ -174,7 +194,9 @@ fn run_shim(args: &[String], codex_home: Option<PathBuf>) -> Result<i32, AppErro
 pub fn run(args: &[String], codex_home: Option<PathBuf>) -> i32 {
     let result = match args.first().map(String::as_str) {
         Some("install") => run_install(codex_home),
+        Some("install-shortcut") => run_install_shortcut(codex_home),
         Some("uninstall") => run_uninstall(&args[1..], codex_home),
+        Some("restart") => run_restart(),
         Some("shim") => run_shim(&args[1..], codex_home),
         _ => {
             print_usage();
@@ -188,5 +210,32 @@ pub fn run(args: &[String], codex_home: Option<PathBuf>) -> i32 {
             eprintln!("{}", error.message);
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{run, USAGE};
+
+    #[test]
+    fn usage_lists_restart_subcommand() {
+        assert!(
+            USAGE.contains("codex_switch_cli restart"),
+            "CLI usage must advertise the restart subcommand"
+        );
+    }
+
+    #[test]
+    fn usage_lists_install_shortcut_subcommand() {
+        assert!(
+            USAGE.contains("codex_switch_cli install-shortcut"),
+            "CLI usage must advertise the install-shortcut subcommand"
+        );
+    }
+
+    #[test]
+    fn unknown_command_returns_error_exit_code() {
+        assert_eq!(run(&[String::from("not-a-command")], None), 1);
+        assert_eq!(run(&[], None), 1);
     }
 }
