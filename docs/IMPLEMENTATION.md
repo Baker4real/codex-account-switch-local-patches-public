@@ -121,9 +121,15 @@ tag 合并到本地源码、保留补丁并重新构建，再替换已安装文�
 
 ## Codex 手动重启
 
-仪表盘前列的“重启 Codex”与账号切换共用 Windows Store 包作用域生命周期锁。后端先验证并退出
-受管包进程，确认稳定空快照后只启动一次，并等待受管进程重新出现；任一步失败都返回明确错误。
-前端执行期间禁用按钮并设置 busy 状态，防止重复点击。
+仪表盘前列的“重启 Codex”、CLI `restart` 与桌面「重启 Codex.lnk」共用同一套 Windows Store
+包作用域生命周期锁。后端先验证并退出受管包进程，确认稳定空快照后只启动一次，并等待受管进程
+重新出现；任一步失败都返回明确错误。前端执行期间禁用按钮并设置 busy 状态，防止重复点击。
+
+无窗口入口走 `codex_switch_cli.exe restart`（与 GUI 同一 exe，靠 argv 分发）。成功无输出、
+退出码 0；失败弹系统 MessageBox（含原始错误码）并退出 1。`install-shortcut` 在桌面写入固定名
+快捷方式，目标为 `%CODEX_HOME%\account_backup\windows\codex_switch_cli.exe restart`；
+`install` 不会自动创建。`uninstall` 删除该快捷方式。已初始化的 Codex home 不要为补快捷方式
+再跑完整 `install`（会把 live `auth.json` 覆盖到 profile `a`）。
 
 ## Windows 构建与远端部署
 

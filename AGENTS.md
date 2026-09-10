@@ -16,7 +16,7 @@
 - 现役 runtime、前端入口、资产、构建和发布保持 Windows x64。`src-tauri/shared/**` 只放不可避免的中性磁盘格式、协议模型与账号/quota 逻辑；Windows 进程、登录、窗口和安装行为留在 `src-tauri/win/**`。
 - 上游更新先合并 tag，再逐项保留 `LOCAL_PATCHES.md` 的现役补丁并通过 Windows MSVC 验证；历史非 Windows 源树和发布资产只作证据。
 - 浏览器路由只认显式 profile metadata；账号写回按 live `auth.json` identity 路由，marker 只作提示。无法证明 identity 或命中未管理漂移时失败闭锁。
-- 切换与重启复用 Windows Store package identity、稳定空快照、生命周期锁和事务回滚；失败先恢复 root、槽位、marker 与相关索引，再决定是否重开 Codex。
+- 切换与重启复用 Windows Store package identity、稳定空快照、生命周期锁和事务回滚；主窗口按钮、CLI `restart` 与桌面「重启 Codex」快捷方式共用同一实现。失败先恢复 root、槽位、marker 与相关索引，再决定是否重开 Codex。
 - Profile 复制只管理账号态文件；全局 skills、plugins、cache、sqlite、rules、memories、runtime 与机器本地资产保持隔离。凭据、token、cookie 和完整账号标识不进入日志或远端复用。
 - 安装替换把同一次 Windows MSVC 构建的 `codex_switch.exe` 与 x64 `WebView2Loader.dll` 视为不可拆分产物。远端替换只针对实时解析的快捷方式目标，前后验证双文件 SHA-256，失败时恢复成套旧版本。
 

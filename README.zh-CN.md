@@ -28,7 +28,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 - 定向浏览器登录：只有 profile metadata 明确设置 `login_browser: "edge"` 时才使用 Edge + app-server，并复用用户正常 Edge 状态；不会创建独立浏览器 profile。
 - 授权方式标记：浏览器或设备码授权成功后，账号卡片显示最近一次实际授权方式；旧 profile 没有可靠历史时不显示，也不会根据 `login_browser` 猜测。
 - Codex CLI 自动检测：扫描 PATH、官方 Windows runtime、nvm-windows、fnm、asdf 和常见安装目录，并以 `codex --version` 验证可运行性；也可在设置页手动指定路径。
-- Codex 控制：仪表盘前列可直接重启 Codex，控制区仍可打开 Codex；重启沿用 Windows Store 包身份校验和稳定退出检查，按钮执行期间会锁定，避免重复触发。
+- Codex 控制：仪表盘前列可直接重启 Codex，控制区仍可打开 Codex；也可双击桌面「重启 Codex」或运行 `codex_switch_cli.exe restart`，不必打开主窗口。重启沿用 Windows Store 包身份校验和稳定退出检查，按钮执行期间会锁定，避免重复触发。
 - Custom Base URL：每个账号可单独配置第三方 OpenAI 兼容地址；它与 ChatGPT OAuth 账号互斥。
 
 ## 安装与使用
@@ -37,6 +37,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 2. 打开应用，在“设置”确认 Codex CLI 路径；缺失时点击“自动检测”或手动选择可运行的 `codex.exe` / `codex.cmd`。
 3. 在“账号”页添加 profile；本机浏览器可登录时点击“浏览器”，否则点击“设备码”，再在能够登录 OpenAI 的设备上打开验证页面并输入一次性代码。
 4. 在目标账号卡片点击“切换”。应用会先保存当前账号，再按身份路由写回目标账号；全局 `skills`、插件缓存、sessions、`AGENTS.md`、`rules`、`memories` 等不会被 profile 覆盖。
+5. 需要无窗口重启时，确认 `%CODEX_HOME%\account_backup\windows\codex_switch_cli.exe` 已是当前构建，再运行 `codex_switch_cli.exe install-shortcut`。之后双击桌面「重启 Codex」，或直接执行 `codex_switch_cli.exe restart`。已有账号的机器不要为补快捷方式再跑一遍 `install`。
 Windows SmartScreen 可能提示未签名；确认来源后可选择“更多信息 → 仍要运行”。账号凭据和 OAuth token 只写入本机，请勿把 `auth.json` 上传到公共位置。
 
 历史版本说明：旧版仓库曾发布过 macOS/Linux 资产，那些 Release 只用于保留历史记录，当前不再支持；不要安装旧平台或公共上游二进制。

@@ -9,6 +9,7 @@ intent: "Changelog"
 
 ## Unreleased
 
+- 新增无窗口「重启 Codex」入口：`codex_switch_cli restart` 与 `install-shortcut` 创建的桌面「重启 Codex.lnk」。二者复用现有 Store 包生命周期锁；成功静默，失败弹出含原始错误码的 MessageBox。`uninstall` 会删除该固定名快捷方式。主窗口重启按钮保持原样。
 - 移除使用统计页面、前端刷新、Tauri IPC、归因采集和本机 ledger/定价实现；现有 `openai_usage.sqlite`、归因 JSONL 与 evidence 目录保持原样，不自动删除。账号套餐、5 小时/周额度和 additional quota 不受影响。
 - “重启 Codex”从控制区提升到仪表盘顶层标题栏，保留执行锁、busy 状态和失败提示，并为窄窗口提供整行按钮布局。
 - 修复账号卡刷新在本机代理端口变化后可能返回 `/wham/usage` 网络错误的问题：ChatGPT API 和 Codex 子进程不再硬编码失效的 `127.0.0.1:10809`，会优先读取 `CODEX_SWITCH_PROXY_URL` 及标准代理环境变量，默认回落到 `127.0.0.1:10808`。

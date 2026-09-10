@@ -178,8 +178,15 @@ npm run deploy:windows:remote-desktop -- -- -RemoteTarget '<user>@<host>' -Remot
   “接口未报告附加额度”一类空占位。本地 session JSONL 只能作为当前 profile 激活后且严格更新的快照；
   若未包含重置卡，合并和切换写回必须保留已存的官方卡片，不得把可用卡清零。
 - 手动“重启 Codex”必须复用账号切换的 Windows Store 包作用域生命周期锁：先验证并稳定
-  退出受管包进程，再且仅再启动一次；不得退化为按镜像名 `taskkill`。执行期间前端按钮必须
-  禁用并设置 busy 状态，成功或失败后恢复。
+  退出受管包进程，再且仅再启动一次；不得退化为按镜像名 `taskkill`。主窗口按钮、CLI
+  `restart` 与桌面「重启 Codex.lnk」共用这份实现。CLI 成功完全静默；失败弹出 MessageBox，
+  正文含 `RESTART_BUSY` / `APP_EXIT_FAILED` / `APP_RELAUNCH_FAILED` /
+  `APP_PROCESS_QUERY_FAILED`。`install-shortcut` 创建该固定名快捷方式，目标为已安装
+  runtime CLI（`account_backup/windows/codex_switch_cli.exe`）加 `restart` 参数；`install`
+  不得自动创建它。`uninstall` 若该快捷方式存在则删除。执行期间前端按钮必须禁用并设置
+  busy 状态，成功或失败后恢复。已初始化的机器不要为了补快捷方式再跑完整 `install`：
+  它会把 live `auth.json` 覆盖到 profile `a`；只需把新构建 exe 复制到 runtime CLI 路径，
+  再执行 `install-shortcut`。
 - 已停用的统计功能遗留 `openai_usage.sqlite`、归因 JSONL 和 `usage_evidence` 目录只作为
   历史数据保留；应用不得继续采集，也不得自动删除。历史系统目录仍必须从 profile 扫描中排除。
 - 本地 Windows MSVC 构建必须使用 `npm run tauri:build:windows:portable`；
