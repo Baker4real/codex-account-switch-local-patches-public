@@ -34,8 +34,8 @@ UU 仅在 SSH 不可用时用于 bootstrap、诊断或受限救援；它不是�
 - 桌面快捷方式：`D:\桌面\codex_switch.lnk`
 - 已确认 `TargetPath`：`D:\Codex\apps\codex_switch\codex_switch.exe`
 - `WorkingDirectory`：`D:\Codex\apps\codex_switch`
-- 远端 staging 根目录：`D:\Codex\.codex\run-evidence\replicator\manual-artifacts\codex-account-switch`
-- 本机部署证据根目录：`D:\Codex\.codex\run-evidence\codex-account-switch`
+- 远端 staging 根目录：`D:\Codex\.codex\run-evidence\replicator\manual-artifacts\codex-account-switch`（远端尚未迁移，必须显式传 `-RemoteStageRoot`）
+- 本机部署证据根目录：`D:\agents\run-evidence\codex-account-switch`（必须显式传 `-EvidenceRoot`；不要把本机新根套到未迁移的远端 staging）
 
 设备 `.lnk` 的真实 `TargetPath` 和 `WorkingDirectory` 仍必须每次实时确认；上面的值只用于
 检测漂移，不能替代检查。部署时的具体哈希、备份目录和进程状态属于一次性 evidence，不写入

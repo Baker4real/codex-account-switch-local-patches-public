@@ -119,7 +119,7 @@ npm run deploy:windows:remote-desktop -- -- -RemoteTarget '<user>@<host>' -Remot
 - 远端替换开始后，如任一复制或哈希校验失败，脚本会自动用部署前备份恢复
   `codex_switch.exe` 与 `WebView2Loader.dll`，避免目标目录停留在混合版本。
 - 有效 evidence 根依次取 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`、
-  `CODEX_HOME\run-evidence\codex-account-switch`；三者都不可用时立即失败。每次运行的
+  本机默认 `D:\agents\run-evidence\codex-account-switch`。每次运行的
   stdout/stderr、inspect 和 deploy JSON 会写入其下的 `remote-desktop-deploy-*`
   目录，用于事后追踪和回滚定位。
 

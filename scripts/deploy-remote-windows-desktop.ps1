@@ -478,11 +478,7 @@ if (-not $InspectOnly -and [string]::IsNullOrWhiteSpace($RemoteStageRoot)) {
     throw 'RemoteStageRoot is required. Pass -RemoteStageRoot or set CODEX_REMOTE_STAGE_ROOT.'
 }
 if ([string]::IsNullOrWhiteSpace($EvidenceRoot)) {
-    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
-        $EvidenceRoot = Join-Path (Join-Path $env:CODEX_HOME 'run-evidence') 'codex-account-switch'
-    } else {
-        throw 'EvidenceRoot is required. Pass -EvidenceRoot, set CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT, or set CODEX_HOME.'
-    }
+    $EvidenceRoot = 'D:\agents\run-evidence\codex-account-switch'
 }
 if (-not $ReleaseRoot) {
     $ReleaseRoot = Join-Path $repoRoot 'src-tauri\target\x86_64-pc-windows-msvc\release'
