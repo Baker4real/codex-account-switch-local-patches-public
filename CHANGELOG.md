@@ -9,6 +9,7 @@ intent: "Changelog"
 
 ## Unreleased
 
+- 远端桌面部署的 `EvidenceRoot` 恢复为必须显式提供：`-EvidenceRoot` 参数或 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 环境变量，两者都缺失时脚本明确报错；不再回退 `CODEX_HOME`，也不再用静默的本机默认证据根。
 - 新增无窗口「重启 Codex」入口：`codex_switch_cli restart` 与 `install-shortcut` 创建的桌面「重启 Codex.lnk」。二者复用现有 Store 包生命周期锁；成功静默，失败弹出含原始错误码的 MessageBox。`uninstall` 会删除该固定名快捷方式。主窗口重启按钮保持原样。
 - 移除使用统计页面、前端刷新、Tauri IPC、归因采集和本机 ledger/定价实现；现有 `openai_usage.sqlite`、归因 JSONL 与 evidence 目录保持原样，不自动删除。账号套餐、5 小时/周额度和 additional quota 不受影响。
 - “重启 Codex”从控制区提升到仪表盘顶层标题栏，保留执行锁、busy 状态和失败提示，并为窄窗口提供整行按钮布局。

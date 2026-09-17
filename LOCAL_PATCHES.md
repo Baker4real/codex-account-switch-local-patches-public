@@ -103,8 +103,9 @@ npm run deploy:windows:remote-desktop -- -- -RemoteTarget '<user>@<host>' -Remot
   PowerShell 5.1；缺少 `pwsh` 时应修复本机 runtime，而不是改用旧宿主绕过。
 - `RemotePowerShellPath` 默认使用远端 PATH 中的 `pwsh.exe`；仅当目标未暴露该命令时，才通过
   `-RemotePowerShellPath` 或 `CODEX_SWITCH_REMOTE_POWERSHELL_PATH` 指定其固定路径。
-- `EvidenceRoot` 必须由 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`
-  或 `CODEX_HOME` 派生路径提供。脚本不依赖仓库内 `.scratch` 作为部署证据 fallback。
+- `EvidenceRoot` 必须显式提供：`-EvidenceRoot` 参数或
+  `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 环境变量；两者都缺失时脚本直接报错。脚本不依赖
+  仓库内 `.scratch`，也不再从 `CODEX_HOME` 派生部署证据 fallback。
 - 设备专属默认值不得复制到通用部署契约；当前维护设备的可复制命令见
   `docs/environments/windows-dual-host.md`。
 - 脚本先从
@@ -118,9 +119,11 @@ npm run deploy:windows:remote-desktop -- -- -RemoteTarget '<user>@<host>' -Remot
   `codex_switch` 进程，覆盖 exe+dll 并复核哈希；其他目录中的同名进程不受影响。
 - 远端替换开始后，如任一复制或哈希校验失败，脚本会自动用部署前备份恢复
   `codex_switch.exe` 与 `WebView2Loader.dll`，避免目标目录停留在混合版本。
-- 有效 evidence 根依次取 `-EvidenceRoot`、`CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`、
-  本机默认 `D:\agents\run-evidence\codex-account-switch`。每次运行的
-  stdout/stderr、inspect 和 deploy JSON 会写入其下的 `remote-desktop-deploy-*`
+- 有效 evidence 根只取显式通道：`-EvidenceRoot` 参数或
+  `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 环境变量，两者都缺失时脚本明确报错，
+  不再回退到任何本机默认路径。本机建议把 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT`
+  设为 `D:\agents\run-evidence\codex-account-switch`。每次运行的 stdout/stderr、
+  inspect 和 deploy JSON 会写入其下的 `remote-desktop-deploy-*`
   目录，用于事后追踪和回滚定位。
 
 `npm run test:rust:windows-gnu` 只用于当前 `rustc` host 是

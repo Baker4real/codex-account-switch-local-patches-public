@@ -96,7 +96,7 @@ const deployRequirements = [
     message: "must require RemoteStageRoot only for deploy mode",
   },
   {
-    pattern: /EvidenceRoot is required[\s\S]*CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT[\s\S]*CODEX_HOME/i,
+    pattern: /EvidenceRoot is required[\s\S]*CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT/i,
     message: "must fail clearly when no explicit evidence root is available",
   },
   {
