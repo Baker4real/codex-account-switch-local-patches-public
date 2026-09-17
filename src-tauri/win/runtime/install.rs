@@ -736,7 +736,7 @@ mod tests {
 
     use super::{
         ensure_dir_on_path_entries, install_from_with_path_hook, install_restart_shortcut_with_hooks,
-        normalize_windows_path_entry, read_user_path_value_with_command, refresh_install_state,
+        read_user_path_value_with_command, refresh_install_state,
         remove_dir_from_path_entries, uninstall_with_path_hook, CLI_RUNTIME_FILENAME,
     };
     use crate::errors::AppError;
@@ -1200,10 +1200,11 @@ mod tests {
         assert_eq!(lnk_count(&desktop_dir), 1);
 
         let (target, arguments, icon) = read_shortcut(&shortcut_path);
-        assert_eq!(
-            normalize_windows_path_entry(&target),
-            normalize_windows_path_entry(runtime_cli.to_string_lossy())
-        );
+        // The persisted target is normalized to the final long path form by
+        // Shell.Application's Save(), while the planted runtime CLI keeps the
+        // environment's spelling (short 8.3 TEMP prefix on CI runners, long
+        // locally); compare canonicalized forms instead of raw strings.
+        assert_same_existing_path(Some(target), runtime_cli);
         assert_eq!(arguments, "restart");
         assert!(
             icon.contains(CLI_RUNTIME_FILENAME) && icon.contains(",0"),
@@ -1242,10 +1243,9 @@ mod tests {
         assert!(desktop_dir.join("unrelated.txt").is_file());
         assert!(shortcut_path.is_file());
         let (target, arguments, _) = read_shortcut(&shortcut_path);
-        assert_eq!(
-            normalize_windows_path_entry(&target),
-            normalize_windows_path_entry(runtime_cli.to_string_lossy())
-        );
+        // Same canonicalized-form comparison as above: the .lnk target is
+        // stored normalized while the expected path may use a short spelling.
+        assert_same_existing_path(Some(target), runtime_cli);
         assert_eq!(arguments, "restart");
 
         let _ = fs::remove_dir_all(&codex_home);
