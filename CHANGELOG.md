@@ -9,6 +9,7 @@ intent: "Changelog"
 
 ## Unreleased
 
+- 修复「重启 Codex.lnk」快捷方式在非中文系统 locale（如 en-US Windows）上创建失败的问题：`WScript.Shell` 的快捷方式管线会按系统 ANSI 代码页转换 .lnk 路径，CJK 文件名被 best-fit 替换成非法的 `?` 后 `Save()` 抛 `FileNotFoundException`。创建与测试读回都改走 `Shell.Application` 的 `NameSpace()/ParseName()/GetLink`（基于 PIDL、全程 Unicode），对系统 locale 不再敏感；快捷方式文件名、目标、参数和图标保持不变。
 - 远端桌面部署的 `EvidenceRoot` 恢复为必须显式提供：`-EvidenceRoot` 参数或 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 环境变量，两者都缺失时脚本明确报错；不再回退 `CODEX_HOME`，也不再用静默的本机默认证据根。
 - 新增无窗口「重启 Codex」入口：`codex_switch_cli restart` 与 `install-shortcut` 创建的桌面「重启 Codex.lnk」。二者复用现有 Store 包生命周期锁；成功静默，失败弹出含原始错误码的 MessageBox。`uninstall` 会删除该固定名快捷方式。主窗口重启按钮保持原样。
 - 移除使用统计页面、前端刷新、Tauri IPC、归因采集和本机 ledger/定价实现；现有 `openai_usage.sqlite`、归因 JSONL 与 evidence 目录保持原样，不自动删除。账号套餐、5 小时/周额度和 additional quota 不受影响。

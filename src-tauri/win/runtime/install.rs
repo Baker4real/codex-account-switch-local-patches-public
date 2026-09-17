@@ -18,7 +18,14 @@ use super::profiles::resolve_current_profile;
 const AUTH_TEMPLATE: &str = include_str!("../../../examples/account_backup/demo/auth.json.example");
 const CLI_RUNTIME_FILENAME: &str = "codex_switch_cli.exe";
 pub const RESTART_SHORTCUT_FILENAME: &str = "重启 Codex.lnk";
-const CREATE_RESTART_SHORTCUT_COMMAND: &str = "$ErrorActionPreference = 'Stop'; $shell = New-Object -ComObject WScript.Shell; $shortcut = $shell.CreateShortcut($env:CODEX_SWITCH_SHORTCUT_PATH); $shortcut.TargetPath = $env:CODEX_SWITCH_SHORTCUT_TARGET; $shortcut.Arguments = 'restart'; $shortcut.IconLocation = ($env:CODEX_SWITCH_SHORTCUT_TARGET + ',0'); $shortcut.Save()";
+// The shortcut is created through `Shell.Application` (`GetLink` on a parsed
+// folder item) instead of `WScript.Shell` because the WScript.Shell shortcut
+// pipeline internally converts the .lnk path through the system ANSI codepage:
+// on a non-CJK system locale (e.g. en-US) the CJK filename gets best-fit
+// mapped to `?`, which is an illegal filename character, and `Save()` then
+// throws FileNotFoundException. `Shell.Application` resolves items via PIDLs
+// and stays Unicode end to end, so this works regardless of system locale.
+const CREATE_RESTART_SHORTCUT_COMMAND: &str = "$ErrorActionPreference = 'Stop'; $lnkPath = $env:CODEX_SWITCH_SHORTCUT_PATH; [System.IO.File]::WriteAllBytes($lnkPath, [byte[]]@()); $lnk = (New-Object -ComObject Shell.Application).NameSpace([System.IO.Path]::GetDirectoryName($lnkPath)).ParseName([System.IO.Path]::GetFileName($lnkPath)).GetLink; $lnk.Path = $env:CODEX_SWITCH_SHORTCUT_TARGET; $lnk.Arguments = 'restart'; $lnk.SetIconLocation($env:CODEX_SWITCH_SHORTCUT_TARGET, 0); $lnk.Save($lnkPath)";
 
 #[allow(dead_code)]
 pub struct InstallSummary {
@@ -1121,11 +1128,14 @@ mod tests {
     }
 
     fn read_shortcut(path: &std::path::Path) -> (String, String, String) {
+        // Read back through `Shell.Application` for the same locale-independence
+        // reason as CREATE_RESTART_SHORTCUT_COMMAND above: WScript.Shell would
+        // mangle the CJK shortcut name on non-CJK system locales.
         let mut command = Command::new("powershell");
         command.args([
             "-NoProfile",
             "-Command",
-            "$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:CODEX_SWITCH_SHORTCUT_PATH); Write-Output ('T=' + $s.TargetPath); Write-Output ('A=' + $s.Arguments); Write-Output ('I=' + $s.IconLocation)",
+            "$lnkPath = $env:CODEX_SWITCH_SHORTCUT_PATH; $lnk = (New-Object -ComObject Shell.Application).NameSpace([System.IO.Path]::GetDirectoryName($lnkPath)).ParseName([System.IO.Path]::GetFileName($lnkPath)).GetLink; $iconPath = ''; $iconIndex = $lnk.GetIconLocation([ref]$iconPath); Write-Output ('T=' + $lnk.Path); Write-Output ('A=' + $lnk.Arguments); Write-Output ('I=' + $iconPath + ',' + $iconIndex)",
         ]);
         command.env("CODEX_SWITCH_SHORTCUT_PATH", path);
         let output = hide_console_window(&mut command)
