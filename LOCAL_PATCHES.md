@@ -74,9 +74,10 @@ $loader = Get-ChildItem -LiteralPath "$release\build" -Recurse -Filter 'WebView2
 Copy-Item -LiteralPath $loader.FullName -Destination "$install\WebView2Loader.dll" -Force
 ```
 
-每次本项目构建或替换出新的 Windows `codex_switch.exe` 后，还必须把同一份
+远端同步不是每次构建或替换的硬性完成条件（2026-09-18 owner 裁定）；同构建
+loader 与本机安装校验完成即视为本次发布完成，远端按需另行同步。需要把同一份
 `codex_switch.exe` 和匹配的 x64 `WebView2Loader.dll` 同步到已配置的远端 Windows
-安装目录。远端桌面入口可能是快捷方式，不是 exe 本体；必须先实时解析 `.lnk` 的
+安装目录时，按下面的部署合同执行。远端桌面入口可能是快捷方式，不是 exe 本体；必须先实时解析 `.lnk` 的
 `TargetPath` 和 `WorkingDirectory`，再替换目标目录里的 `codex_switch.exe` 与
 `WebView2Loader.dll`。不要把文件直接复制到 `.lnk` 路径上，也不要只复制 exe。
 替换前停止远端正在运行的 `codex_switch` 进程，替换后校验远端目标文件 SHA-256

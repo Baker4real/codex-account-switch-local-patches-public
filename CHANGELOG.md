@@ -9,6 +9,7 @@ intent: "Changelog"
 
 ## Unreleased
 
+- 远端 Windows 同步从每次构建的硬性完成条件改为按需操作（owner 2026-09-18 裁定）：同构建 loader 与本机安装校验完成即视为发布完成；远端需要更新时仍按既有部署合同（只读 inspect、停目标进程、exe+loader 成套替换、远端哈希复核）执行。
 - 远端桌面部署脚本里仅剩的两处 `WScript.Shell` 快捷方式读取（inspect 探针与远端替换脚本解析 `.lnk` 的 `TargetPath` / `WorkingDirectory`）同样对齐到 `Shell.Application` 的 `NameSpace()/ParseName()/GetLink`（基于 PIDL、全程 Unicode）：`WScript.Shell` 读端也会按系统 ANSI 代码页转换 .lnk 路径，在非中文系统 locale 的远端主机上 CJK 快捷方式名（如「重启 Codex.lnk」）同样会读到空/损坏值。inspect 的 fail-soft 语义（.lnk 缺失或不可读时相关 JSON 字段为 null）、部署的 fail-closed 报错（"Desktop shortcut has no target path"）、两处 JSON 字段集与格式均保持不变。
 - 修复「重启 Codex.lnk」快捷方式在非中文系统 locale（如 en-US Windows）上创建失败的问题：`WScript.Shell` 的快捷方式管线会按系统 ANSI 代码页转换 .lnk 路径，CJK 文件名被 best-fit 替换成非法的 `?` 后 `Save()` 抛 `FileNotFoundException`。创建与测试读回都改走 `Shell.Application` 的 `NameSpace()/ParseName()/GetLink`（基于 PIDL、全程 Unicode），对系统 locale 不再敏感；快捷方式文件名、目标、参数和图标保持不变。
 - 远端桌面部署的 `EvidenceRoot` 恢复为必须显式提供：`-EvidenceRoot` 参数或 `CODEX_SWITCH_DEPLOY_EVIDENCE_ROOT` 环境变量，两者都缺失时脚本明确报错；不再回退 `CODEX_HOME`，也不再用静默的本机默认证据根。
