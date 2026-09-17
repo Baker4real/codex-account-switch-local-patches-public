@@ -272,16 +272,23 @@ function New-InspectCommand {
     param([string]$DesktopLink)
 
     $linkLiteral = Quote-PSLiteral -Value $DesktopLink
+    # The generated probe reads the shortcut through Shell.Application
+    # (PIDL-based, Unicode end to end): the WScript.Shell shortcut pipeline
+    # converts the .lnk path through the system ANSI codepage and corrupts
+    # CJK shortcut names on non-CJK system locales.
     @"
 `$ErrorActionPreference = 'Stop'
 `$ProgressPreference = 'SilentlyContinue'
 `$desktopLink = $linkLiteral
 `$shortcut = `$null
 if (Test-Path -LiteralPath `$desktopLink) {
-    `$shell = New-Object -ComObject WScript.Shell
-    `$shortcut = `$shell.CreateShortcut(`$desktopLink)
+    `$linkDir = [System.IO.Path]::GetDirectoryName(`$desktopLink)
+    `$linkName = [System.IO.Path]::GetFileName(`$desktopLink)
+    `$linkFolder = (New-Object -ComObject Shell.Application).NameSpace(`$linkDir)
+    `$linkItem = if (`$linkFolder) { `$linkFolder.ParseName(`$linkName) } else { `$null }
+    if (`$linkItem) { `$shortcut = `$linkItem.GetLink }
 }
-`$targetPath = if (`$shortcut) { `$shortcut.TargetPath } else { `$null }
+`$targetPath = if (`$shortcut) { `$shortcut.Path } else { `$null }
 `$workingDirectory = if (`$shortcut) { `$shortcut.WorkingDirectory } else { `$null }
 `$targetDir = if (`$targetPath) { Split-Path -Parent `$targetPath } else { `$null }
 `$loaderPath = if (`$targetDir) { Join-Path `$targetDir 'WebView2Loader.dll' } else { `$null }
@@ -350,9 +357,17 @@ if (-not (Test-Path -LiteralPath $config.desktopLink)) {
     throw "Desktop shortcut not found: $($config.desktopLink)"
 }
 
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($config.desktopLink)
-$targetExe = $shortcut.TargetPath
+# Resolve the shortcut through Shell.Application (PIDL-based, Unicode end
+# to end): the WScript.Shell shortcut pipeline converts the .lnk path
+# through the system ANSI codepage and corrupts CJK shortcut names on
+# non-CJK system locales.
+$shortcut = $null
+$linkDir = [System.IO.Path]::GetDirectoryName($config.desktopLink)
+$linkName = [System.IO.Path]::GetFileName($config.desktopLink)
+$linkFolder = (New-Object -ComObject Shell.Application).NameSpace($linkDir)
+$linkItem = if ($linkFolder) { $linkFolder.ParseName($linkName) } else { $null }
+if ($linkItem) { $shortcut = $linkItem.GetLink }
+$targetExe = if ($shortcut) { $shortcut.Path } else { $null }
 if ([string]::IsNullOrWhiteSpace($targetExe)) {
     throw "Desktop shortcut has no target path: $($config.desktopLink)"
 }
