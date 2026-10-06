@@ -12,16 +12,19 @@ use crate::models::{
 use super::fs_ops::atomic_write_file;
 use super::metadata::{derive_refresh_token_status_from_auth_path, load_profile_metadata};
 use super::paths::{
-    get_backup_root, get_codex_home, get_profiles_index_path, list_profile_dirs, utc_timestamp,
-    DEFAULT_PAGE_SIZE,
+    get_backup_root, get_codex_home, get_profiles_index_path, get_switch_lock_path,
+    list_profile_dirs, utc_timestamp, DEFAULT_PAGE_SIZE,
 };
+use super::process_lock::acquire_process_lock;
 use super::profiles::{
-    build_display_title, compute_subscription_days_left, detect_unmanaged_live_account,
-    profile_activated_at_ms, resolve_backup_target, resolve_current_profile,
+    build_current_display_title, build_display_title, compare_profile_names,
+    compare_profile_names_for_count, compute_subscription_days_left,
+    detect_unmanaged_live_account, profile_activated_at_ms, resolve_backup_target,
+    resolve_current_profile,
 };
 use super::session_usage::{load_latest_local_quota_snapshot_since, normalize_quota_summary};
 
-const PROFILES_INDEX_SCHEMA_VERSION: u32 = 6;
+const PROFILES_INDEX_SCHEMA_VERSION: u32 = 7;
 
 /// How long a freshly-rebuilt index lives in the in-process cache
 /// before the next `load_profiles_index` call re-reads the disk.
@@ -122,6 +125,197 @@ pub fn reload_profiles_index_after_mutation(codex_home: Option<&Path>) -> AppRes
     load_profiles_index(Some(&codex_home))
 }
 
+/// Compact all card directories into spreadsheet-column order. The operation
+/// is transactional so a failed target rename or metadata write leaves both
+/// the directories and `.current_profile` untouched.
+pub fn compact_profile_folders(codex_home: &Path) -> AppResult<bool> {
+    let backup_root = get_backup_root(Some(codex_home));
+    let lock_path = get_switch_lock_path(Some(codex_home));
+    if !backup_root.is_dir() {
+        return Ok(false);
+    }
+    if lock_path.is_file() {
+        let owner = fs::read_to_string(&lock_path).unwrap_or_default();
+        match owner.trim() {
+            "SWITCH_IN_PROGRESS" | "LOGIN_BUSY" | "REFRESH_BUSY" | "RESTART_BUSY" => {
+                return Ok(false);
+            }
+            "PROFILE_REPACK_BUSY" => {
+                return Err(AppError::new(
+                    "PROFILE_REPACK_BUSY",
+                    "Profile folder compaction is already in progress.",
+                ));
+            }
+            _ => {
+                return Err(AppError::new(
+                    "PROFILE_LOCK_UNKNOWN",
+                    "A profile lifecycle lock has no recognized owner; refusing to read profile state.",
+                ));
+            }
+        }
+    }
+    let _lock = match acquire_process_lock(
+        Some(codex_home),
+        "PROFILE_REPACK_BUSY",
+        "Profile folder compaction is already in progress.",
+    ) {
+        Ok(lock) => lock,
+        Err(error) => {
+            // Any acquisition failure, including an unexpected lock path
+            // shape or filesystem error, must fail closed. Returning false
+            // here would let the caller read a potentially half-renamed tree.
+            return Err(error);
+        }
+    };
+
+    let mut dirs = list_profile_dirs(&backup_root);
+    let card_count = dirs.len();
+    dirs.sort_by(|left, right| {
+        let left = left
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let right = right
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        compare_profile_names_for_count(left, right, card_count)
+    });
+    let names = dirs
+        .iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+        })
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Ok(false);
+    }
+    let targets = (0..names.len())
+        .map(super::profiles::sequence_name)
+        .collect::<Vec<_>>();
+    if names == targets {
+        return Ok(false);
+    }
+    for target in &targets {
+        let path = backup_root.join(target);
+        if path.exists() && !names.iter().any(|name| name == target) {
+            return Err(AppError::new(
+                "PROFILE_COMPACT_TARGET_OCCUPIED",
+                format!("Profile compaction target is occupied: {}", path.display()),
+            ));
+        }
+    }
+
+    let marker_path = backup_root.join(super::paths::CURRENT_PROFILE_FILENAME);
+    let marker_before = fs::read(&marker_path).ok();
+    let metadata_before = dirs
+        .iter()
+        .map(|dir| {
+            (
+                dir.join(super::paths::PROFILE_METADATA_FILENAME),
+                fs::read(dir.join(super::paths::PROFILE_METADATA_FILENAME)).ok(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let mut staged: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+    for (index, dir) in dirs.iter().enumerate() {
+        let temporary = backup_root.join(format!(".compact-{}-{}", std::process::id(), index));
+        if let Err(error) = fs::rename(dir, &temporary) {
+            for (old, staged_path, _) in staged.iter().rev() {
+                if staged_path.exists() {
+                    let _ = fs::rename(staged_path, old);
+                }
+            }
+            return Err(AppError::new(
+                "PROFILE_COMPACT_FAILED",
+                format!("Failed to stage {}: {error}", dir.display()),
+            ));
+        }
+        staged.push((dir.clone(), temporary, targets[index].clone()));
+    }
+    let result = (|| {
+        for (old, temporary, target) in &staged {
+            let destination = backup_root.join(target);
+            fs::rename(temporary, &destination).map_err(|error| {
+                AppError::new(
+                    "PROFILE_COMPACT_FAILED",
+                    format!(
+                        "Failed to move {} -> {}: {error}",
+                        old.display(),
+                        destination.display()
+                    ),
+                )
+            })?;
+            let metadata_path = destination.join(super::paths::PROFILE_METADATA_FILENAME);
+            if metadata_path.is_file() {
+                let raw = fs::read_to_string(&metadata_path).map_err(|error| {
+                    AppError::new(
+                        "PROFILE_COMPACT_FAILED",
+                        format!("Failed to read {}: {error}", metadata_path.display()),
+                    )
+                })?;
+                let mut value: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
+                    AppError::new(
+                        "PROFILE_COMPACT_FAILED",
+                        format!(
+                            "Invalid profile metadata {}: {error}",
+                            metadata_path.display()
+                        ),
+                    )
+                })?;
+                let Some(object) = value.as_object_mut() else {
+                    return Err(AppError::new(
+                        "PROFILE_COMPACT_FAILED",
+                        format!(
+                            "Profile metadata must be a JSON object: {}",
+                            metadata_path.display()
+                        ),
+                    ));
+                };
+                object.insert(
+                    "folder_name".to_string(),
+                    serde_json::Value::String(target.clone()),
+                );
+                let serialized = serde_json::to_string_pretty(&value)
+                    .map_err(|error| AppError::new("PROFILE_COMPACT_FAILED", error.to_string()))?;
+                atomic_write_file(&metadata_path, format!("{serialized}\n"))?;
+            }
+        }
+        if let Some(raw) = marker_before.as_ref() {
+            let current = String::from_utf8_lossy(raw).trim().to_string();
+            if let Some(index) = names.iter().position(|name| name == &current) {
+                atomic_write_file(&marker_path, format!("{}\n", targets[index]))?;
+            }
+        }
+        Ok::<(), AppError>(())
+    })();
+    if let Err(error) = result {
+        for (_, temporary, target) in &staged {
+            let destination = backup_root.join(target);
+            if destination.exists() {
+                let _ = fs::rename(&destination, temporary);
+            }
+        }
+        for (old, temporary, _) in &staged {
+            if temporary.exists() {
+                let _ = fs::rename(temporary, old);
+            }
+        }
+        for (path, raw) in metadata_before {
+            if let Some(raw) = raw {
+                let _ = fs::write(path, raw);
+            }
+        }
+        if let Some(raw) = marker_before {
+            let _ = fs::write(marker_path, raw);
+        }
+        return Err(error);
+    }
+    Ok(true)
+}
+
 fn content_fingerprint(bytes: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in bytes {
@@ -167,6 +361,9 @@ fn build_profile_index_entry(profile_name: &str, codex_home: &Path) -> ProfileIn
     ProfileIndexEntry {
         folder_name: profile_name.to_string(),
         account_label,
+        email: metadata.email,
+        account_name: metadata.account_name,
+        nickname: metadata.nickname_override,
         has_account_identity,
         plan_name: metadata.plan_name,
         subscription_expires_at: metadata.subscription_expires_at,
@@ -211,7 +408,19 @@ fn save_profiles_index(index: &ProfilesIndex, codex_home: &Path) -> AppResult<()
 fn rebuild_profiles_index(codex_home: &Path) -> ProfilesIndex {
     let backup_root = get_backup_root(Some(codex_home));
     let current_profile = resolve_current_profile(&backup_root);
-    let profiles = list_profile_dirs(&backup_root)
+    let mut profile_dirs = list_profile_dirs(&backup_root);
+    profile_dirs.sort_by(|left, right| {
+        let left = left
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        let right = right
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        compare_profile_names(left, right)
+    });
+    let profiles = profile_dirs
         .iter()
         .filter_map(|profile_dir| profile_dir.file_name().and_then(|name| name.to_str()))
         .map(|profile_name| build_profile_index_entry(profile_name, codex_home))
@@ -323,8 +532,17 @@ fn build_profile_card(entry: &ProfileIndexEntry, current_profile: Option<&str>) 
 
     ProfileCard {
         folder_name: entry.folder_name.clone(),
-        display_title: build_display_title(&entry.folder_name, entry.account_label.as_deref()),
+        display_title: build_display_title(
+            &entry.folder_name,
+            entry.nickname.as_deref(),
+            entry.account_name.as_deref(),
+            entry.email.as_deref(),
+            entry.account_label.as_deref(),
+        ),
         account_label: entry.account_label.clone(),
+        email: entry.email.clone(),
+        account_name: entry.account_name.clone(),
+        nickname: entry.nickname.clone(),
         status,
         auth_present: entry.auth_present,
         has_account_identity: entry.has_account_identity,
@@ -349,8 +567,16 @@ fn build_current_card(entry: &ProfileIndexEntry, codex_home: &Path) -> CurrentCa
 
     CurrentCard {
         folder_name: entry.folder_name.clone(),
-        display_title: build_display_title(&entry.folder_name, entry.account_label.as_deref()),
+        display_title: build_current_display_title(
+            entry.nickname.as_deref(),
+            entry.account_name.as_deref(),
+            entry.email.as_deref(),
+            entry.account_label.as_deref(),
+        ),
         account_label: entry.account_label.clone(),
+        email: entry.email.clone(),
+        account_name: entry.account_name.clone(),
+        nickname: entry.nickname.clone(),
         has_account_identity: entry.has_account_identity,
         plan_name: entry.plan_name.clone(),
         subscription_days_left: compute_subscription_days_left(
@@ -383,6 +609,7 @@ fn select_current_quota(
 
 pub fn load_profiles_snapshot(codex_home: Option<&Path>) -> AppResult<ProfilesSnapshotResponse> {
     let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let _ = compact_profile_folders(&codex_home)?;
     let index = load_profiles_index(Some(&codex_home))?;
     let backup_root = get_backup_root(Some(&codex_home));
     let unmanaged_live_account = detect_unmanaged_live_account(&backup_root, &codex_home);
@@ -521,6 +748,86 @@ mod tests {
             .expect("expected one profile")
             .refresh_token_status
             .health
+    }
+
+    #[test]
+    fn compact_profile_folders_reassigns_all_cards_and_current_marker() {
+        let codex_home = temp_codex_home("compact-cards");
+        let backup_root = get_backup_root(Some(&codex_home));
+        for (name, account) in [("c", "acct_C"), ("d", "acct_D")] {
+            let dir = backup_root.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("auth.json"), auth_with_account(account)).unwrap();
+            fs::write(
+                dir.join("profile.json"),
+                format!(r#"{{"folder_name":"{name}","account_label":"{account}"}}"#),
+            )
+            .unwrap();
+        }
+        fs::write(backup_root.join(".current_profile"), "c\n").unwrap();
+
+        assert!(compact_profile_folders(&codex_home).unwrap());
+        assert!(backup_root.join("a").is_dir());
+        assert!(backup_root.join("b").is_dir());
+        assert!(!backup_root.join("c").exists());
+        assert_eq!(
+            fs::read_to_string(backup_root.join(".current_profile"))
+                .unwrap()
+                .trim(),
+            "a"
+        );
+        assert!(
+            fs::read_to_string(backup_root.join("a").join("profile.json"))
+                .unwrap()
+                .contains(r#""folder_name": "a"#)
+        );
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn snapshot_compacts_a_single_legacy_folder_name() {
+        let codex_home = temp_codex_home("compact-single-legacy");
+        let backup_root = get_backup_root(Some(&codex_home));
+        let legacy_dir = backup_root.join("work");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("auth.json"), auth_with_account("acct_work")).unwrap();
+        fs::write(
+            legacy_dir.join("profile.json"),
+            r#"{"folder_name":"work","account_label":"acct_work"}"#,
+        )
+        .unwrap();
+
+        let snapshot = load_profiles_snapshot(Some(&codex_home)).unwrap();
+        assert_eq!(snapshot.profiles[0].folder_name, "a");
+        assert!(backup_root.join("a").is_dir());
+        assert!(!backup_root.join("work").exists());
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn snapshot_fails_closed_on_unknown_or_empty_lifecycle_lock() {
+        let codex_home = temp_codex_home("unknown-lock-owner");
+        let lock_path = get_switch_lock_path(Some(&codex_home));
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::write(&lock_path, b"").unwrap();
+
+        let error = load_profiles_snapshot(Some(&codex_home)).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_LOCK_UNKNOWN");
+        let _ = fs::remove_dir_all(&codex_home);
+    }
+
+    #[test]
+    fn snapshot_fails_closed_when_switch_lock_path_is_not_a_file() {
+        let codex_home = temp_codex_home("invalid-lock-path");
+        let lock_path = get_switch_lock_path(Some(&codex_home));
+        fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(&lock_path).unwrap();
+
+        let error = load_profiles_snapshot(Some(&codex_home)).unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_REPACK_BUSY");
+        let _ = fs::remove_dir_all(&codex_home);
     }
 
     #[test]

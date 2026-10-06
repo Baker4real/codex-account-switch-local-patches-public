@@ -138,11 +138,10 @@ pub async fn refresh_profile(payload: ProfilePayload) -> Result<ActionResponse, 
 
 #[tauri::command]
 pub fn rename_profile(payload: RenameProfilePayload) -> Result<ActionResponse, CommandError> {
-    let path =
-        platform_runtime::actions::rename_profile(&payload.profile, &payload.new_folder_name)?;
+    let path = platform_runtime::actions::rename_profile(&payload.profile, &payload.new_nickname)?;
     Ok(ActionResponse {
         ok: true,
-        message: "Renamed profile folder.".to_string(),
+        message: "Updated profile nickname.".to_string(),
         path: Some(path),
     })
 }
@@ -197,8 +196,8 @@ pub fn open_profile_folder(
 
 #[tauri::command]
 pub fn add_profile(payload: AddProfilePayload) -> Result<ActionResponse, CommandError> {
-    let path = platform_runtime::actions::add_profile(
-        &payload.folder_name,
+    let path = platform_runtime::actions::add_profile_auto(
+        payload.folder_name.as_deref(),
         payload.openai_base_url.as_deref(),
     )?;
     Ok(ActionResponse {

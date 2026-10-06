@@ -13,7 +13,8 @@ use super::session_usage::{
 };
 
 pub use crate::shared::profiles_index::{
-    load_profiles_index, load_profiles_snapshot, reload_profiles_index_after_mutation,
+    compact_profile_folders, load_profiles_index, load_profiles_snapshot,
+    reload_profiles_index_after_mutation,
 };
 
 fn select_current_quota(

@@ -636,12 +636,13 @@ async function handleCancelLogin(
 
 function handleRenameProfileClick(profile: string): void {
   renameSourceProfile = profile;
+  const current = state.snapshot?.profiles.find((entry) => entry.folder_name === profile)?.nickname ?? "";
   openTextDialog({
     dialog: elements.renameDialog,
     form: elements.renameProfileForm,
     error: elements.renameDialogError,
     input: elements.renameFolderNameInput,
-    value: profile,
+    value: current,
   });
 }
 
@@ -833,18 +834,13 @@ async function handleSubmitAddProfile(event: SubmitEvent): Promise<void> {
   event.preventDefault();
   clearDialogError(elements.dialogError);
 
-  const folderName = elements.folderNameInput.value.trim();
   const openaiBaseUrl = elements.addBaseUrlInput.value.trim();
-  if (!folderName) {
-    showDialogError(elements.dialogError, t(state.locale, "folderNameRequired"));
-    return;
-  }
 
   try {
     await runBlockingAction(async () => {
-      await addProfile(folderName, openaiBaseUrl || null);
+      await addProfile(openaiBaseUrl || null);
       elements.dialog.close();
-      showToast(t(state.locale, "createdProfile", { profile: folderName }));
+      showToast(t(state.locale, "createdProfile", { profile: "" }));
       await refreshAllData();
     });
   } catch (error) {
@@ -860,25 +856,16 @@ async function handleSubmitRenameProfile(event: SubmitEvent): Promise<void> {
   clearDialogError(elements.renameDialogError);
 
   const sourceProfile = renameSourceProfile;
-  const nextFolderName = elements.renameFolderNameInput.value.trim();
-  if (!nextFolderName) {
-    showDialogError(elements.renameDialogError, t(state.locale, "folderNameRequired"));
-    return;
-  }
+  const nextNickname = elements.renameFolderNameInput.value.trim();
   if (!sourceProfile) {
     showDialogError(elements.renameDialogError, t(state.locale, "failedToRenameProfile"));
     return;
   }
-  if (nextFolderName === sourceProfile) {
-    closeRenameProfileDialog();
-    return;
-  }
-
   try {
     await runBlockingAction(async () => {
-      await renameProfile(sourceProfile, nextFolderName);
+      await renameProfile(sourceProfile, nextNickname);
       closeRenameProfileDialog();
-      showToast(t(state.locale, "renamedProfile", { from: sourceProfile, to: nextFolderName }));
+      showToast(t(state.locale, "renamedProfile", { from: sourceProfile, to: nextNickname || sourceProfile }));
       await refreshAllData();
     });
   } catch (error) {

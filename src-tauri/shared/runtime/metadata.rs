@@ -47,11 +47,17 @@ struct AuthTokens {
 struct ChatGptAuthClaims {
     chatgpt_plan_type: Option<String>,
     chatgpt_subscription_active_until: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct IdTokenClaims {
     email: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    preferred_username: Option<String>,
     #[serde(rename = "https://api.openai.com/auth")]
     auth: Option<ChatGptAuthClaims>,
     /// Older / variant id_token shapes seen in the wild that carry
@@ -69,6 +75,8 @@ struct IdTokenClaims {
 #[derive(Clone, Debug, Default)]
 pub struct AuthDerivedMetadata {
     pub account_label: Option<String>,
+    pub email: Option<String>,
+    pub account_name: Option<String>,
     pub plan_name: Option<String>,
     pub subscription_expires_at: Option<String>,
     pub has_plan_claims: bool,
@@ -131,6 +139,8 @@ fn metadata_has_identity_bound_fields(metadata: &ProfileMetadata) -> bool {
     let provenance = &metadata.quota.provenance;
 
     metadata.account_label.is_some()
+        || metadata.email.is_some()
+        || metadata.account_name.is_some()
         || metadata.plan_name.is_some()
         || metadata.plan_source != PlanSource::Unknown
         || metadata.subscription_expires_at.is_some()
@@ -149,6 +159,9 @@ fn metadata_has_identity_bound_fields(metadata: &ProfileMetadata) -> bool {
 
 fn clear_identity_bound_metadata(metadata: &mut ProfileMetadata) {
     metadata.account_label = None;
+    metadata.email = None;
+    metadata.account_name = None;
+    metadata.nickname_override = None;
     metadata.plan_name = None;
     metadata.plan_source = PlanSource::Unknown;
     metadata.subscription_expires_at = None;
@@ -353,7 +366,14 @@ pub(super) fn load_auth_metadata_from_path(auth_path: &Path) -> Option<AuthDeriv
             .or_else(|| tokens.access_token.as_deref().and_then(decode_token_claims));
 
         if let Some(claims) = claims {
-            metadata.account_label = normalized_value(claims.email);
+            metadata.email = normalized_value(claims.email.clone());
+            metadata.account_label = metadata.email.clone();
+            metadata.account_name = normalized_value(
+                claims
+                    .name
+                    .or(claims.preferred_username)
+                    .or_else(|| claims.auth.as_ref().and_then(|auth| auth.name.clone())),
+            );
             let nested_plan = claims
                 .auth
                 .as_ref()
@@ -580,10 +600,19 @@ fn apply_auth_metadata(
 ) {
     let AuthDerivedMetadata {
         account_label,
+        email,
+        account_name,
         plan_name,
         subscription_expires_at,
         has_plan_claims,
     } = auth_metadata;
+
+    if let Some(email) = email {
+        metadata.email = Some(email);
+    }
+    if let Some(account_name) = account_name {
+        metadata.account_name = Some(account_name);
+    }
 
     if overwrite_account_label {
         if let Some(account_label) = account_label {
@@ -768,6 +797,16 @@ pub fn sync_profile_metadata_from_auth(
             .then(|| trimmed.to_string())
     });
     let now_ms = current_time_ms();
+    let authorization_account_id = validate_profile_name(profile_name)
+        .ok()
+        .and_then(|profile_name| {
+            load_account_identity_from_path(
+                &get_backup_root(codex_home)
+                    .join(profile_name)
+                    .join("auth.json"),
+            )
+        })
+        .and_then(|identity| identity.account_id);
     update_profile_metadata(profile_name, codex_home, move |metadata| {
         let mut plan_confirmed = false;
         if let Some(auth_metadata) = auth_metadata {
@@ -784,6 +823,9 @@ pub fn sync_profile_metadata_from_auth(
                 metadata.plan_source = PlanSource::AuthToken;
                 plan_confirmed = true;
             }
+        }
+        if authorization_account_id.is_some() {
+            metadata.last_authorization_account_id = authorization_account_id;
         }
         if let Some(plan) = plan_type_normalized
             .filter(|_| plan_source_may_replace(metadata.plan_source, plan_source))
@@ -862,6 +904,16 @@ pub fn sync_profile_openai_base_url(
 ) -> Result<ProfileMetadata, crate::errors::AppError> {
     update_profile_metadata(profile_name, codex_home, move |metadata| {
         metadata.openai_base_url = openai_base_url;
+    })
+}
+
+pub fn sync_profile_nickname(
+    profile_name: &str,
+    nickname: Option<String>,
+    codex_home: Option<&Path>,
+) -> Result<ProfileMetadata, crate::errors::AppError> {
+    update_profile_metadata(profile_name, codex_home, move |metadata| {
+        metadata.nickname_override = nickname;
     })
 }
 
@@ -1821,6 +1873,35 @@ mod tests {
         assert_eq!(derived.plan_name, None);
         assert_eq!(derived.subscription_expires_at, None);
         assert!(!derived.has_plan_claims);
+    }
+
+    #[test]
+    fn unbound_auth_does_not_clear_independent_nickname() {
+        let codex_home = temp_dir("unbound-auth-keeps-nickname");
+        let profile_dir = get_profile_metadata_path("a", Some(&codex_home))
+            .parent()
+            .expect("profile metadata has parent")
+            .to_path_buf();
+        std::fs::create_dir_all(&profile_dir).unwrap();
+        std::fs::write(
+            profile_dir.join("auth.json"),
+            r#"{"tokens":{"account_id":"replace-me"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            profile_dir.join("profile.json"),
+            serde_json::json!({
+                "folder_name": "a",
+                "nickname_override": "工作"
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let metadata = load_profile_metadata("a", Some(&codex_home));
+
+        assert_eq!(metadata.nickname_override.as_deref(), Some("工作"));
+        let _ = std::fs::remove_dir_all(&codex_home);
     }
 
     #[test]

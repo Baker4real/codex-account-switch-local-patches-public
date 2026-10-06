@@ -12,10 +12,13 @@ use crate::shared::codex_app_server::DeviceCodePrompt;
 use super::config::sync_root_openai_base_url_for_profile;
 use super::fs_ops::{atomic_write_file, remove_path};
 use super::login_runtime::{login_profile_with_device_code_with_home, login_profile_with_home};
-use super::metadata::{load_profile_metadata, save_profile_metadata, sync_profile_openai_base_url};
+use super::metadata::{
+    load_profile_metadata, save_profile_metadata, sync_profile_nickname,
+    sync_profile_openai_base_url,
+};
 use super::paths::{
-    get_backup_root, get_codex_home, get_login_runtime_dir, validate_profile_name,
-    ACTIVE_MARKER_FILE,
+    get_backup_root, get_codex_home, get_login_runtime_dir, list_profile_dirs,
+    validate_profile_name, ACTIVE_MARKER_FILE,
 };
 #[cfg(not(test))]
 use super::paths::{CONTACT_URL, RELEASES_URL, XIAOHONGSHU_URL};
@@ -173,10 +176,47 @@ pub fn delete_profile(profile_name: &str) -> AppResult<String> {
         ));
     }
 
-    remove_path(&profile_dir)?;
+    let deletion_stage = backup_root.join(format!(
+        ".delete-{}-{}",
+        std::process::id(),
+        profile_name
+    ));
+    fs::rename(&profile_dir, &deletion_stage).map_err(|error| {
+        AppError::new(
+            "PROFILE_DELETE_FAILED",
+            format!("Failed to stage profile {}: {error}", profile_dir.display()),
+        )
+    })?;
+    if let Err(error) = super::profiles_index::compact_profile_folders(&codex_home) {
+        let _ = fs::rename(&deletion_stage, &profile_dir);
+        return Err(error);
+    }
+    if let Err(error) = finalize_profile_delete(&deletion_stage) {
+        let _ = super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home));
+        return Err(error);
+    }
     super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
+}
+
+fn finalize_profile_delete(stage: &Path) -> AppResult<()> {
+    finalize_profile_delete_with(stage, remove_path)
+}
+
+fn finalize_profile_delete_with<F>(stage: &Path, remove: F) -> AppResult<()>
+where
+    F: FnOnce(&Path) -> AppResult<()>,
+{
+    remove(stage).map_err(|error| {
+        AppError::new(
+            "PROFILE_DELETE_CLEANUP_FAILED",
+            format!(
+                "Profile was removed from the active list, but its recovery staging directory could not be deleted ({}): {}",
+                stage.display(), error.message
+            ),
+        )
+    })
 }
 
 pub fn clear_profile_account(profile_name: &str) -> AppResult<String> {
@@ -200,11 +240,20 @@ pub fn clear_profile_account(profile_name: &str) -> AppResult<String> {
 
     remove_path(&profile_dir.join("auth.json"))?;
     remove_path(&profile_dir.join(ACTIVE_MARKER_FILE))?;
-    save_profile_metadata(
-        &profile_name,
-        &ProfileMetadata::with_folder_name(&profile_name),
-        Some(&codex_home),
-    )?;
+    let mut metadata = load_profile_metadata(&profile_name, Some(&codex_home));
+    metadata.account_label = None;
+    metadata.email = None;
+    metadata.account_name = None;
+    metadata.nickname_override = None;
+    metadata.plan_name = None;
+    metadata.plan_source = crate::models::PlanSource::Unknown;
+    metadata.subscription_expires_at = None;
+    metadata.last_authorization_method = None;
+    metadata.last_authorization_account_id = None;
+    metadata.quota = Default::default();
+    metadata.quota_updated_at_ms = None;
+    metadata.last_plan_check_ms = None;
+    save_profile_metadata(&profile_name, &metadata, Some(&codex_home))?;
     super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
 
     Ok(profile_dir.to_string_lossy().into_owned())
@@ -271,7 +320,40 @@ fn rename_profile_with_home(
 }
 
 pub fn rename_profile(profile_name: &str, new_folder_name: &str) -> AppResult<String> {
-    rename_profile_with_home(profile_name, new_folder_name, None)
+    set_profile_nickname_with_home(profile_name, new_folder_name, None)
+}
+
+fn set_profile_nickname_with_home(
+    profile_name: &str,
+    nickname: &str,
+    codex_home: Option<&Path>,
+) -> AppResult<String> {
+    let codex_home = codex_home.map(PathBuf::from).unwrap_or_else(get_codex_home);
+    let profile_name = validate_profile_name(profile_name)?;
+    let profile_dir = get_backup_root(Some(&codex_home)).join(&profile_name);
+    if !profile_dir.is_dir() {
+        return Err(AppError::new(
+            "PROFILE_NOT_FOUND",
+            format!("Profile not found: {profile_name}"),
+        ));
+    }
+    let nickname = nickname.trim();
+    let metadata = sync_profile_nickname(
+        &profile_name,
+        (!nickname.is_empty()).then(|| nickname.to_string()),
+        Some(&codex_home),
+    )?;
+    if resolve_current_profile(&get_backup_root(Some(&codex_home))).as_deref()
+        == Some(profile_name.as_str())
+    {
+        super::metadata::sync_root_metadata_if_current_profile(
+            &profile_name,
+            &metadata,
+            Some(&codex_home),
+        )?;
+    }
+    super::profiles_index::reload_profiles_index_after_mutation(Some(&codex_home))?;
+    Ok(profile_dir.to_string_lossy().into_owned())
 }
 
 #[cfg(not(test))]
@@ -298,6 +380,21 @@ pub fn open_profile_folder(app: &tauri::AppHandle, profile_name: &str) -> AppRes
 }
 
 pub fn add_profile(folder_name: &str, openai_base_url: Option<&str>) -> AppResult<String> {
+    add_profile_named(folder_name, openai_base_url)
+}
+
+pub fn add_profile_auto(
+    _folder_name: Option<&str>,
+    openai_base_url: Option<&str>,
+) -> AppResult<String> {
+    let codex_home = get_codex_home();
+    super::profiles_index::compact_profile_folders(&codex_home)?;
+    let folder_name = list_profile_dirs(&get_backup_root(Some(&codex_home))).len();
+    let folder_name = super::profiles::sequence_name(folder_name);
+    add_profile_named(&folder_name, openai_base_url)
+}
+
+fn add_profile_named(folder_name: &str, openai_base_url: Option<&str>) -> AppResult<String> {
     let folder_name = validate_profile_name(folder_name)?;
     let profile_dir = get_backup_root(None).join(&folder_name);
     if profile_dir.exists() {
@@ -400,13 +497,13 @@ pub fn open_xiaohongshu(app: &tauri::AppHandle) -> AppResult<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_profile, clear_profile_account, delete_profile, rename_profile_with_home,
-        restart_after_verified_exit, update_profile_base_url, AppError,
+        add_profile, clear_profile_account, delete_profile,
+        rename_profile_with_home, restart_after_verified_exit, update_profile_base_url, AppError,
     };
     use crate::models::ProfileMetadata;
     use crate::windows::env_guard;
     use crate::windows::metadata::load_profile_metadata;
-    use crate::windows::paths::get_current_profile_file;
+    use crate::windows::paths::{get_backup_root, get_current_profile_file};
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -529,6 +626,43 @@ mod tests {
         } else {
             std::env::remove_var("CODEX_HOME");
         }
+    }
+
+    #[test]
+    fn delete_profile_restores_card_when_compaction_fails() {
+        let _guard = env_guard();
+        let codex_home = temp_codex_home("delete-profile-rollback");
+        let original_codex_home = std::env::var_os("CODEX_HOME");
+        write_profile(&codex_home, "a");
+        write_profile(&codex_home, "c");
+        write_profile(&codex_home, "d");
+        let backup_root = get_backup_root(Some(&codex_home));
+        fs::write(backup_root.join("b"), "occupied").unwrap();
+        std::env::set_var("CODEX_HOME", &codex_home);
+
+        let error = delete_profile("a").unwrap_err();
+
+        assert_eq!(error.error_code, "PROFILE_COMPACT_TARGET_OCCUPIED");
+        assert!(backup_root.join("a").is_dir());
+        assert!(backup_root.join("c").is_dir());
+        assert!(backup_root.join("d").is_dir());
+        let _ = fs::remove_dir_all(&codex_home);
+        if let Some(path) = original_codex_home {
+            std::env::set_var("CODEX_HOME", path);
+        } else {
+            std::env::remove_var("CODEX_HOME");
+        }
+    }
+
+    #[test]
+    fn delete_cleanup_failure_is_explicit_and_names_recovery_stage() {
+        let stage = temp_codex_home("missing-delete-stage");
+        let error = super::finalize_profile_delete_with(&stage, |_| {
+            Err(AppError::new("FS_REMOVE_FAILED", "injected cleanup failure"))
+        })
+        .unwrap_err();
+        assert_eq!(error.error_code, "PROFILE_DELETE_CLEANUP_FAILED");
+        assert!(error.message.contains(&stage.display().to_string()));
     }
 
     #[test]

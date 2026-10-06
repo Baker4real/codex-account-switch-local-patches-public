@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import type { DashboardViewModel, ProfileCard } from "./types";
+import type { CurrentCard, DashboardViewModel, ProfileCard } from "./types";
 
 class FakeElement {
   innerHTML = "";
@@ -20,6 +20,7 @@ class FakeElement {
 }
 
 const elementsById = new Map<string, FakeElement>();
+let renderCurrentCard: typeof import("./render").renderCurrentCard;
 let renderProfiles: typeof import("./render").renderProfiles;
 let state: typeof import("./state").state;
 
@@ -92,7 +93,7 @@ beforeAll(async () => {
   });
   vi.stubGlobal("window", { location: { hash: "" } });
 
-  ({ renderProfiles } = await import("./render"));
+  ({ renderCurrentCard, renderProfiles } = await import("./render"));
   ({ state } = await import("./state"));
 });
 
@@ -157,5 +158,25 @@ describe("profile card authorization method", () => {
     expect(markup).not.toContain('class="profile-authorization-method"');
     expect(markup).not.toContain("浏览器授权");
     expect(markup).not.toContain("设备码授权");
+  });
+});
+
+describe("current card titles", () => {
+  it("keeps nickname and email when the backend title omits the folder letter", () => {
+    const current = {
+      folder_name: "a",
+      display_title: "工作 · user@example.com",
+      account_label: "user@example.com",
+      has_account_identity: true,
+      plan_name: "plus",
+      subscription_days_left: null,
+      profile_folder_path: "C:/mock/a",
+      last_plan_check_ms: null,
+      refresh_token_status: profile("browser").refresh_token_status,
+    } as CurrentCard;
+
+    renderCurrentCard({ ...dashboard(profile("browser")), current_card: current });
+
+    expect(elementsById.get("current-title")?.textContent).toBe("工作 · user@example.com");
   });
 });

@@ -129,8 +129,31 @@ pub fn list_profile_dirs(backup_root: &Path) -> Vec<PathBuf> {
         .filter(|path| is_profile_dir(path))
         .collect::<Vec<_>>();
 
-    dirs.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    dirs.sort_by(|left, right| {
+        let left = left.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        let right = right.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+        compare_profile_dir_names(left, right)
+    });
     dirs
+}
+
+fn compare_profile_dir_names(left: &str, right: &str) -> std::cmp::Ordering {
+    let index = |name: &str| {
+        if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_lowercase()) {
+            return None;
+        }
+        let mut value = 0usize;
+        for byte in name.bytes() {
+            value = value.checked_mul(26)?.checked_add((byte - b'a' + 1) as usize)?;
+        }
+        value.checked_sub(1)
+    };
+    match (index(left), index(right)) {
+        (Some(left_index), Some(right_index)) => left_index.cmp(&right_index).then_with(|| left.cmp(right)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => left.cmp(right),
+    }
 }
 
 pub fn is_profile_dir(path: &Path) -> bool {
@@ -199,7 +222,7 @@ pub fn autosave_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_profile_dir, LEGACY_MACOS_RUNTIME_DIRNAME, USAGE_EVIDENCE_DIRNAME,
+        is_profile_dir, list_profile_dirs, LEGACY_MACOS_RUNTIME_DIRNAME, USAGE_EVIDENCE_DIRNAME,
         WINDOWS_RUNTIME_DIRNAME,
     };
     use std::fs;
@@ -250,6 +273,20 @@ mod tests {
         assert!(!is_profile_dir(&dotted_dir));
         assert!(!is_profile_dir(&spaced_dir));
 
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn profile_dirs_use_spreadsheet_order() {
+        let root = temp_dir("profile-order");
+        for name in ["b", "aa", "a"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        let names = list_profile_dirs(&root)
+            .into_iter()
+            .filter_map(|path| path.file_name().and_then(|name| name.to_str()).map(str::to_string))
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["a", "b", "aa"]);
         let _ = fs::remove_dir_all(&root);
     }
 }

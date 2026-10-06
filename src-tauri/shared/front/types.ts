@@ -77,6 +77,9 @@ export interface ProfileCard {
   folder_name: string;
   display_title: string;
   account_label: string | null;
+  email?: string | null;
+  account_name?: string | null;
+  nickname?: string | null;
   status: "current" | "available" | "missing_auth";
   auth_present: boolean;
   has_account_identity: boolean;
@@ -93,6 +96,9 @@ export interface CurrentCard {
   folder_name: string;
   display_title: string;
   account_label: string | null;
+  email?: string | null;
+  account_name?: string | null;
+  nickname?: string | null;
   has_account_identity: boolean;
   plan_name: string | null;
   subscription_days_left: number | null;

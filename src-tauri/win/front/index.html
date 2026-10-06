@@ -349,8 +349,8 @@
         </div>
 
         <label class="field">
-          <span id="folder-name-label">Folder name</span>
-          <input id="folder-name-input" name="folder_name" type="text" autocomplete="off" required />
+                <span id="folder-name-label" hidden>Folder name</span>
+                <input id="folder-name-input" name="folder_name" type="hidden" autocomplete="off" />
         </label>
 
         <label class="field">
@@ -378,12 +378,12 @@
       <form id="rename-profile-form" class="dialog-form" method="dialog">
         <div class="dialog-copy">
           <h3 id="rename-dialog-title">Rename Profile</h3>
-          <p id="rename-dialog-copy">Enter a new folder name for this profile.</p>
+              <p id="rename-dialog-copy">Enter a nickname for this card. Clear it to use the account name.</p>
         </div>
 
         <label class="field">
-          <span id="rename-folder-name-label">Folder name</span>
-          <input id="rename-folder-name-input" name="folder_name" type="text" autocomplete="off" required />
+                <span id="rename-folder-name-label">Nickname</span>
+                <input id="rename-folder-name-input" name="nickname" type="text" autocomplete="off" />
         </label>
 
         <p id="rename-dialog-error" class="dialog-error" hidden></p>

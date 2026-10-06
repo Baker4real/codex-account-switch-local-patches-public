@@ -34,6 +34,9 @@ function profileSearchText(profile: ProfileCard): string {
     profile.folder_name,
     profile.display_title,
     profile.account_label ?? "",
+    profile.nickname ?? "",
+    profile.account_name ?? "",
+    profile.email ?? "",
     profile.plan_name ?? "",
   ]
     .map(normalizeProfileFilterText)

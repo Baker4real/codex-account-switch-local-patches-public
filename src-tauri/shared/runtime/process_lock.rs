@@ -31,7 +31,9 @@
 //! we can distinguish "stuck" from "still working.")
 
 use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use crate::errors::{AppError, AppResult};
@@ -39,6 +41,7 @@ use crate::errors::{AppError, AppResult};
 use super::paths::get_switch_lock_path;
 
 const STALE_LOCK_AGE: Duration = Duration::from_secs(5 * 60);
+static LOCK_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub struct ProcessLockGuard {
@@ -51,12 +54,36 @@ impl Drop for ProcessLockGuard {
     }
 }
 
-fn try_create_lock(lock_path: &Path) -> std::io::Result<()> {
-    OpenOptions::new()
+fn try_create_lock(lock_path: &Path, owner_code: &str) -> std::io::Result<()> {
+    let counter = LOCK_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = lock_path.with_file_name(format!(
+        ".{}.{}.{}.tmp",
+        lock_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("switch.lock"),
+        std::process::id(),
+        counter
+    ));
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(lock_path)
-        .map(|_| ())
+        .open(&temp_path)
+        ?;
+    if let Err(error) = file.write_all(owner_code.as_bytes()) {
+        drop(file);
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    if let Err(error) = file.sync_all() {
+        drop(file);
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    drop(file);
+    let result = std::fs::hard_link(&temp_path, lock_path);
+    let _ = std::fs::remove_file(&temp_path);
+    result
 }
 
 fn lock_is_stale(lock_path: &Path) -> bool {
@@ -97,7 +124,7 @@ pub fn acquire_process_lock(
         })?;
     }
 
-    if let Err(error) = try_create_lock(&lock_path) {
+    if let Err(error) = try_create_lock(&lock_path, busy_error_code) {
         // The cheap branch is "real concurrent contention" — that's
         // what AlreadyExists with a fresh lock looks like. The other
         // branch we observed in the wild is the GUI dying mid-switch
@@ -106,7 +133,7 @@ pub fn acquire_process_lock(
         // Detect that by mtime and reclaim.
         if error.kind() == std::io::ErrorKind::AlreadyExists && lock_is_stale(&lock_path) {
             let _ = std::fs::remove_file(&lock_path);
-            try_create_lock(&lock_path).map_err(|retry_error| {
+            try_create_lock(&lock_path, busy_error_code).map_err(|retry_error| {
                 AppError::new(
                     busy_error_code,
                     format!(
@@ -148,6 +175,7 @@ mod tests {
             let _guard = acquire_process_lock(Some(&codex_home), "SWITCH_IN_PROGRESS", "busy")
                 .expect("first acquire should succeed");
             assert!(lock_path.is_file(), "lock file must exist while held");
+            assert_eq!(fs::read_to_string(&lock_path).unwrap(), "SWITCH_IN_PROGRESS");
         }
         assert!(!lock_path.exists(), "lock file must be removed on drop");
     }

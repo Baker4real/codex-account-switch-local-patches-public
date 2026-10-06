@@ -37,6 +37,17 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function previewArrangementName(index: number): string {
+  let value = index + 1;
+  let result = "";
+  while (value > 0) {
+    const digit = (value - 1) % 26;
+    result = String.fromCharCode(97 + digit) + result;
+    value = Math.floor((value - 1) / 26);
+  }
+  return result;
+}
+
 function quota(
   fiveHourPercent: number | null,
   fiveHourRefresh: string | null,
@@ -324,26 +335,26 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
         } as T;
       }
       case "rename_profile": {
-        const payload = args?.payload as { profile?: string; new_folder_name?: string } | undefined;
-        if (payload?.profile && payload.new_folder_name) {
+        const payload = args?.payload as { profile?: string; new_nickname?: string } | undefined;
+        if (payload?.profile && payload.new_nickname !== undefined) {
           const sourceProfile = payload.profile;
-          const nextFolderName = payload.new_folder_name;
+          const nextNickname = payload.new_nickname.trim() || undefined;
           previewSnapshot.profiles = previewSnapshot.profiles.map((entry) =>
             entry.folder_name === sourceProfile
               ? {
                   ...entry,
-                  folder_name: nextFolderName,
-                  display_title: nextFolderName,
-                  account_label: nextFolderName,
+                  nickname: nextNickname,
+                  display_title: nextNickname
+                    ? `${entry.folder_name} · ${nextNickname}`
+                    : entry.folder_name,
                 }
               : entry,
           );
           if (previewCurrentCard.folder_name === sourceProfile) {
             previewCurrentCard = {
               ...previewCurrentCard,
-              folder_name: nextFolderName,
-              display_title: nextFolderName,
-              account_label: nextFolderName,
+              nickname: nextNickname,
+              display_title: nextNickname || previewCurrentCard.folder_name,
             };
           }
           refreshPreviewSnapshot();
@@ -351,28 +362,31 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
         return mockAction("Renamed in preview mode") as Promise<T>;
       }
       case "add_profile": {
-        const payload = args?.payload as { folder_name?: string; openai_base_url?: string | null } | undefined;
-        if (payload?.folder_name) {
-          previewSnapshot.profiles.push({
-            folder_name: payload.folder_name,
-            display_title: payload.folder_name,
-            account_label: payload.folder_name,
+        const payload = args?.payload as { openai_base_url?: string | null } | undefined;
+        const folderName = previewArrangementName(previewSnapshot.profiles.length);
+        previewSnapshot.profiles.push({
+            folder_name: folderName,
+            display_title: folderName,
+            account_label: null,
             status: "available",
-            auth_present: true,
-            has_account_identity: true,
-            plan_name: "Pro plan",
-            subscription_days_left: 30,
-            openai_base_url: payload.openai_base_url ?? null,
+            auth_present: false,
+            has_account_identity: false,
+            plan_name: null,
+            subscription_days_left: null,
+            openai_base_url: payload?.openai_base_url ?? null,
             last_authorization_method: null,
             quota: quota(52, "5小时后刷新", 67, "3天后刷新"),
-            last_plan_check_ms: Date.now(),
+            last_plan_check_ms: null,
             refresh_token_status: refreshStatus({
-              health: "unknown_expiry",
-              auth_updated_at_ms: Date.now(),
+              health: "missing_auth",
+              can_refresh: false,
+              refresh_token_present: false,
+              access_token_expires_at_ms: null,
+              id_token_expires_at_ms: null,
+              auth_updated_at_ms: null,
             }),
           });
-          refreshPreviewSnapshot();
-        }
+        refreshPreviewSnapshot();
         return mockAction("Added in preview mode") as Promise<T>;
       }
       case "update_profile_base_url": {
@@ -511,10 +525,9 @@ export function openProfileFolder(profile: string): Promise<ActionResponse> {
   return invokeCommand<ActionResponse>("open_profile_folder", { payload: { profile } });
 }
 
-export function addProfile(folderName: string, openaiBaseUrl: string | null): Promise<ActionResponse> {
+export function addProfile(openaiBaseUrl: string | null): Promise<ActionResponse> {
   return invokeCommand<ActionResponse>("add_profile", {
     payload: {
-      folder_name: folderName,
       openai_base_url: openaiBaseUrl,
     },
   });
@@ -555,9 +568,9 @@ export function refreshProfile(profile: string): Promise<ActionResponse> {
   return invokeCommand<ActionResponse>("refresh_profile", { payload: { profile } });
 }
 
-export function renameProfile(profile: string, newFolderName: string): Promise<ActionResponse> {
+export function renameProfile(profile: string, newNickname: string): Promise<ActionResponse> {
   return invokeCommand<ActionResponse>("rename_profile", {
-    payload: { profile, new_folder_name: newFolderName },
+    payload: { profile, new_nickname: newNickname },
   });
 }
 

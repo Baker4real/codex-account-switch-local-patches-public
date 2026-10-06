@@ -175,6 +175,12 @@ pub enum AuthorizationMethod {
 pub struct ProfileMetadata {
     pub folder_name: Option<String>,
     pub account_label: Option<String>,
+    /// Email address used to identify the account in card titles.
+    pub email: Option<String>,
+    /// Human name returned by the login/refresh identity payload.
+    pub account_name: Option<String>,
+    /// User supplied card nickname. An empty value is represented by None.
+    pub nickname_override: Option<String>,
     pub plan_name: Option<String>,
     /// The source that supplied `plan_name`. Legacy metadata omits this and
     /// deserializes to `Unknown`, allowing its current id_token claim to
@@ -273,6 +279,9 @@ pub struct ProfileCard {
     pub folder_name: String,
     pub display_title: String,
     pub account_label: Option<String>,
+    pub email: Option<String>,
+    pub account_name: Option<String>,
+    pub nickname: Option<String>,
     pub status: String,
     pub auth_present: bool,
     pub has_account_identity: bool,
@@ -294,6 +303,9 @@ pub struct CurrentCard {
     pub folder_name: String,
     pub display_title: String,
     pub account_label: Option<String>,
+    pub email: Option<String>,
+    pub account_name: Option<String>,
+    pub nickname: Option<String>,
     pub has_account_identity: bool,
     pub plan_name: Option<String>,
     pub subscription_days_left: Option<i64>,
@@ -307,6 +319,9 @@ pub struct CurrentCard {
 pub struct ProfileIndexEntry {
     pub folder_name: String,
     pub account_label: Option<String>,
+    pub email: Option<String>,
+    pub account_name: Option<String>,
+    pub nickname: Option<String>,
     pub has_account_identity: bool,
     pub plan_name: Option<String>,
     pub subscription_expires_at: Option<String>,
@@ -360,14 +375,16 @@ pub struct ProfilePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddProfilePayload {
-    pub folder_name: String,
+    #[serde(default)]
+    pub folder_name: Option<String>,
     pub openai_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RenameProfilePayload {
     pub profile: String,
-    pub new_folder_name: String,
+    #[serde(alias = "new_folder_name", alias = "nickname")]
+    pub new_nickname: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

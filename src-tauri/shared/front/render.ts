@@ -517,23 +517,14 @@ function isProfileUnavailable(profile: Pick<ProfileCard, "auth_present" | "has_a
 function normalizeDisplayParts(
   entry: Pick<ProfileCard | CurrentCard, "folder_name" | "display_title" | "account_label">,
 ): { folder: string; account: string } {
-  const folder = collapseDisplayWhitespace(entry.folder_name);
-  const account = collapseDisplayWhitespace(entry.account_label ?? "");
-
-  if (account) {
-    return { folder, account };
-  }
-
   const rawTitle = collapseDisplayWhitespace(entry.display_title ?? "");
-  const parts = rawTitle.split(" / ").map(collapseDisplayWhitespace).filter(Boolean);
-  if (parts.length >= 2) {
-    return {
-      folder: parts[0] ?? folder,
-      account: parts[parts.length - 1] ?? "",
-    };
-  }
-
-  return { folder, account: rawTitle };
+  const parts = rawTitle.split(" · ").map(collapseDisplayWhitespace).filter(Boolean);
+  const folder = collapseDisplayWhitespace(entry.folder_name);
+  const hasFolderPrefix = parts[0] === folder;
+  return {
+    folder,
+    account: (hasFolderPrefix ? parts.slice(1) : parts).join(" · ") || collapseDisplayWhitespace(entry.account_label ?? ""),
+  };
 }
 
 function profileDisplayTitle(entry: Pick<ProfileCard, "folder_name" | "display_title" | "account_label">): string {
@@ -1032,8 +1023,7 @@ export function renderProfiles(
       const cardBusy = refreshPending || loginOnThisCard;
       const deleteDisabled =
         state.loading || cardBusy || profile.status === "current";
-      const renameDisabled =
-        state.loading || cardBusy || profile.status === "current";
+      const renameDisabled = state.loading || cardBusy;
       const refreshDisabled =
         !canRefreshProfile(profile) || state.loading || cardBusy || loginPending;
       const baseDisabled = state.loading || cardBusy;
