@@ -22,9 +22,10 @@ pub const WINDOWS_RUNTIME_DIRNAME: &str = "windows";
 // Kept only to exclude an old data directory from profile enumeration. This is
 // compatibility filtering for existing data, not a supported runtime path.
 pub const LEGACY_MACOS_RUNTIME_DIRNAME: &str = "macos";
-pub const CONTACT_URL: &str = "https://github.com/Baker4real/codex-account-switch-local-patches";
+pub const CONTACT_URL: &str =
+    "https://github.com/Baker4real/codex-account-switch-local-patches-public";
 pub const RELEASES_URL: &str =
-    "https://github.com/Baker4real/codex-account-switch-local-patches/releases";
+    "https://github.com/Baker4real/codex-account-switch-local-patches-public/releases";
 pub const UPDATE_CHECK_URL: &str =
     "https://api.github.com/repos/Cmochance/Codex_Account_Switch/releases/latest";
 pub const XIAOHONGSHU_URL: &str = "https://www.xiaohongshu.com/explore/69df8fca000000002302203c";

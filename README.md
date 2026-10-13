@@ -10,7 +10,7 @@ intent: "Codex 账号切换工具（Windows）"
 <p align="center">
   <a href="README.zh-CN.md">简体中文备份</a> |
   <a href="CHANGELOG.md">Changelog</a> |
-  <a href="https://github.com/Baker4real/codex-account-switch-local-patches/releases">私有补丁 Releases</a>
+  <a href="https://github.com/Baker4real/codex-account-switch-local-patches-public/releases">本地补丁 Releases</a>
 </p>
 
 Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号管理器。它为每个账号保存独立的 `auth.json` 与 `profile.json`，支持安全切换、plan/quota 查看、Codex CLI 路径检测和 Codex 控制。
@@ -33,7 +33,7 @@ Codex Switch 是一个面向 OpenAI Codex CLI 的本地 Windows x64 桌面账号
 
 ## 安装与使用
 
-1. 私有补丁仓库已有 Release 时，从 [私有补丁 Releases](https://github.com/Baker4real/codex-account-switch-local-patches/releases/latest) 下载 Windows x64 NSIS 安装包 `codex_switch_<版本>_x64-setup.exe` 并安装；没有私有 Release 时，按下方本地构建命令生成，不要从公共上游下载。
+1. 本地补丁仓库已有 Release 时，从 [本地补丁 Releases](https://github.com/Baker4real/codex-account-switch-local-patches-public/releases/latest) 下载 Windows x64 NSIS 安装包 `codex_switch_<版本>_x64-setup.exe` 并安装；没有 Release 时，按下方本地构建命令生成，不要从公共上游下载。
 2. 打开应用，在“设置”确认 Codex CLI 路径；缺失时点击“自动检测”或手动选择可运行的 `codex.exe` / `codex.cmd`。
 3. 在“账号”页添加 profile；本机浏览器可登录时点击“浏览器”，否则点击“设备码”，再在能够登录 OpenAI 的设备上打开验证页面并输入一次性代码。
 4. 在目标账号卡片点击“切换”。应用会先保存当前账号，再按身份路由写回目标账号；全局 `skills`、插件缓存、sessions、`AGENTS.md`、`rules`、`memories` 等不会被 profile 覆盖。

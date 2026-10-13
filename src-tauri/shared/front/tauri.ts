@@ -442,7 +442,7 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
           latest_version: "1.5.0",
           has_update: false,
           local_patch_required: false,
-          release_url: "https://github.com/Baker4real/codex-account-switch-local-patches/releases",
+          release_url: "https://github.com/Baker4real/codex-account-switch-local-patches-public/releases",
           notes: null,
           checked_url: "preview",
         }) as Promise<T>;

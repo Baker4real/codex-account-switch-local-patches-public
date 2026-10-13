@@ -21,7 +21,7 @@ intent: 维护 Windows 本地补丁、上游同步与私有发布边界。
 
 ## 私有主分支发布策略
 
-- 本仓库的用户自有远端是 `private`（`Baker4real/codex-account-switch-local-patches`）；正常修改只提交并推送到 `private/main`。
+- 本仓库的用户自有远端是 `private`（公开仓库 `Baker4real/codex-account-switch-local-patches-public`）；正常修改只提交并推送到 `private/main`。
 - 本地和远端当前只保留 `main`；提交历史与本文补丁清单共同承载累计补丁记录。不再创建、更新、推送或重新建立长期 `patch-stack/*` 分支。
 - 若其他位置仍存在遗留 patch-stack refs，只作历史，默认不读取、不修改、不迁移、不删除。
 - 如确有必要隔离高风险修改，Agent 必须先推荐具体临时分支并取得 owner 事前确认；owner 验收后才推进到 `private/main`，随后删除本地和远端临时分支，除非 owner 明确要求保留。
