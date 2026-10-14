@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,11 +25,18 @@ const hygieneEntries = [
 
 const todoPattern = /\bTODO\b/i;
 const localCodexPathPattern = /[A-Za-z]:[\\/]+Codex(?:[\\/]|$)/i;
-const hardcodedRemoteEndpointPattern =
-  /\b[A-Za-z0-9._-]+@(?:10(?:\.\d{1,3}){3}|100\.(?:6[4-9]|[78]\d|9\d|1[01]\d|12[0-7])(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2})\b/i;
 const deviceCodexRootPattern =
   /\bGet-DefaultCodexRoot\b|['"]D:['"][\s\S]{0,160}['"]Codex['"]/i;
+// Tailscale/CGNAT (100.64/10) and RFC 1918 addresses; the range bases themselves only document the ranges.
+const octet = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+const privateAddressPattern = new RegExp(
+  `(?<![\\w.])(?:10(?:\\.${octet}){3}|100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])(?:\\.${octet}){2}|` +
+    `172\\.(?:1[6-9]|2\\d|3[01])(?:\\.${octet}){2}|192\\.168(?:\\.${octet}){2})(?![\\w]|\\.\\d)`,
+  "g",
+);
+const privateRangeBases = new Set(["10.0.0.0", "100.64.0.0", "172.16.0.0", "192.168.0.0"]);
 const emailPattern = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+const allowedEmailPattern = /@users\.noreply\.github\.com$|^(?:no-?reply|do-?not-?reply|git)@/i;
 const allowedEmailDomains = new Set([
   "example.com",
   "example.net",
@@ -71,7 +79,28 @@ function listFiles(entry) {
   });
 }
 
+function listTrackedFiles() {
+  return execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8" })
+    .split("\0")
+    .filter(Boolean)
+    .map((path) => join(repoRoot, path))
+    .filter((path) => existsSync(path));
+}
+
+// CI logs of a public repository are public too, so findings show masked values only.
+function maskAddress(address) {
+  return `${address.split(".").slice(0, 2).join(".")}.x.x`;
+}
+
+function maskEmail(email) {
+  const at = email.lastIndexOf("@");
+  return `${email.slice(0, Math.min(2, at))}***${email.slice(at)}`;
+}
+
 function isAllowedEmail(email) {
+  if (allowedEmailPattern.test(email)) {
+    return true;
+  }
   const domain = email.split("@").pop()?.toLowerCase();
   return Boolean(
     domain &&
@@ -209,17 +238,25 @@ for (const file of hygieneEntries.flatMap(listFiles)) {
   }
 
   if (toRepoPath(file).startsWith("scripts/")) {
-    const remoteEndpointMatch = hardcodedRemoteEndpointPattern.exec(text);
-    if (remoteEndpointMatch) {
-      failures.push(
-        `${toRepoPath(file)}:${lineForOffset(text, remoteEndpointMatch.index)} contains a hardcoded private remote endpoint`,
-      );
-    }
-
     const deviceRootMatch = deviceCodexRootPattern.exec(text);
     if (deviceRootMatch) {
       failures.push(
         `${toRepoPath(file)}:${lineForOffset(text, deviceRootMatch.index)} constructs a device-specific Codex root`,
+      );
+    }
+  }
+}
+
+for (const file of listTrackedFiles()) {
+  const content = readFileSync(file);
+  if (content.subarray(0, 8000).includes(0)) {
+    continue;
+  }
+  const text = content.toString("utf8");
+  for (const match of text.matchAll(privateAddressPattern)) {
+    if (!privateRangeBases.has(match[0])) {
+      failures.push(
+        `${toRepoPath(file)}:${lineForOffset(text, match.index ?? 0)} contains private network address ${maskAddress(match[0])}`,
       );
     }
   }
@@ -228,7 +265,7 @@ for (const file of hygieneEntries.flatMap(listFiles)) {
     const email = match[0];
     if (!isAllowedEmail(email)) {
       failures.push(
-        `${toRepoPath(file)}:${lineForOffset(text, match.index ?? 0)} contains non-example email ${email}`,
+        `${toRepoPath(file)}:${lineForOffset(text, match.index ?? 0)} contains non-example email ${maskEmail(email)}`,
       );
     }
   }
